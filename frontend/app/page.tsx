@@ -31,6 +31,8 @@ export default function Home() {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const [toolMode, setToolMode] = useState("auto");
 
 
   useEffect(() => {
@@ -65,7 +67,10 @@ export default function Home() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({
+          message: text,
+          tool_mode: toolMode,
+        }),
         signal: controller.signal,
       });
 
@@ -73,39 +78,16 @@ export default function Home() {
         throw new Error("Backend request failed");
       }
 
-      const assistantId = generateId();
+      const data = await res.json();
 
       setMessages((prev) => [
         ...prev,
         {
-          id: assistantId,
+          id: generateId(),
           role: "assistant",
-          content: "",
+          content: data.message || "No response.",
         },
       ]);
-
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
-
-      if (!reader) {
-        throw new Error("No response body.");
-      }
-
-      while (true) {
-        const { done, value } = await reader.read();
-
-        if (done) break;
-
-        const chunk = decoder.decode(value);
-
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantId
-              ? { ...msg, content: msg.content + chunk }
-              : msg
-          )
-        );
-      }
     } catch (error) {
       setMessages((prev) => [
         ...prev,
@@ -133,14 +115,29 @@ export default function Home() {
     setMessages((prev) => prev.filter((msg) => msg.id !== id));
   }
 
-  function clearChat() {
+  
+
+  async function clearChat() {
+    try {
+      await fetch(`${API_BASE}/reset`, {
+        method: "POST",
+      });
+    } catch {
+      console.log("Could not reset backend memory.");
+    }
+
     setMessages([
       {
         id: generateId(),
         role: "assistant",
-        content: "Chat cleared. Fresh canvas.",
+        content: "Chat cleared. Backend memory reset too.",
       },
     ]);
+
+    messagesContainerRef.current?.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    });
   }
 
   async function loadHistory() {
@@ -298,6 +295,15 @@ export default function Home() {
                 if (file) handleFileUpload(file);
               }}
             />
+
+            <select
+              value={toolMode}
+              onChange={(e) => setToolMode(e.target.value)}
+              className="rounded-xl border border-white/10 bg-neutral-950 px-2 text-xs text-neutral-300 outline-none"
+            >
+              <option value="auto">Auto</option>
+              <option value="market_csv">Market CSV</option>
+            </select>
 
             <textarea
               value={input}

@@ -1,15 +1,14 @@
 import os
 import json
 import requests
+import base64
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from tools import TOOLS
 from database import get_connection, log_tool
-
-
 from database import init_db, save_message, get_recent_messages, clear_messages
 
 load_dotenv()
@@ -123,9 +122,12 @@ Do not claim certainty.
 Do not tell Jadin to enter immediately without confirmation.
 Never use read_file for CSV market analysis. Always use analyze_market_csv.
 
-Example:
+- analyze_market_csv: analyzes TradingView CSV data using Jadin's ICT-based trading model
+
 Example:
 TOOL: analyze_market_csv htf=MNQ_1H.csv mtf=MNQ_15M.csv ltf=MNQ_1M.csv symbol=MNQ
+
+If the user asks you to analyze MNQ, NQ, ES, MES, or any futures chart and does not provide file names, automatically use: TOOL: analyze_market_csv htf=MNQ_1H.csv mtf=MNQ_15M.csv ltf=MNQ_1M.csv symbol=MNQ
 
 When market analysis requires multiple timeframes, always provide htf, mtf, and ltf arguments.
 When using web_search, include the source title and URL in your answer.
@@ -143,6 +145,7 @@ Do not output TOOL: after a Tool Result.
 
 class ChatRequest(BaseModel):
     message: str
+    tool_mode: str = "auto"
 
 
 def build_prompt():
@@ -164,6 +167,67 @@ def health_check():
 def chat(request: ChatRequest):
     try:
         save_message("User", request.message)
+
+        if request.tool_mode == "market_csv":
+            tool_result = TOOLS["analyze_market_csv"](
+                htf="MNQ_1H.csv",
+                mtf="MNQ_15M.csv",
+                ltf="MNQ_1M.csv",
+                symbol="MNQ",
+            )
+
+            log_tool(
+                "analyze_market_csv",
+                "{'htf': 'MNQ_1H.csv', 'mtf': 'MNQ_15M.csv', 'ltf': 'MNQ_1M.csv', 'symbol': 'MNQ'}",
+                str(tool_result),
+            )
+
+            tool_prompt = f"""
+            You are Jadin's trading assistant.
+
+            The user asked:
+            {request.message}
+
+            Here is the structured market analysis:
+            {tool_result.get("message", str(tool_result))}
+
+            Answer the user's specific question using this data.
+
+            Rules:
+            - Respond like a human trader.
+            - Use Jadin's ICT framework.
+            - Be concise and direct.
+            - If the user asks about liquidity, focus on exact liquidity levels.
+            - If the user asks about entries, focus on setup conditions.
+            - Do not mention JSON.
+            - Do not invent data.
+            """
+
+            response = requests.post(
+                OLLAMA_URL,
+                json={
+                    "model": OLLAMA_MODEL,
+                    "prompt": tool_prompt,
+                    "stream": False,
+                    "think": False,
+                },
+                timeout=120,
+            )
+
+            response.raise_for_status()
+            data = response.json()
+            assistant_message = data.get("response", "").strip()
+
+            save_message("Assistant", assistant_message)
+
+            messages = get_recent_messages(MAX_HISTORY_MESSAGES)
+
+            return {
+                "success": True,
+                "model": "tool:analyze_market_csv",
+                "message": assistant_message,
+                "history_length": len(messages),
+            }
 
         prompt = build_prompt()
 
@@ -201,13 +265,19 @@ def chat(request: ChatRequest):
                 log_tool(tool_name, str(args), str(tool_result))
                 save_message("Tool", f"{tool_name}: {tool_result}")
 
+                tool_message = tool_result.get("message") if isinstance(tool_result, dict) else None
+
                 followup_prompt = (
                     prompt
                     + f"\nTool Result: {tool_result}\n"
-                    + "Use the Tool Result to answer the user normally. "
+                    + (
+                        f"Use this preformatted response as your answer:\n{tool_message}\n"
+                        if tool_message
+                        else "Use the Tool Result to answer the user normally. "
+                    )
                     + "Do not call another tool. Do not output TOOL: again.\n"
                     + "Assistant:"
-)
+                )
 
                 response = requests.post(
                     OLLAMA_URL,
@@ -237,7 +307,12 @@ def chat(request: ChatRequest):
         }
 
     except requests.exceptions.RequestException as e:
+        print("OLLAMA ERROR:", e)
         raise HTTPException(status_code=500, detail=f"Ollama request failed: {e}")
+
+    except Exception as e:
+        print("CHAT ERROR:", repr(e))
+        raise HTTPException(status_code=500, detail=f"Chat failed: {e}")
 
 
 @app.post("/chat/stream")
@@ -257,7 +332,7 @@ def chat_stream(request: ChatRequest):
                     "think": False,
                 },
                 stream=True,
-                timeout=120,
+                timeout=300,
             ) as response:
                 response.raise_for_status()
 
@@ -277,6 +352,94 @@ def chat_stream(request: ChatRequest):
             yield f"\n[ERROR] Ollama request failed: {e}"
 
     return StreamingResponse(generate(), media_type="text/plain")
+
+@app.post("/analyze-image")
+async def analyze_image(
+    file: UploadFile = File(...),
+    prompt: str = Form("Analyze this chart using Jadin's ICT trading model.")
+):
+    try:
+        image_bytes = await file.read()
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        vision_prompt = f"""
+You are Jadin's trading assistant.
+
+Analyze this chart screenshot using Jadin's ICT-based trading model.
+
+Jadin's standard model:
+- 1H = higher timeframe bias
+- 15M = setup zones, FVGs, and structure
+- 1M = execution and BRTC trigger
+- Do not use VWAP
+- Do not use the 5-minute timeframe unless Jadin explicitly asks for it
+
+The screenshot may include:
+- TradingView price labels on the right axis
+- Drawn horizontal levels
+- Session overlays
+- Marked support/resistance levels
+
+Treat clearly drawn levels and visible swing highs/lows as important liquidity.
+If price breaks out and consolidates near the highs, interpret that as bullish continuation unless structure clearly fails.
+
+Focus on:
+1. Higher timeframe bias if visible
+2. Key liquidity above price
+3. Key liquidity below price
+4. Fair Value Gaps (FVGs)
+5. Break of Structure (BOS)
+6. Market Structure Shift (MSS)
+7. Break-Retest-Continue (BRTC) opportunities
+8. Long setup conditions
+9. Short setup conditions
+10. Entry zone
+11. Invalidation
+12. Targets
+
+Rules:
+- Be concise and direct.
+- Use if/then logic.
+- Do not invent indicators or levels that are not visible.
+- If the screenshot does not show enough context, say what is missing.
+- Do not call the 1-minute chart a higher timeframe.
+- Do not say "Market Structure Score" or "Balance of Strength" for MSS/BOS.
+- Do not tell Jadin to enter immediately.
+- Prioritize confirmation over prediction.
+- Respond like a futures trader, not a textbook.
+
+User question:
+{prompt}
+"""
+
+        response = requests.post(
+            os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate"),
+            json={
+                "model": os.getenv("VISION_MODEL", "qwen2.5vl:7b"),
+                "prompt": vision_prompt,
+                "images": [image_base64],
+                "stream": False,
+                "think": False,
+            },
+            timeout=180,
+        )
+
+        response.raise_for_status()
+        data = response.json()
+
+        message = data.get("response", "").strip()
+
+        save_message("User", f"[Image uploaded] {file.filename}: {prompt}")
+        save_message("Assistant", message)
+
+        return {
+            "success": True,
+            "model": os.getenv("VISION_MODEL", "qwen2.5vl:7b"),
+            "message": message,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image analysis failed: {e}")
 
 
 @app.post("/reset")
