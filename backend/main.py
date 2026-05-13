@@ -91,6 +91,11 @@ TOOL: create_reminder title=Test_Reminder reminder_time=Friday_May_9_2026_8:00_P
 Example:
 TOOL: web_search query=latest_cybersecurity_news
 
+- analyze_market_csv: analyzes TradingView CSV data using Jadin's ICT-based trading model
+
+Example:
+TOOL: analyze_market_csv daily=MNQ_1D.csv h4=MNQ_4H.csv htf=MNQ_1H.csv mtf=MNQ_15M.csv ltf=MNQ_1M.csv symbol=MNQ
+
 When using analyze_market_csv, explain the market using Jadin's ICT-based trading model.
 
 Analyze:
@@ -105,7 +110,6 @@ Analyze:
   - London session high/low
   - New York session high/low
   - Significant swing highs/lows
-
 
 Always provide:
 1. Bias
@@ -122,14 +126,10 @@ Do not claim certainty.
 Do not tell Jadin to enter immediately without confirmation.
 Never use read_file for CSV market analysis. Always use analyze_market_csv.
 
-- analyze_market_csv: analyzes TradingView CSV data using Jadin's ICT-based trading model
+If the user asks you to analyze MNQ, NQ, ES, MES, or any futures chart and does not provide file names, automatically use:
+TOOL: analyze_market_csv daily=MNQ_1D.csv h4=MNQ_4H.csv htf=MNQ_1H.csv mtf=MNQ_15M.csv ltf=MNQ_1M.csv symbol=MNQ
 
-Example:
-TOOL: analyze_market_csv htf=MNQ_1H.csv mtf=MNQ_15M.csv ltf=MNQ_1M.csv symbol=MNQ
-
-If the user asks you to analyze MNQ, NQ, ES, MES, or any futures chart and does not provide file names, automatically use: TOOL: analyze_market_csv htf=MNQ_1H.csv mtf=MNQ_15M.csv ltf=MNQ_1M.csv symbol=MNQ
-
-When market analysis requires multiple timeframes, always provide htf, mtf, and ltf arguments.
+When market analysis requires multiple timeframes, always provide daily, h4, htf, mtf, and ltf arguments.
 When using web_search, include the source title and URL in your answer.
 Do not invent details beyond the search results.
 If the user asks for current, recent, latest, news, prices, schedules, or anything that may have changed recently, use web_search.
@@ -170,6 +170,8 @@ def chat(request: ChatRequest):
 
         if request.tool_mode == "market_csv":
             tool_result = TOOLS["analyze_market_csv"](
+                daily="MNQ_1D.csv",
+                h4="MNQ_4H.csv",
                 htf="MNQ_1H.csv",
                 mtf="MNQ_15M.csv",
                 ltf="MNQ_1M.csv",
@@ -178,45 +180,11 @@ def chat(request: ChatRequest):
 
             log_tool(
                 "analyze_market_csv",
-                "{'htf': 'MNQ_1H.csv', 'mtf': 'MNQ_15M.csv', 'ltf': 'MNQ_1M.csv', 'symbol': 'MNQ'}",
+                "{'daily': 'MNQ_1D.csv', 'h4': 'MNQ_4H.csv', 'htf': 'MNQ_1H.csv', 'mtf': 'MNQ_15M.csv', 'ltf': 'MNQ_1M.csv', 'symbol': 'MNQ'}",
                 str(tool_result),
             )
 
-            tool_prompt = f"""
-            You are Jadin's trading assistant.
-
-            The user asked:
-            {request.message}
-
-            Here is the structured market analysis:
-            {tool_result.get("message", str(tool_result))}
-
-            Answer the user's specific question using this data.
-
-            Rules:
-            - Respond like a human trader.
-            - Use Jadin's ICT framework.
-            - Be concise and direct.
-            - If the user asks about liquidity, focus on exact liquidity levels.
-            - If the user asks about entries, focus on setup conditions.
-            - Do not mention JSON.
-            - Do not invent data.
-            """
-
-            response = requests.post(
-                OLLAMA_URL,
-                json={
-                    "model": OLLAMA_MODEL,
-                    "prompt": tool_prompt,
-                    "stream": False,
-                    "think": False,
-                },
-                timeout=120,
-            )
-
-            response.raise_for_status()
-            data = response.json()
-            assistant_message = data.get("response", "").strip()
+            assistant_message = tool_result.get("message", str(tool_result))
 
             save_message("Assistant", assistant_message)
 
@@ -265,7 +233,11 @@ def chat(request: ChatRequest):
                 log_tool(tool_name, str(args), str(tool_result))
                 save_message("Tool", f"{tool_name}: {tool_result}")
 
-                tool_message = tool_result.get("message") if isinstance(tool_result, dict) else None
+                tool_message = (
+                    tool_result.get("message")
+                    if isinstance(tool_result, dict)
+                    else None
+                )
 
                 followup_prompt = (
                     prompt
@@ -353,10 +325,11 @@ def chat_stream(request: ChatRequest):
 
     return StreamingResponse(generate(), media_type="text/plain")
 
+
 @app.post("/analyze-image")
 async def analyze_image(
     file: UploadFile = File(...),
-    prompt: str = Form("Analyze this chart using Jadin's ICT trading model.")
+    prompt: str = Form("Analyze this chart using Jadin's ICT trading model."),
 ):
     try:
         image_bytes = await file.read()
@@ -465,6 +438,7 @@ def chat_history():
         ],
         "history_length": len(messages),
     }
+
 
 @app.get("/tool-logs")
 def get_tool_logs():

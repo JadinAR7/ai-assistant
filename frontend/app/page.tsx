@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import ReactMarkdown from "react-markdown";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
@@ -227,11 +228,13 @@ export default function Home() {
                     : "border border-white/10 bg-neutral-900 text-neutral-100"
                 }`}
               >
-                <div>
-                  {msg.content.startsWith("TOOL:")
-                    ? "Using tool..."
-                    : msg.content}
-                </div>
+                <div className="prose prose-invert max-w-none prose-p:my-2 prose-headings:my-3 prose-ul:my-2 prose-li:my-1">
+                {msg.content.startsWith("TOOL:") ? (
+                  "Using tool..."
+                ) : (
+                  <ReactMarkdown>{msg.content}</ReactMarkdown>
+                )}
+              </div>
 
                 <div className="mt-2 flex gap-2 opacity-70">
                   {msg.error && msg.retryText && (
