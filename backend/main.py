@@ -88,6 +88,11 @@ TOOL: create_reminder title=Test_Reminder reminder_time=Friday_May_9_2026_8:00_P
 
 - web_search: searches the web using Brave Search
 
+- capture_tradingview: opens TradingView and captures a chart screenshot
+
+Example:
+TOOL: capture_tradingview symbol=MNQ
+
 Example:
 TOOL: web_search query=latest_cybersecurity_news
 

@@ -22,3 +22,13 @@ backend/*.csv
 **/.venv/
 venv/
 **/venv/
+
+
+# Playwright browser profile
+backend/playwright_tradingview_profile/
+
+# TradingView screenshots
+backend/pictures/tradingview_screenshots/
+
+# macOS junk
+.DS_Store

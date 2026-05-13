@@ -3,8 +3,10 @@ import subprocess
 import os
 import requests
 import pandas as pd
+import tempfile
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
+
 
 load_dotenv()
 
@@ -930,6 +932,80 @@ def analyze_market_csv(
             "error": str(e),
             "message": f"I couldn't analyze the market CSVs: {str(e)}",
         }
+    
+def capture_tradingview(symbol: str = "MNQ"):
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            screenshot_path = tmp.name
+
+        symbol_map = {
+            "MNQ": "CME_MINI:MNQ1!",
+            "NQ": "CME_MINI:NQ1!",
+            "MES": "CME_MINI:MES1!",
+            "ES": "CME_MINI:ES1!",
+        }
+
+        tv_symbol = symbol_map.get(symbol.upper(), symbol)
+        chart_url = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
+        profile_dir = os.path.join(BASE_DIR, "playwright_tradingview_profile")
+
+        with sync_playwright() as p:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=profile_dir,
+                headless=False,
+                viewport={"width": 1600, "height": 900},
+            )
+
+            page = context.pages[0] if context.pages else context.new_page()
+
+            page.goto(chart_url, wait_until="domcontentloaded", timeout=90000)
+            page.wait_for_timeout(10000)
+
+            page.screenshot(path=screenshot_path, full_page=False)
+
+            context.close()
+
+        return {
+            "success": True,
+            "symbol": symbol,
+            "tv_symbol": tv_symbol,
+            "screenshot_path": screenshot_path,
+            "message": f"TradingView screenshot captured for {tv_symbol}: {screenshot_path}",
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"TradingView capture failed: {e}",
+        }
+    
+def setup_tradingview_profile():
+    profile_dir = os.path.join(BASE_DIR, "playwright_tradingview_profile")
+    os.makedirs(profile_dir, exist_ok=True)
+
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=profile_dir,
+            headless=False,
+            viewport={"width": 1600, "height": 900},
+        )
+
+        page = context.pages[0] if context.pages else context.new_page()
+        page.goto("https://www.tradingview.com/chart/", wait_until="domcontentloaded")
+
+        print("\nTradingView browser is open.")
+        print("You have 5 minutes to log in and load your MNQ layout...")
+
+        page.wait_for_timeout(300000)  # 5 minutes
+
+        context.close()
+
+    return {
+        "success": True,
+        "message": "TradingView profile setup complete.",
+        "profile_dir": profile_dir,
+    }
 
 
 TOOLS = {
@@ -943,4 +1019,6 @@ TOOLS = {
     "create_reminder": create_reminder,
     "web_search": web_search,
     "analyze_market_csv": analyze_market_csv,
+    "capture_tradingview": capture_tradingview,
+    "setup_tradingview_profile": setup_tradingview_profile,
 }
