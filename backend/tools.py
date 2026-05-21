@@ -4,6 +4,7 @@ import os
 import requests
 import pandas as pd
 import tempfile
+import base64
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
@@ -14,20 +15,79 @@ BASE_DIR = os.path.abspath(".")
 MAX_OUTPUT_CHARS = 4000
 MIN_FVG_SIZE = 1.0
 DISPLACEMENT_MULTIPLIER = 1.5
+CSV_DATA_DIR = os.path.join(BASE_DIR, "csv_data")
+os.makedirs(CSV_DATA_DIR, exist_ok=True)
+
+SYMBOL_CONFIG = {
+    "MNQ": {
+        "tv_symbol": "CME_MINI:MNQ1!",
+        "csv_root": "CME_MINI_MNQ1!",
+        "csv_prefix": "MNQ",
+    },
+    "NQ": {
+        "tv_symbol": "CME_MINI:NQ1!",
+        "csv_root": "CME_MINI_NQ1!",
+        "csv_prefix": "NQ",
+    },
+    "MES": {
+        "tv_symbol": "CME_MINI:MES1!",
+        "csv_root": "CME_MINI_MES1!",
+        "csv_prefix": "MES",
+    },
+    "ES": {
+        "tv_symbol": "CME_MINI:ES1!",
+        "csv_root": "CME_MINI_ES1!",
+        "csv_prefix": "ES",
+    },
+}
+
+TRADINGVIEW_TIMEFRAMES = {
+    "1M": "1",
+    "15M": "15",
+    "1H": "60",
+    "4H": "240",
+    "1D": "1D",
+}
+
+
+def get_symbol_config(symbol: str):
+    symbol = symbol.upper()
+
+    if symbol not in SYMBOL_CONFIG:
+        raise ValueError(
+            f"Unsupported symbol: {symbol}. Supported: {', '.join(SYMBOL_CONFIG.keys())}"
+        )
+
+    return SYMBOL_CONFIG[symbol]
 
 
 def safe_path(path: str):
-    full_path = os.path.abspath(os.path.join(BASE_DIR, path))
+    """
+    Resolve a CSV filename safely inside backend/csv_data.
 
-    if not full_path.startswith(BASE_DIR):
-        raise ValueError("Access denied: outside base directory")
+    Example:
+        safe_path("MNQ_15M.csv")
+        -> /Users/jadinrobinson/ai-assistant/backend/csv_data/MNQ_15M.csv
+    """
+    # Ensure the CSV data directory exists
+    os.makedirs(CSV_DATA_DIR, exist_ok=True)
+
+    # Build absolute path inside csv_data/
+    full_path = os.path.abspath(os.path.join(CSV_DATA_DIR, path))
+
+    # Prevent directory traversal attacks
+    if not full_path.startswith(os.path.abspath(CSV_DATA_DIR)):
+        raise ValueError("Access denied: outside csv_data directory")
 
     return full_path
 
 
 def read_file(path: str = ""):
     try:
-        full_path = safe_path(path)
+        full_path = os.path.abspath(os.path.join(BASE_DIR, path))
+
+        if not full_path.startswith(BASE_DIR):
+            raise ValueError("Access denied: outside base directory")
 
         with open(full_path, "r") as f:
             content = f.read()
@@ -44,7 +104,10 @@ def read_file(path: str = ""):
 
 def write_file(path: str = "", content: str = "", mode: str = "w"):
     try:
-        full_path = safe_path(path)
+        full_path = os.path.abspath(os.path.join(BASE_DIR, path))
+
+        if not full_path.startswith(BASE_DIR):
+            raise ValueError("Access denied: outside base directory")
 
         with open(full_path, mode) as f:
             f.write(content)
@@ -277,6 +340,30 @@ def load_market_csv(path: str):
         df = df.sort_values("time")
 
     return df
+
+def resolve_market_csv(symbol: str, timeframe: str):
+    symbol = symbol.upper()
+    timeframe = timeframe.upper()
+
+    config = get_symbol_config(symbol)
+
+    clean_name = f"{config['csv_prefix']}_{timeframe}.csv"
+    tv_tf = TRADINGVIEW_TIMEFRAMES.get(timeframe)
+
+    possible_names = [clean_name]
+
+    if tv_tf:
+        possible_names.append(f"{config['csv_root']}, {tv_tf}.csv")
+        possible_names.append(f"{config['csv_root']},{tv_tf}.csv")
+
+    for name in possible_names:
+        full_path = safe_path(name)
+        if os.path.exists(full_path):
+            return name
+
+    raise FileNotFoundError(
+        f"No CSV found for {symbol} {timeframe}. Tried: {possible_names}"
+    )
 
 
 def analyze_dataframe(df):
@@ -689,88 +776,79 @@ def analyze_market_csv(
     symbol: str = ""
 ):
     try:
-        daily_df = load_market_csv(daily) if daily else None
-        h4_df = load_market_csv(h4) if h4 else None
+        symbol = symbol.upper() if symbol else "MNQ"
+
+        # Auto-resolve CSV names if paths were not provided.
+        # Supports both:
+        # MNQ_15M.csv
+        # CME_MINI_MNQ1!, 15.csv
+        daily = daily or resolve_market_csv(symbol, "1D")
+        h4 = h4 or resolve_market_csv(symbol, "4H")
+        htf = htf or resolve_market_csv(symbol, "1H")
+        mtf = mtf or resolve_market_csv(symbol, "15M")
+        ltf = ltf or resolve_market_csv(symbol, "1M")
+
+        daily_df = load_market_csv(daily)
+        h4_df = load_market_csv(h4)
         htf_df = load_market_csv(htf)
         mtf_df = load_market_csv(mtf)
         ltf_df = load_market_csv(ltf)
 
-        daily_analysis = analyze_dataframe(daily_df) if daily_df is not None else None
-        h4_analysis = analyze_dataframe(h4_df) if h4_df is not None else None
+        daily_analysis = analyze_dataframe(daily_df)
+        h4_analysis = analyze_dataframe(h4_df)
         htf_analysis = analyze_dataframe(htf_df)
         mtf_analysis = analyze_dataframe(mtf_df)
         ltf_analysis = analyze_dataframe(ltf_df)
 
         current_price = ltf_analysis["current_price"]
 
-        zones_by_timeframe = {}
-
-        if daily_analysis:
-            zones_by_timeframe["1D"] = (
+        zones_by_timeframe = {
+            "1D": (
                 daily_analysis.get("bullish_fvgs", [])
                 + daily_analysis.get("bearish_fvgs", [])
-            )
-
-        if h4_analysis:
-            zones_by_timeframe["4H"] = (
+            ),
+            "4H": (
                 h4_analysis.get("bullish_fvgs", [])
                 + h4_analysis.get("bearish_fvgs", [])
-            )
-
-        zones_by_timeframe["1H"] = (
-            htf_analysis.get("bullish_fvgs", [])
-            + htf_analysis.get("bearish_fvgs", [])
-        )
-
-        zones_by_timeframe["15M"] = (
-            mtf_analysis.get("bullish_fvgs", [])
-            + mtf_analysis.get("bearish_fvgs", [])
-        )
-
-        zones_by_timeframe["1M"] = (
-            ltf_analysis.get("bullish_fvgs", [])
-            + ltf_analysis.get("bearish_fvgs", [])
-        )
+            ),
+            "1H": (
+                htf_analysis.get("bullish_fvgs", [])
+                + htf_analysis.get("bearish_fvgs", [])
+            ),
+            "15M": (
+                mtf_analysis.get("bullish_fvgs", [])
+                + mtf_analysis.get("bearish_fvgs", [])
+            ),
+            "1M": (
+                ltf_analysis.get("bullish_fvgs", [])
+                + ltf_analysis.get("bearish_fvgs", [])
+            ),
+        }
 
         zone_ranking = rank_fvg_zones(
             current_price=current_price,
             zones_by_timeframe=zones_by_timeframe,
         )
 
-        # Bias hierarchy:
-        # Daily > 4H > 1H. If higher TF exists, use it for context.
-        if daily_analysis:
-            context_bias = daily_analysis["bias"]
-            context_timeframe = "1D"
-        elif h4_analysis:
-            context_bias = h4_analysis["bias"]
-            context_timeframe = "4H"
-        else:
-            context_bias = htf_analysis["bias"]
-            context_timeframe = "1H"
-
+        # Bias hierarchy: Daily > 4H > 1H.
+        context_bias = daily_analysis["bias"]
+        context_timeframe = "1D"
         execution_bias = ltf_analysis["bias"]
 
         if context_bias == "bullish":
             trade_direction = "long"
 
-            candidate_entries = (
-                zone_ranking.get("all_ranked_zones", [])
-                if zone_ranking
-                else mtf_analysis.get("bullish_fvgs", [])
-            )
-
             candidate_entries = [
-                zone for zone in candidate_entries
+                zone for zone in zone_ranking.get("all_ranked_zones", [])
                 if zone.get("type") == "bullish"
             ]
 
-            targets = list(dict.fromkeys([
+            targets = [
                 htf_analysis["recent_high_20"],
                 htf_analysis["recent_high_50"],
-                h4_analysis["recent_high_20"] if h4_analysis else None,
-                daily_analysis["recent_high_20"] if daily_analysis else None,
-            ]))
+                h4_analysis["recent_high_20"],
+                daily_analysis["recent_high_20"],
+            ]
 
             targets = sorted(set([target for target in targets if target is not None]))
 
@@ -781,25 +859,22 @@ def analyze_market_csv(
         elif context_bias == "bearish":
             trade_direction = "short"
 
-            candidate_entries = (
-                zone_ranking.get("all_ranked_zones", [])
-                if zone_ranking
-                else mtf_analysis.get("bearish_fvgs", [])
-            )
-
             candidate_entries = [
-                zone for zone in candidate_entries
+                zone for zone in zone_ranking.get("all_ranked_zones", [])
                 if zone.get("type") == "bearish"
             ]
 
-            targets = list(dict.fromkeys([
+            targets = [
                 htf_analysis["recent_low_20"],
                 htf_analysis["recent_low_50"],
-                h4_analysis["recent_low_20"] if h4_analysis else None,
-                daily_analysis["recent_low_20"] if daily_analysis else None,
-            ]))
+                h4_analysis["recent_low_20"],
+                daily_analysis["recent_low_20"],
+            ]
 
-            targets = sorted(set([target for target in targets if target is not None]))
+            targets = sorted(
+                set([target for target in targets if target is not None]),
+                reverse=True,
+            )
 
             invalidation = (
                 "Above the active bearish FVG or above the liquidity sweep high."
@@ -834,6 +909,14 @@ def analyze_market_csv(
             "success": True,
             "symbol": symbol,
 
+            "files_used": {
+                "daily": daily,
+                "h4": h4,
+                "htf": htf,
+                "mtf": mtf,
+                "ltf": ltf,
+            },
+
             "context": {
                 "bias_timeframe": context_timeframe,
                 "bias": context_bias,
@@ -844,12 +927,12 @@ def analyze_market_csv(
             "daily": {
                 "timeframe": "1D",
                 **daily_analysis,
-            } if daily_analysis else None,
+            },
 
             "h4": {
                 "timeframe": "4H",
                 **h4_analysis,
-            } if h4_analysis else None,
+            },
 
             "htf": {
                 "timeframe": "1H",
@@ -935,17 +1018,24 @@ def analyze_market_csv(
     
 def capture_tradingview(symbol: str = "MNQ"):
     try:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            screenshot_path = tmp.name
+        screenshots_dir = os.path.join(
+            BASE_DIR,
+            "pictures",
+            "tradingview_screenshots",
+        )
+        os.makedirs(screenshots_dir, exist_ok=True)
 
-        symbol_map = {
-            "MNQ": "CME_MINI:MNQ1!",
-            "NQ": "CME_MINI:NQ1!",
-            "MES": "CME_MINI:MES1!",
-            "ES": "CME_MINI:ES1!",
-        }
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
-        tv_symbol = symbol_map.get(symbol.upper(), symbol)
+        screenshot_path = os.path.join(
+            screenshots_dir,
+            f"{symbol.upper()}_{timestamp}.png",
+        )
+
+        symbol = symbol.upper()
+        config = get_symbol_config(symbol)
+        tv_symbol = config["tv_symbol"]
+
         chart_url = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
         profile_dir = os.path.join(BASE_DIR, "playwright_tradingview_profile")
 
@@ -958,10 +1048,14 @@ def capture_tradingview(symbol: str = "MNQ"):
 
             page = context.pages[0] if context.pages else context.new_page()
 
-            page.goto(chart_url, wait_until="domcontentloaded", timeout=90000)
-            page.wait_for_timeout(10000)
+            # page.goto(chart_url, wait_until="domcontentloaded", timeout=90000)
+            # page.wait_for_timeout(10000)
 
-            page.screenshot(path=screenshot_path, full_page=False)
+            page.goto("https://www.tradingview.com/chart/", wait_until="domcontentloaded")
+            page.wait_for_timeout(15000)
+            page.screenshot(path=screenshot_path)
+
+            # page.screenshot(path=screenshot_path, full_page=False)
 
             context.close()
 
@@ -1007,6 +1101,166 @@ def setup_tradingview_profile():
         "profile_dir": profile_dir,
     }
 
+def analyze_tradingview(symbol: str = "MNQ", prompt: str = ""):
+    try:
+        symbol = symbol.upper()
+
+        capture_result = capture_tradingview(symbol)
+
+        if not capture_result.get("success"):
+            return capture_result
+
+        screenshot_path = capture_result["screenshot_path"]
+
+        with open(screenshot_path, "rb") as image_file:
+            image_base64 = base64.b64encode(image_file.read()).decode("utf-8")
+
+        vision_prompt = f"""
+        You are Jadin's trading assistant.
+
+        Analyze this TradingView screenshot using Jadin's ICT-based trading model.
+
+        Jadin's model:
+        - Daily / 4H / 1H = higher-timeframe context
+        - 15M = setup and refinement
+        - 1M = execution trigger
+        - Do not use VWAP
+        - Do not use 5M unless Jadin explicitly asks
+        - Do not claim certainty
+
+        Critical visual rules:
+        - User-drawn boxes, rectangles, horizontal lines, arrows, labels, and shaded zones are HIGH PRIORITY.
+        - Treat visible white/colored rectangles as marked FVGs, supply/demand, or reaction zones.
+        - If the user drew a box, mention it even if the label is unclear.
+        - Do not ignore drawn FVG boxes.
+        - Do not invent exact levels unless the price scale makes them readable.
+        - If exact box boundaries are not readable, describe the zone approximately using nearby visible price labels.
+        - Only use levels visible in the screenshot.
+        - If a level or timeframe is not visible, say it is missing.
+        - Do not invent PDH/PDL/session highs/lows unless labeled or obvious.
+        - Do not call 1M a higher timeframe.
+        - MSS means Market Structure Shift.
+        - BOS means Break of Structure.
+
+        TradingView UI rules:
+        - Ignore bid/ask boxes labeled BUY and SELL. Do not treat them as trade orders or strategy signals.
+        - Do not treat the watchlist, right sidebar, news panel, or order buttons as chart analysis.
+        - Price labels on the right axis are reference prices only. Use them to estimate levels, not as independent signals.
+        - If a label says PDH, PDL, New York High/Low, London High/Low, Asia High/Low, 1H FVG, 4H FVG, or 15M FVG, preserve that label exactly.
+        - If a labeled level is above current price, treat it as liquidity/resistance above.
+        - If a labeled level is below current price, treat it as liquidity/support below.
+        - Never call bid/ask boxes “buy order” or “sell order.”
+
+        Classification rules:
+        - A horizontal line with a label like PDH, PDL, PWH, PWL, New York High/Low, Asia High/Low, or London High/Low is NOT an FVG.
+        - Classify those as liquidity/reference levels.
+        - Only classify something as an FVG if it is explicitly labeled FVG or drawn as a box/rectangle around an imbalance area.
+        - Do not list every price label as an FVG.
+
+        Structural interpretation rules:
+        - If price shows strong displacement followed by consolidation above bullish FVGs, bias is bullish unless those FVGs fail.
+        - If multiple bullish FVGs are stacked beneath price, treat them as layered support.
+        - If price is consolidating inside the highest bullish FVG after a strong impulse, interpret this as bullish continuation until invalidated.
+        - If price accepts below the highest bullish FVG, shift focus to the next lower bullish FVG.
+        - If price rejects from a bearish FVG and fails to reclaim it, bias is bearish.
+
+        Zone priority rules:
+        1. User-labeled FVGs and marked boxes
+        2. PDH, PDL, PWH, PWL
+        3. Session highs/lows
+        4. Higher-timeframe FVGs
+        5. Lower-timeframe execution zones
+
+        FVG priority:
+        - Labeled FVGs override your own guesses.
+        - If the chart has labels such as "1H FVG", "4H FVG", or "15min FVG", list those first.
+        - Do not relabel a marked bullish FVG as supply unless price is clearly rejecting from it.
+
+        Trade plan rules:
+        - Always identify the active zone currently interacting with price.
+        - Always identify the next backup zone if the active zone fails.
+        - Always state what confirms continuation.
+        - Always state what invalidates the setup.
+        - Use Jadin's terminology: sweep -> reclaim -> MSS/BOS -> BRTC.
+
+        Response format:
+
+        ## Chart Read
+        - Visible timeframe:
+        - Current price area:
+        - Immediate bias:
+
+        ## User-Marked Zones
+        - List every visible drawn box/zone.
+        - Estimate the zone using visible price scale if needed.
+        - State the likely role: FVG, reaction zone, liquidity, support/resistance, or unclear.
+
+        ## Visible Levels To Mark
+        - List visible horizontal levels and labeled zones only.
+
+        ## FVG / Imbalance Read
+        - Prioritize user-marked FVG boxes first.
+        - Then mention any obvious unmarked imbalance.
+        - If no clear FVG is visible, say so.
+
+        ## Liquidity
+        - Liquidity above:
+        - Liquidity below:
+
+        ## Bullish Plan
+        - If/then conditions.
+        - Require sweep/reclaim/MSS/BOS/BRTC confirmation.
+
+        ## Bearish Plan
+        - If/then conditions.
+        - Explain failure scenario.
+
+        ## Invalidation
+        - What invalidates the long idea.
+        - What invalidates the short idea.
+
+        ## Missing Context
+        - State what cannot be confirmed from the screenshot alone.
+
+        ## Bottom Line
+        - One concise trading takeaway.
+
+        User question:
+        {prompt or "Analyze the current TradingView chart setup."}
+        """
+
+        response = requests.post(
+            os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate"),
+            json={
+                "model": os.getenv("VISION_MODEL", "qwen2.5vl:7b"),
+                "prompt": vision_prompt,
+                "images": [image_base64],
+                "stream": False,
+                "think": False,
+            },
+            timeout=180,
+        )
+
+        response.raise_for_status()
+        data = response.json()
+
+        message = data.get("response", "").strip()
+
+        return {
+            "success": True,
+            "symbol": symbol,
+            "model": os.getenv("VISION_MODEL", "qwen2.5vl:7b"),
+            "screenshot_path": screenshot_path,
+            "message": message + f"\n\nScreenshot saved: `{screenshot_path}`",
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"TradingView analysis failed: {e}",
+        }
+
 
 TOOLS = {
     "get_time": get_time,
@@ -1021,4 +1275,5 @@ TOOLS = {
     "analyze_market_csv": analyze_market_csv,
     "capture_tradingview": capture_tradingview,
     "setup_tradingview_profile": setup_tradingview_profile,
+    "analyze_tradingview": analyze_tradingview,
 }

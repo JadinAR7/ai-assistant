@@ -34,6 +34,7 @@ export default function Home() {
   const abortRef = useRef<AbortController | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const [toolMode, setToolMode] = useState("auto");
+  const [attachedFile, setAttachedFile] = useState<File | null>(null);
 
 
   useEffect(() => {
@@ -47,12 +48,12 @@ export default function Home() {
   async function sendMessage(messageText?: string) {
     const text = messageText ?? input;
 
-    if (!text.trim() || loading) return;
+    if ((!text.trim() && !attachedFile) || loading) return;
 
     const userMessage: Message = {
       id: generateId(),
       role: "user",
-      content: text,
+      content: text || `Analyze attached image: ${attachedFile?.name}`,
     };
 
     setMessages((prev) => [...prev, userMessage]);
@@ -63,6 +64,37 @@ export default function Home() {
     abortRef.current = controller;
 
     try {
+      if (attachedFile) {
+        const formData = new FormData();
+        formData.append("file", attachedFile);
+        formData.append(
+          "prompt",
+          text || "Analyze this chart using Jadin's ICT trading model."
+        );
+
+        const res = await fetch(`${API_BASE}/analyze-image`, {
+          method: "POST",
+          body: formData,
+          signal: controller.signal,
+        });
+
+        if (!res.ok) throw new Error("Image analysis failed");
+
+        const data = await res.json();
+
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: generateId(),
+            role: "assistant",
+            content: data.message || "No image analysis returned.",
+          },
+        ]);
+
+        setAttachedFile(null);
+        return;
+      }
+
       const res = await fetch(`${API_BASE}/chat`, {
         method: "POST",
         headers: {
@@ -95,7 +127,9 @@ export default function Home() {
         {
           id: generateId(),
           role: "assistant",
-          content: "Backend connection failed. Check FastAPI.",
+          content: attachedFile
+            ? "Image analysis failed. Check FastAPI/Ollama vision model."
+            : "Backend connection failed. Check FastAPI.",
           error: true,
           retryText: text,
         },
@@ -163,6 +197,13 @@ export default function Home() {
   }
 
   async function handleFileUpload(file: File) {
+    const isImage =
+      file.type.startsWith("image/") ||
+      file.name.endsWith(".png") ||
+      file.name.endsWith(".jpg") ||
+      file.name.endsWith(".jpeg") ||
+      file.name.endsWith(".webp");
+
     const isTextFile =
       file.type.startsWith("text/") ||
       file.name.endsWith(".py") ||
@@ -173,21 +214,25 @@ export default function Home() {
       file.name.endsWith(".md") ||
       file.name.endsWith(".txt");
 
-    if (!isTextFile) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: generateId(),
-          role: "assistant",
-          content: `Attachment "${file.name}" was selected, but image/PDF upload is not wired yet. Text/code files work right now.`,
-        },
-      ]);
+    if (isImage) {
+      setAttachedFile(file);
       return;
     }
 
-    const text = await file.text();
+    if (isTextFile) {
+      const text = await file.text();
+      setInput(`Attached file: ${file.name}\n\n${text.slice(0, 4000)}`);
+      return;
+    }
 
-    setInput(`Attached file: ${file.name}\n\n${text.slice(0, 4000)}`);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: generateId(),
+        role: "assistant",
+        content: `Attachment "${file.name}" is not supported yet.`,
+      },
+    ]);
   }
 
   return (
@@ -236,7 +281,14 @@ export default function Home() {
                 )}
               </div>
 
-                <div className="mt-2 flex gap-2 opacity-70">
+                <div className="mt-2 flex gap-3 opacity-70">
+                  <button
+                    onClick={() => navigator.clipboard.writeText(msg.content)}
+                    className="text-xs text-neutral-400 underline underline-offset-4 hover:text-white"
+                  >
+                    Copy
+                  </button>
+
                   {msg.error && msg.retryText && (
                     <button
                       onClick={() => sendMessage(msg.retryText)}
@@ -279,6 +331,21 @@ export default function Home() {
 
       <footer className="fixed bottom-0 left-0 right-0 border-t border-white/10 bg-neutral-950/90 backdrop-blur">
         <div className="mx-auto max-w-3xl px-4 py-4">
+          {attachedFile && (
+            <div className="mb-2 flex items-center justify-between rounded-xl border border-white/10 bg-neutral-900 px-3 py-2 text-xs text-neutral-300">
+              <span className="truncate">
+                Attached: {attachedFile.name}
+              </span>
+
+              <button
+                type="button"
+                onClick={() => setAttachedFile(null)}
+                className="ml-3 text-neutral-400 underline underline-offset-4 hover:text-white"
+              >
+                Remove
+              </button>
+            </div>
+          )}
           <div className="flex gap-2 rounded-2xl border border-white/10 bg-neutral-900 p-2 shadow-2xl">
             <button
               type="button"
@@ -295,7 +362,13 @@ export default function Home() {
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];
-                if (file) handleFileUpload(file);
+
+                if (file) {
+                  handleFileUpload(file);
+                }
+
+                // Clear the input so selecting the same file again will trigger onChange.
+                e.currentTarget.value = "";
               }}
             />
 
@@ -306,6 +379,7 @@ export default function Home() {
             >
               <option value="auto">Auto</option>
               <option value="market_csv">Market CSV</option>
+              <option value="analyze_tradingview">TradingView</option>
             </select>
 
             <textarea

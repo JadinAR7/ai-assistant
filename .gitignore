@@ -16,6 +16,7 @@ frontend/.env*
 
 # Market CSVs
 backend/*.csv
+backend/csv_data/
 
 # Virtual environments
 .venv/
