@@ -1963,11 +1963,30 @@ def _visual_marking_summary(
 
     def _normalize_uncertain_ltf_fvg_label(label: str, context_text: str) -> str:
         text = str(label or "").strip()
+        text_lower = text.lower()
 
         if not text:
             return text
 
-        if _is_ltf_fvg_label(text) and _has_htf_or_compressed_context(context_text):
+        # If vision clearly reads 15M, keep it. Do not downgrade it.
+        if any(token in text_lower for token in ["15min fvg", "15m fvg", "15 min fvg"]):
+            return "15min FVG"
+
+        # If vision reads smaller LTF FVG on a compressed HTF/level-heavy view,
+        # avoid false precision instead of guessing the timeframe.
+        suspicious_ltf = any(
+            token in text_lower
+            for token in [
+                "1min fvg",
+                "1m fvg",
+                "3min fvg",
+                "3m fvg",
+                "5min fvg",
+                "5m fvg",
+            ]
+        )
+
+        if suspicious_ltf and _has_htf_or_compressed_context(context_text):
             return "LTF FVG label visible, exact timeframe unclear from this view"
 
         return text
@@ -2130,10 +2149,25 @@ def _visual_marking_summary(
         low = box.get("approx_low")
         high = box.get("approx_high")
 
+        box_size = None
+
+        if low is not None and high is not None:
+            try:
+                box_size = abs(float(high) - float(low))
+            except (TypeError, ValueError):
+                box_size = None
+
         label = _normalize_uncertain_ltf_fvg_label(
             raw_label,
             pre_box_visual_text,
         )
+
+        label_lower = label.lower()
+
+        # Ignore tiny unlabeled boxes/noise. Real FVG zones should either be labeled
+        # or have enough price range to matter visually.
+        if box_size is not None and box_size <= 2 and "fvg" not in label_lower:
+            continue
 
         if not label or _is_noise_label(label):
             continue
@@ -2205,9 +2239,18 @@ def _visual_marking_summary(
             distance = _zone_distance(active_zone, current_price)
             relation = active_zone.get("relation_to_price", "away from price")
 
+            if relation == "below_market":
+                relation_text = "above the active computed zone"
+            elif relation == "overhead":
+                relation_text = "below the active computed zone"
+            elif relation == "inside":
+                relation_text = "inside the active computed zone"
+            else:
+                relation_text = f"from the active computed zone ({relation})"
+
             if distance is not None:
                 parts.append(
-                    f"Current price is {_fmt_price(distance)} points from the active computed zone ({relation})."
+                    f"Current price is {_fmt_price(distance)} points {relation_text}."
                 )
 
     # -------------------------
