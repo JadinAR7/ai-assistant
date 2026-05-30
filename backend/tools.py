@@ -2149,27 +2149,46 @@ def _visual_marking_summary(
         low = box.get("approx_low")
         high = box.get("approx_high")
 
-        box_size = None
-
-        if low is not None and high is not None:
-            try:
-                box_size = abs(float(high) - float(low))
-            except (TypeError, ValueError):
-                box_size = None
-
         label = _normalize_uncertain_ltf_fvg_label(
             raw_label,
             pre_box_visual_text,
         )
 
-        label_lower = label.lower()
-
-        # Ignore tiny unlabeled boxes/noise. Real FVG zones should either be labeled
-        # or have enough price range to matter visually.
-        if box_size is not None and box_size <= 2 and "fvg" not in label_lower:
+        if not label or _is_noise_label(label):
             continue
 
-        if not label or _is_noise_label(label):
+        label_lower = label.lower()
+
+        is_generic_box = label_lower in [
+            "marked box",
+            "box",
+            "marked zone",
+            "visual box",
+            "drawn box",
+            "unlabeled box",
+            "unlabeled zone",
+        ]
+
+        is_meaningful_zone = any(
+            token in label_lower
+            for token in [
+                "fvg",
+                "pdh",
+                "pdnyh",
+                "pwh",
+                "previous week",
+                "asia",
+                "london",
+                "tokyo",
+                "new york",
+                "high",
+                "low",
+            ]
+        )
+
+        # If vision only sees a generic box with no useful label,
+        # ignore it. This avoids treating empty price space as a real zone.
+        if is_generic_box and not is_meaningful_zone:
             continue
 
         if low is not None and high is not None and low != high:
@@ -2329,17 +2348,23 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
     else:
         bias_line = f"HTF and execution are aligned {htf_bias}."
 
-    scenario_up = (
-        f"Upside continuation requires reclaim/acceptance through {_fmt_zone(overhead_zones[0])}."
-        if overhead_zones
-        else "Upside continuation requires acceptance above the nearest overhead level."
-    )
+    if overhead_zones:
+        scenario_up = (
+            f"Upside continuation requires reclaim/acceptance through {_fmt_zone(overhead_zones[0])}."
+        )
+    else:
+        upside_refs = _fmt_targets(targets.get("above", []), 2)
+        scenario_up = (
+            f"Upside continuation requires holding above the current range/PDH area and delivery toward {upside_refs}."
+            if targets.get("above")
+            else "Upside continuation requires holding above the current range and forming fresh bullish structure."
+        )
 
     first_below_target = _fmt_targets(targets.get("below", []), 1)
     scenario_down = (
-        f"Downside continuation requires rejection from overhead or loss of {first_below_target}."
+        f"Downside continuation requires failure to hold the current range/PDH area and rotation toward {first_below_target}."
         if targets.get("below")
-        else "Downside continuation requires rejection from overhead and fresh downside structure."
+        else "Downside continuation requires rejection from the current range and fresh bearish structure."
     )
 
     lines = [
