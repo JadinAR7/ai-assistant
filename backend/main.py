@@ -7,9 +7,11 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-from tools import TOOLS
+
+from tools import TOOLS, analyze_uploaded_chart_image
 from database import get_connection, log_tool
 from database import init_db, save_message, get_recent_messages, clear_messages
+
 
 load_dotenv()
 
@@ -30,12 +32,16 @@ app.add_middleware(
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
+VISION_MODEL = os.getenv("VISION_MODEL", "qwen2.5vl:7b")
+
 MAX_HISTORY_MESSAGES = 20
+SUPPORTED_SYMBOLS = ["MNQ", "MES", "NQ", "ES"]
+
 
 SYSTEM_MESSAGE = """
 You are Jadin's AI assistant.
 
-Your name is "Helix", and you are a powerful AI designed to assist Jadin with a wide range of tasks, including trading analysis, general questions, and more.
+Your name is "Helix", and you are a powerful AI designed to assist Jadin with trading analysis, general questions, and automation.
 
 You have access to tools.
 
@@ -47,14 +53,17 @@ TOOL: tool_name key=value
 
 Use underscores instead of spaces in tool argument values.
 
-Example:
-TOOL: echo text=hello_world
-
 Available tools:
 
 - get_time: returns the current system time
 
+Example:
+TOOL: get_time
+
 - echo: repeats provided text
+
+Example:
+TOOL: echo text=hello_world
 
 - run_command: runs safe allowlisted local commands
 
@@ -112,7 +121,7 @@ Examples:
 TOOL: capture_tradingview symbol=MNQ
 TOOL: capture_tradingview symbol=MES
 
-- analyze_tradingview: captures the live TradingView chart and analyzes it using the vision model
+- refresh_market_csvs: tries to export fresh TradingView CSVs for 1D, 4H, 1H, 15M, and 1M
 
 Supported symbols:
 - MNQ
@@ -121,8 +130,26 @@ Supported symbols:
 - ES
 
 Examples:
-TOOL: analyze_tradingview symbol=MNQ
-TOOL: analyze_tradingview symbol=ES
+TOOL: refresh_market_csvs symbol=MNQ
+TOOL: refresh_market_csvs symbol=MES
+
+Important:
+- TradingView CSV export automation may fail if the UI changes or export requires manual action.
+- If refresh_market_csvs fails, tell Jadin to manually export CSVs into backend/csv_data.
+
+Expected CSV names:
+- SYMBOL_1D.csv
+- SYMBOL_4H.csv
+- SYMBOL_1H.csv
+- SYMBOL_15M.csv
+- SYMBOL_1M.csv
+
+Example:
+- MNQ_1D.csv
+- MNQ_4H.csv
+- MNQ_1H.csv
+- MNQ_15M.csv
+- MNQ_1M.csv
 
 - analyze_market_csv: analyzes TradingView CSV data using Jadin's ICT-based trading model
 
@@ -141,7 +168,26 @@ TOOL: analyze_market_csv symbol=MES
 TOOL: analyze_market_csv symbol=NQ
 TOOL: analyze_market_csv symbol=ES
 
-When using analyze_market_csv, explain the market using Jadin's ICT-based trading model.
+- analyze_tradingview: captures the live TradingView chart, extracts visual markings, analyzes CSV data, then merges both into one market read
+
+Supported symbols:
+- MNQ
+- MES
+- NQ
+- ES
+
+Examples:
+TOOL: analyze_tradingview symbol=MNQ
+TOOL: analyze_tradingview symbol=ES
+
+Trading architecture:
+- CSV data is the source of truth for current price, FVGs, levels, targets, and structure.
+- Screenshot/vision is only for visible user markings, drawn boxes, labels, and chart context.
+- If CSV and screenshot disagree numerically, trust CSV.
+- The vision model should not be treated as the final analyst.
+- The text model writes the final narrative after CSV + vision are merged.
+
+When using analyze_market_csv or analyze_tradingview, explain the market using Jadin's ICT-based trading model.
 
 Analyze:
 - Higher-timeframe bias
@@ -174,11 +220,14 @@ Rules for market analysis:
 - Do not claim certainty.
 - Do not tell Jadin to enter immediately without confirmation.
 - Never use read_file for CSV market analysis. Always use analyze_market_csv.
-- If the user asks to analyze MNQ, MES, NQ, ES, or any futures chart and does not provide file names, use analyze_market_csv with the requested symbol.
+- If the user asks to analyze MNQ, MES, NQ, ES, or any futures chart and does not provide file names, use analyze_market_csv or analyze_tradingview with the requested symbol.
+- Use analyze_tradingview when the user wants screenshot markings included.
+- Use analyze_market_csv when the user wants pure data/structure analysis.
 - When discussing FVGs, always include the timeframe.
 - Prioritize higher timeframe zones first:
   1D > 4H > 1H > 15M > 1M.
 - 1M is for execution only.
+- Do not use VWAP.
 
 General rules:
 - When using web_search, include the source title and URL in your answer.
@@ -196,6 +245,16 @@ class ChatRequest(BaseModel):
     tool_mode: str = "auto"
 
 
+def detect_symbol(message: str, default: str = "ES") -> str:
+    message_upper = message.upper()
+
+    for candidate in ["MNQ", "MES", "NQ", "ES"]:
+        if candidate in message_upper:
+            return candidate
+
+    return default
+
+
 def build_prompt():
     messages = get_recent_messages(MAX_HISTORY_MESSAGES)
 
@@ -204,6 +263,73 @@ def build_prompt():
     )
 
     return SYSTEM_MESSAGE + "\n\n" + history_text + "\nAssistant:"
+
+
+def call_ollama(prompt: str, stream: bool = False, timeout: int = 120):
+    response = requests.post(
+        OLLAMA_URL,
+        json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": stream,
+            "think": False,
+        },
+        timeout=timeout,
+    )
+
+    response.raise_for_status()
+    return response
+
+
+def parse_tool_call(assistant_message: str):
+    if "TOOL:" not in assistant_message:
+        return None, {}
+
+    raw = assistant_message.split("TOOL:", 1)[1].strip().splitlines()[0]
+    parts = raw.split()
+
+    if not parts:
+        return None, {}
+
+    tool_name = parts[0]
+    args = {}
+
+    for part in parts[1:]:
+        if "=" in part:
+            key, value = part.split("=", 1)
+            args[key] = value
+
+    return tool_name, args
+
+
+def run_tool(tool_name: str, args: dict):
+    if tool_name not in TOOLS:
+        return {
+            "success": False,
+            "error": f"Unknown tool: {tool_name}",
+        }
+
+    return TOOLS[tool_name](**args)
+
+
+def build_followup_prompt(base_prompt: str, tool_result):
+    tool_message = (
+        tool_result.get("message")
+        if isinstance(tool_result, dict)
+        else None
+    )
+
+    return (
+        base_prompt
+        + f"\nTool Result: {tool_result}\n"
+        + (
+            f"Use this preformatted response as your answer:\n{tool_message}\n"
+            if tool_message
+            else "Use the Tool Result to answer the user normally. "
+        )
+        + "Do not call another tool. Do not output TOOL: again.\n"
+        + "Assistant:"
+    )
 
 
 @app.get("/")
@@ -217,13 +343,7 @@ def chat(request: ChatRequest):
         save_message("User", request.message)
 
         if request.tool_mode == "market_csv":
-            symbol = "MNQ"
-
-            message_upper = request.message.upper()
-            for candidate in ["MNQ", "MES", "NQ", "ES"]:
-                if candidate in message_upper:
-                    symbol = candidate
-                    break
+            symbol = detect_symbol(request.message, default="ES")
 
             tool_result = TOOLS["analyze_market_csv"](symbol=symbol)
 
@@ -234,7 +354,6 @@ def chat(request: ChatRequest):
             )
 
             assistant_message = tool_result.get("message", str(tool_result))
-
             save_message("Assistant", assistant_message)
 
             messages = get_recent_messages(MAX_HISTORY_MESSAGES)
@@ -246,75 +365,87 @@ def chat(request: ChatRequest):
                 "history_length": len(messages),
             }
 
+        if request.tool_mode == "refresh_market_csvs":
+            symbol = detect_symbol(request.message)
+
+            tool_result = TOOLS["refresh_market_csvs"](symbol=symbol)
+
+            log_tool(
+                "refresh_market_csvs",
+                str({"symbol": symbol}),
+                str(tool_result),
+            )
+
+            assistant_message = tool_result.get("message", str(tool_result))
+            save_message("Assistant", assistant_message)
+
+            messages = get_recent_messages(MAX_HISTORY_MESSAGES)
+
+            return {
+                "success": True,
+                "model": "tool:refresh_market_csvs",
+                "message": assistant_message,
+                "history_length": len(messages),
+            }
+
+        if request.tool_mode == "analyze_tradingview":
+            symbol = detect_symbol(request.message)
+
+            tool_result = TOOLS["analyze_tradingview"](
+                symbol=symbol,
+                prompt=request.message,
+            )
+
+            log_tool(
+                "analyze_tradingview",
+                str({"symbol": symbol, "prompt": request.message}),
+                str(tool_result),
+            )
+
+            assistant_message = tool_result.get("message", str(tool_result))
+            save_message("Assistant", assistant_message)
+
+            messages = get_recent_messages(MAX_HISTORY_MESSAGES)
+
+            return {
+                "success": True,
+                "model": "pipeline:vision+csv+narrator",
+                "message": assistant_message,
+                "history_length": len(messages),
+            }
+
         prompt = build_prompt()
 
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "think": False,
-            },
+        response = call_ollama(
+            prompt=prompt,
+            stream=False,
             timeout=120,
         )
 
-        response.raise_for_status()
         data = response.json()
-
         assistant_message = data.get("response", "").strip()
 
-        if "TOOL:" in assistant_message:
-            raw = assistant_message.split("TOOL:", 1)[1].strip().splitlines()[0]
+        tool_name, args = parse_tool_call(assistant_message)
 
-            parts = raw.split()
-            tool_name = parts[0]
+        if tool_name:
+            tool_result = run_tool(tool_name, args)
 
-            args = {}
+            log_tool(tool_name, str(args), str(tool_result))
+            save_message("Tool", f"{tool_name}: {tool_result}")
 
-            for part in parts[1:]:
-                if "=" in part:
-                    key, value = part.split("=", 1)
-                    args[key] = value
+            followup_prompt = build_followup_prompt(
+                base_prompt=prompt,
+                tool_result=tool_result,
+            )
 
-            if tool_name in TOOLS:
-                tool_result = TOOLS[tool_name](**args)
-                log_tool(tool_name, str(args), str(tool_result))
-                save_message("Tool", f"{tool_name}: {tool_result}")
+            response = call_ollama(
+                prompt=followup_prompt,
+                stream=False,
+                timeout=120,
+            )
 
-                tool_message = (
-                    tool_result.get("message")
-                    if isinstance(tool_result, dict)
-                    else None
-                )
-
-                followup_prompt = (
-                    prompt
-                    + f"\nTool Result: {tool_result}\n"
-                    + (
-                        f"Use this preformatted response as your answer:\n{tool_message}\n"
-                        if tool_message
-                        else "Use the Tool Result to answer the user normally. "
-                    )
-                    + "Do not call another tool. Do not output TOOL: again.\n"
-                    + "Assistant:"
-                )
-
-                response = requests.post(
-                    OLLAMA_URL,
-                    json={
-                        "model": OLLAMA_MODEL,
-                        "prompt": followup_prompt,
-                        "stream": False,
-                        "think": False,
-                    },
-                    timeout=120,
-                )
-
-                response.raise_for_status()
-                data = response.json()
-
-                assistant_message = data.get("response", "").strip()
+            data = response.json()
+            assistant_message = data.get("response", "").strip()
 
         save_message("Assistant", assistant_message)
 
@@ -379,145 +510,41 @@ def chat_stream(request: ChatRequest):
 async def analyze_image(
     file: UploadFile = File(...),
     prompt: str = Form("Analyze this chart using Jadin's ICT trading model."),
+    debug: bool = Form(False),
 ):
     try:
         image_bytes = await file.read()
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
-        vision_prompt = f"""
-        You are Jadin's trading assistant.
+        symbol = detect_symbol(prompt, default="ES")
 
-        Analyze the uploaded TradingView screenshot using Jadin's ICT-based trading model.
-
-        Jadin's model:
-        - Daily / 4H / 1H = higher-timeframe context
-        - 15M = setup and refinement
-        - 1M = execution trigger
-        - Do not use VWAP
-        - Do not use 5M unless Jadin explicitly asks
-        - Do not claim certainty
-
-        Critical visual rules:
-        - User-drawn boxes, rectangles, horizontal lines, arrows, labels, and shaded zones are HIGH PRIORITY.
-        - Treat visible white/colored rectangles as marked FVGs, supply/demand, or reaction zones.
-        - If the user drew a box, mention it even if the text label is unclear.
-        - Do not ignore drawn FVG boxes.
-        - Do not invent exact levels unless the price scale makes them readable.
-        - If exact box boundaries are not readable, describe the zone approximately using nearby visible price labels.
-        - Only use levels visible in the screenshot.
-        - If a level or timeframe is not visible, say it is missing.
-        - Do not invent PDH/PDL/session highs/lows unless labeled or obvious.
-        - Do not call 1M a higher timeframe.
-        - MSS means Market Structure Shift.
-        - BOS means Break of Structure.
-
-        TradingView UI rules:
-        - Ignore bid/ask boxes labeled BUY and SELL. Do not treat them as trade orders or strategy signals.
-        - Do not treat the watchlist, right sidebar, news panel, or order buttons as chart analysis.
-        - Price labels on the right axis are reference prices only. Use them to estimate levels, not as independent signals.
-        - If a label says PDH, PDL, PWH, PWL, New York High/Low, London High/Low, Asia High/Low, 1H FVG, 4H FVG, or 15M FVG, preserve that label exactly.
-        - If a labeled level is above current price, treat it as liquidity/resistance above.
-        - If a labeled level is below current price, treat it as liquidity/support below.
-        - Never call bid/ask boxes “buy order” or “sell order.”
-
-        Classification rules:
-        - A horizontal line with a label like PDH, PDL, PWH, PWL, New York High/Low, Asia High/Low, or London High/Low is NOT an FVG.
-        - Classify those as liquidity/reference levels.
-        - Only classify something as an FVG if it is explicitly labeled FVG or drawn as a box/rectangle around an imbalance area.
-        - Do not list every price label as an FVG.
-
-        Structural interpretation rules:
-        - If price shows strong displacement followed by consolidation above bullish FVGs, bias is bullish unless those FVGs fail.
-        - If multiple bullish FVGs are stacked beneath price, treat them as layered support.
-        - If price is consolidating inside the highest bullish FVG after a strong impulse, interpret this as bullish continuation until invalidated.
-        - If price accepts below the highest bullish FVG, shift focus to the next lower bullish FVG.
-        - If price rejects from a bearish FVG and fails to reclaim it, bias is bearish.
-
-        Zone priority rules:
-        1. User-labeled FVGs and marked boxes
-        2. PDH, PDL, PWH, PWL
-        3. Session highs/lows
-        4. Higher-timeframe FVGs
-        5. Lower-timeframe execution zones
-
-        Trade plan rules:
-        - Always identify the active zone currently interacting with price.
-        - Always identify the next backup zone if the active zone fails.
-        - Always state what confirms continuation.
-        - Always state what invalidates the setup.
-        - Use Jadin's terminology: sweep -> reclaim -> MSS/BOS -> BRTC.
-
-        Response format:
-
-        ## Chart Read
-        - Visible timeframe:
-        - Current price area:
-        - Immediate bias:
-
-        ## User-Marked Zones
-        - List every visible drawn box/zone.
-        - Estimate the zone using visible price scale if needed.
-        - State the likely role: FVG, reaction zone, liquidity, support/resistance, or unclear.
-
-        ## Visible Levels To Mark
-        - List visible horizontal levels and labeled zones only.
-
-        ## FVG / Imbalance Read
-        - Prioritize user-marked FVG boxes first.
-        - Then mention any obvious unmarked imbalance.
-        - If no clear FVG is visible, say so.
-
-        ## Liquidity
-        - Liquidity above:
-        - Liquidity below:
-
-        ## Bullish Plan
-        - If/then conditions.
-        - Require sweep/reclaim/MSS/BOS/BRTC confirmation.
-
-        ## Bearish Plan
-        - If/then conditions.
-        - Explain failure scenario.
-
-        ## Invalidation
-        - What invalidates the long idea.
-        - What invalidates the short idea.
-
-        ## Missing Context
-        - State what cannot be confirmed from the screenshot alone.
-
-        ## Bottom Line
-        - One concise trading takeaway.
-
-        User question:
-        {prompt}
-        """
-
-        response = requests.post(
-            os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate"),
-            json={
-                "model": os.getenv("VISION_MODEL", "qwen2.5vl:7b"),
-                "prompt": vision_prompt,
-                "images": [image_base64],
-                "stream": False,
-                "think": False,
-            },
-            timeout=180,
+        tool_result = analyze_uploaded_chart_image(
+            image_base64=image_base64,
+            prompt=prompt,
+            symbol=symbol,
         )
 
-        response.raise_for_status()
-        data = response.json()
-
-        message = data.get("response", "").strip()
+        message = tool_result.get("message", str(tool_result))
+        visual_extraction = tool_result.get("visual_extraction", {})
+        csv_analysis = tool_result.get("csv_analysis", {})
 
         save_message("User", f"[Image uploaded] {file.filename}: {prompt}")
         save_message("Assistant", message)
 
-        return {
-            "success": True,
-            "model": os.getenv("VISION_MODEL", "qwen2.5vl:7b"),
+        compact_response = {
+            "success": tool_result.get("success", False),
+            "model": "pipeline:vision+csv+deterministic",
+            "symbol": symbol,
             "message": message,
+            "vision_success": visual_extraction.get("success", False),
+            "vision_error": visual_extraction.get("error"),
+            "csv_success": csv_analysis.get("success", False),
         }
+
+        if debug:
+            compact_response["result"] = tool_result
+
+        return compact_response
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image analysis failed: {e}")
