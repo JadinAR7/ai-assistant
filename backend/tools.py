@@ -1891,6 +1891,17 @@ def _visual_marking_summary(
 
         return sessions
 
+    def _is_plain_price_label(text: str) -> bool:
+        cleaned = (
+            str(text)
+            .replace(",", "")
+            .replace(".", "")
+            .replace(" ", "")
+            .strip()
+        )
+
+        return cleaned.isdigit()
+
     def _is_noise_label(text: str) -> bool:
         text_lower = str(text).lower()
 
@@ -2189,6 +2200,11 @@ def _visual_marking_summary(
         # If vision only sees a generic box with no useful label,
         # ignore it. This avoids treating empty price space as a real zone.
         if is_generic_box and not is_meaningful_zone:
+            continue
+
+        # If vision labels a drawn box as only a raw price, ignore it.
+        # These are usually price-marker artifacts, not real marked zones.
+        if _is_plain_price_label(label):
             continue
 
         if low is not None and high is not None and low != high:
