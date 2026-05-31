@@ -15,6 +15,7 @@ CHAT_DB = Path.home() / "Library/Messages/chat.db"
 BACKEND_CHAT_URL = "http://127.0.0.1:8000/chat"
 BACKEND_SCAN_LATEST_URL = "http://127.0.0.1:8000/scan/latest"
 BACKEND_SCAN_FORCE_URL = "http://127.0.0.1:8000/scan/force"
+BACKEND_TTS_URL = "http://127.0.0.1:8000/tts/say"
 
 ALLOWED_SENDER = "jadinrobinson05@hotmail.com"
 
@@ -218,6 +219,21 @@ def force_mes_scan() -> str:
         f"({alert.get('severity', 'none')})"
     )
 
+def speak_text(text: str) -> str:
+    response = requests.post(
+        BACKEND_TTS_URL,
+        json={"text": text},
+        timeout=30,
+    )
+
+    response.raise_for_status()
+    data = response.json()
+
+    if data.get("success"):
+        return "Speaking now."
+
+    return data.get("message", "TTS failed.")
+
 
 # -------------------------
 # Command router
@@ -238,9 +254,30 @@ def route_message(text: str) -> str:
             "- What time is it?\n"
             "- What's the latest scan?\n"
             "- Scan MES\n"
+            "- Say Helix is online\n"
+            "- Speak market scan complete\n"
             "- Help\n\n"
             "You can also ask regular questions."
         )
+    
+    # -------------------------
+    # TTS intent
+    # -------------------------
+    if lower.startswith("say "):
+        text_to_speak = clean[4:].strip()
+
+        if not text_to_speak:
+            return "Tell me what to say. Example: say Helix is online."
+
+        return speak_text(text_to_speak)
+
+    if lower.startswith("speak "):
+        text_to_speak = clean[6:].strip()
+
+        if not text_to_speak:
+            return "Tell me what to speak. Example: speak Market scan complete."
+
+        return speak_text(text_to_speak)
 
     # -------------------------
     # Time intent
@@ -283,6 +320,8 @@ def route_message(text: str) -> str:
         return force_mes_scan()
 
     return ask_helix(clean)
+
+    
 
 
 # -------------------------

@@ -733,3 +733,42 @@ def get_tool_logs():
             for row in rows
         ],
     }
+
+# -------------------------
+# TTS endpoint
+# -------------------------
+class TTSRequest(BaseModel):
+    text: str
+
+
+@app.post("/tts/say")
+def tts_say(request: TTSRequest):
+    import subprocess
+
+    text = request.text.strip()
+
+    if not text:
+        return {
+            "success": False,
+            "message": "No text provided.",
+        }
+
+    # Keep it reasonable so the Mac doesn't start reading a dissertation.
+    if len(text) > 500:
+        text = text[:500] + "..."
+
+    try:
+        subprocess.Popen(
+            ["say", text],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        return {
+            "success": True,
+            "message": "TTS started.",
+            "spoken_text": text,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"TTS failed: {e}")
