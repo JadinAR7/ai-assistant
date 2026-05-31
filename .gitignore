@@ -2,9 +2,10 @@
 .DS_Store
 
 # Python
+__pycache__/
+*.py[cod]
+
 backend/.venv/
-backend/__pycache__/
-backend/*.pyc
 backend/.env
 backend/assistant.db
 backend/*.jsonl

@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from tools import TOOLS, analyze_uploaded_chart_image
 from database import get_connection, log_tool
 from database import init_db, save_message, get_recent_messages, clear_messages
+from orbit.database import init_orbit_db
+from orbit.routes import router as orbit_router
 
 
 # -------------------------
@@ -20,6 +22,8 @@ load_dotenv()
 
 app = FastAPI(title="Jadin AI Assistant Backend")
 init_db()
+init_orbit_db()
+app.include_router(orbit_router)
 
 
 # -------------------------
