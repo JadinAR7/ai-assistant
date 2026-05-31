@@ -78,12 +78,21 @@ export default function OrbitPage() {
             <h1 className="text-lg font-semibold">Planning Dashboard</h1>
           </div>
 
-          <Link
-            href="/"
-            className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
-          >
-            Helix
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/"
+              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+            >
+              Core
+            </Link>
+
+            <Link
+              href="/command-center"
+              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+            >
+              Command Center
+            </Link>
+          </div>
         </div>
       </header>
 
