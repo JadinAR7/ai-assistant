@@ -57,6 +57,13 @@ MILESTONES = [
     },
 ]
 
+READINESS_CATEGORIES = [
+    "Financial",
+    "Trading",
+    "Business",
+    "Personal",
+]
+
 
 def _get_major_event_id(cursor: Any, title: str) -> int | None:
     cursor.execute("SELECT id FROM major_events WHERE title = ? ORDER BY id LIMIT 1", (title,))
@@ -266,6 +273,36 @@ def _seed_inbox(cursor: Any, event_id: int) -> None:
     )
 
 
+def _seed_readiness_categories(cursor: Any, event_id: int) -> None:
+    for category_name in READINESS_CATEGORIES:
+        cursor.execute(
+            """
+            SELECT id
+            FROM readiness_categories
+            WHERE major_event_id = ? AND category_name = ?
+            ORDER BY id
+            LIMIT 1
+            """,
+            (event_id, category_name),
+        )
+        row = cursor.fetchone()
+
+        if row is None:
+            cursor.execute(
+                """
+                INSERT INTO readiness_categories (
+                    major_event_id,
+                    category_name,
+                    current_score,
+                    target_score,
+                    notes
+                )
+                VALUES (?, ?, 0, 100, NULL)
+                """,
+                (event_id, category_name),
+            )
+
+
 def seed() -> None:
     init_orbit_db()
 
@@ -275,6 +312,7 @@ def seed() -> None:
         event_id = _seed_major_event(cursor)
         _seed_milestones(cursor, event_id)
         _seed_inbox(cursor, event_id)
+        _seed_readiness_categories(cursor, event_id)
         conn.commit()
     finally:
         conn.close()

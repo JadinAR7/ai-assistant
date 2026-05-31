@@ -480,6 +480,9 @@ def _parse_optional_float(value: str | int | float | None, field_name: str) -> t
 
 
 def _parse_progress_percent(value: str | int | None) -> tuple[int | None, str | None]:
+    if isinstance(value, str):
+        value = value.strip().removesuffix("%")
+
     progress_percent, error = _parse_required_int(value, "progress_percent")
     if error:
         return None, error
@@ -923,6 +926,136 @@ def get_corporate_escape_status():
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def _get_corporate_escape_readiness_categories() -> tuple[dict | None, list[dict], str | None]:
+    event = _get_corporate_escape_event()
+    if event is None:
+        return None, [], "Corporate Escape major event not found."
+
+    categories = orbit_service.get_readiness_categories(event.get("id"))
+    return event, categories, None
+
+
+def get_corporate_escape_readiness():
+    try:
+        event, categories, error = _get_corporate_escape_readiness_categories()
+        if error:
+            return {"success": False, "error": error}
+
+        category_order = ["Financial", "Trading", "Business", "Personal"]
+        order_index = {name: index for index, name in enumerate(category_order)}
+        categories.sort(
+            key=lambda category: (
+                order_index.get(str(category.get("category_name")), len(order_index)),
+                str(category.get("category_name") or ""),
+            )
+        )
+
+        readiness = [
+            _orbit_summary(
+                category,
+                ["id", "category_name", "current_score", "target_score", "notes", "last_updated"],
+            )
+            for category in categories
+        ]
+
+        category_lines = "\n".join(
+            f"{category.get('category_name')}: "
+            f"{category.get('current_score')}% / {category.get('target_score')}%"
+            f"{' - ' + category.get('notes') if category.get('notes') else ''}"
+            for category in readiness
+        )
+
+        return {
+            "success": True,
+            "event_id": event.get("id"),
+            "title": "Corporate Escape Readiness",
+            "readiness": readiness,
+            "message": (
+                "Corporate Escape Readiness\n\n"
+                f"{category_lines if category_lines else 'No readiness categories found.'}"
+            ),
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Unable to read Corporate Escape readiness: {e}"}
+
+
+def update_readiness_category(
+    readiness_id: str | int | None = None,
+    category_name: str | None = None,
+    current_score: str | int | None = None,
+    target_score: str | int | None = None,
+    notes: str | None = None,
+):
+    parsed_readiness_id, error = _parse_optional_int(readiness_id, "readiness_id")
+    if error:
+        return {"success": False, "error": error}
+
+    if current_score is None and target_score is None and notes is None:
+        return {
+            "success": False,
+            "error": "Provide current_score, target_score, or notes to update readiness.",
+        }
+
+    payload = {}
+    if current_score is not None:
+        parsed_current_score, error = _parse_progress_percent(current_score)
+        if error:
+            return {"success": False, "error": error.replace("progress_percent", "current_score")}
+        payload["current_score"] = parsed_current_score
+
+    if target_score is not None:
+        parsed_target_score, error = _parse_progress_percent(target_score)
+        if error:
+            return {"success": False, "error": error.replace("progress_percent", "target_score")}
+        payload["target_score"] = parsed_target_score
+
+    if notes is not None:
+        payload["notes"] = _orbit_text(notes)
+
+    try:
+        if parsed_readiness_id is None:
+            search_name = _orbit_text(category_name)
+            if not search_name:
+                return {
+                    "success": False,
+                    "error": "Provide readiness_id or category_name to update readiness.",
+                }
+
+            _, categories, error = _get_corporate_escape_readiness_categories()
+            if error:
+                return {"success": False, "error": error}
+
+            normalized_search = search_name.casefold()
+            matches = [
+                category
+                for category in categories
+                if str(category.get("category_name") or "").casefold() == normalized_search
+            ]
+            if not matches:
+                return {
+                    "success": False,
+                    "error": f"No Corporate Escape readiness category matched '{search_name}'.",
+                }
+            parsed_readiness_id = matches[0].get("id")
+
+        category = orbit_service.update_readiness_category(parsed_readiness_id, payload)
+        if category is None:
+            return {
+                "success": False,
+                "error": f"Readiness category {parsed_readiness_id} not found.",
+            }
+
+        return {
+            "success": True,
+            "readiness_category": _orbit_summary(
+                category,
+                ["id", "category_name", "current_score", "target_score", "notes", "last_updated"],
+            ),
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Unable to update readiness category: {e}"}
 
 
 def _get_latest_orbit_reviews(limit: int = 3) -> list[dict]:
@@ -3807,6 +3940,8 @@ TOOLS = {
     "update_orbit_milestone_progress": update_orbit_milestone_progress,
     "update_orbit_major_event_progress": update_orbit_major_event_progress,
     "get_corporate_escape_status": get_corporate_escape_status,
+    "get_corporate_escape_readiness": get_corporate_escape_readiness,
+    "update_readiness_category": update_readiness_category,
     "generate_orbit_daily_summary": generate_orbit_daily_summary,
     "generate_orbit_focus": generate_orbit_focus,
 

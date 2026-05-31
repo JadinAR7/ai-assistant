@@ -261,6 +261,38 @@ Use get_corporate_escape_status when Jadin asks about:
 Example:
 TOOL: get_corporate_escape_status
 
+- get_corporate_escape_readiness: returns Corporate Escape readiness categories and manual scores
+
+Returns:
+- Financial
+- Trading
+- Business
+- Personal
+
+Use get_corporate_escape_readiness when Jadin asks to show Corporate Escape readiness.
+
+Example:
+User: Show Corporate Escape readiness.
+TOOL: get_corporate_escape_readiness
+
+- update_readiness_category: manually updates a Corporate Escape readiness category
+
+Inputs:
+- readiness_id optional
+- category_name optional
+- current_score optional, 0 through 100
+- target_score optional, 0 through 100
+- notes optional
+
+Rules:
+- Use underscores instead of spaces in category_name and notes values.
+- Use update_readiness_category when Jadin asks to manually update Financial, Trading, Business, or Personal readiness.
+- Do not calculate readiness automatically.
+
+Example:
+User: Update Trading readiness to 45%.
+TOOL: update_readiness_category category_name=Trading current_score=45
+
 - generate_orbit_daily_summary: summarizes Corporate Escape progress, completed tasks, open tasks, milestones, and recent reviews
 
 When responding after generate_orbit_daily_summary:

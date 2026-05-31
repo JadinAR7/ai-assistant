@@ -11,6 +11,8 @@ from .models import (
     Milestone,
     MilestoneCreate,
     MilestoneUpdate,
+    ReadinessCategory,
+    ReadinessCategoryUpdate,
     Review,
     ReviewCreate,
     Task,
@@ -170,3 +172,16 @@ def create_review(payload: ReviewCreate):
 @router.get("/reviews", response_model=list[Review])
 def list_reviews():
     return service.list_records("reviews")
+
+
+@router.get("/readiness", response_model=list[ReadinessCategory])
+def get_readiness_categories():
+    return service.get_readiness_categories()
+
+
+@router.patch("/readiness/{readiness_id}", response_model=ReadinessCategory)
+def update_readiness_category(readiness_id: int, payload: ReadinessCategoryUpdate):
+    record = service.update_readiness_category(readiness_id, payload)
+    if record is None:
+        raise _not_found("Readiness category", readiness_id)
+    return record

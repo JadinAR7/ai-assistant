@@ -124,3 +124,28 @@ class ReviewCreate(ReviewBase):
 class Review(ReviewBase):
     id: int
     created_at: datetime
+
+
+class ReadinessCategoryBase(BaseModel):
+    major_event_id: int
+    category_name: str
+    current_score: int = Field(default=0, ge=0, le=100)
+    target_score: int = Field(default=100, ge=0, le=100)
+    notes: Optional[str] = None
+
+
+class ReadinessCategoryCreate(ReadinessCategoryBase):
+    pass
+
+
+class ReadinessCategoryUpdate(BaseModel):
+    major_event_id: Optional[int] = None
+    category_name: Optional[str] = None
+    current_score: Optional[int] = Field(default=None, ge=0, le=100)
+    target_score: Optional[int] = Field(default=None, ge=0, le=100)
+    notes: Optional[str] = None
+
+
+class ReadinessCategory(ReadinessCategoryBase):
+    id: int
+    last_updated: datetime
