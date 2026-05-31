@@ -1,0 +1,160 @@
+from fastapi import APIRouter, HTTPException, status
+
+from . import service
+from .models import (
+    Goal,
+    GoalCreate,
+    GoalUpdate,
+    MajorEvent,
+    MajorEventCreate,
+    MajorEventUpdate,
+    Milestone,
+    MilestoneCreate,
+    MilestoneUpdate,
+    Task,
+    TaskCreate,
+    TaskUpdate,
+)
+
+
+router = APIRouter(prefix="/orbit", tags=["orbit"])
+
+
+@router.get("/health")
+def orbit_health_check():
+    return {"status": "orbit routes mounted"}
+
+
+def _not_found(name: str, record_id: int) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"{name} {record_id} not found.",
+    )
+
+
+@router.post("/major-events", response_model=MajorEvent, status_code=status.HTTP_201_CREATED)
+def create_major_event(payload: MajorEventCreate):
+    return service.create_major_event(payload)
+
+
+@router.get("/major-events", response_model=list[MajorEvent])
+def list_major_events():
+    return service.list_records("major_events")
+
+
+@router.get("/major-events/{event_id}", response_model=MajorEvent)
+def get_major_event(event_id: int):
+    record = service.get_record("major_events", event_id)
+    if record is None:
+        raise _not_found("Major event", event_id)
+    return record
+
+
+@router.patch("/major-events/{event_id}", response_model=MajorEvent)
+def update_major_event(event_id: int, payload: MajorEventUpdate):
+    record = service.update_major_event(event_id, payload)
+    if record is None:
+        raise _not_found("Major event", event_id)
+    return record
+
+
+@router.delete("/major-events/{event_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_major_event(event_id: int):
+    if not service.delete_record("major_events", event_id):
+        raise _not_found("Major event", event_id)
+
+
+@router.post("/milestones", response_model=Milestone, status_code=status.HTTP_201_CREATED)
+def create_milestone(payload: MilestoneCreate):
+    return service.create_milestone(payload)
+
+
+@router.get("/milestones", response_model=list[Milestone])
+def list_milestones():
+    return service.list_records("milestones")
+
+
+@router.get("/milestones/{milestone_id}", response_model=Milestone)
+def get_milestone(milestone_id: int):
+    record = service.get_record("milestones", milestone_id)
+    if record is None:
+        raise _not_found("Milestone", milestone_id)
+    return record
+
+
+@router.patch("/milestones/{milestone_id}", response_model=Milestone)
+def update_milestone(milestone_id: int, payload: MilestoneUpdate):
+    record = service.update_milestone(milestone_id, payload)
+    if record is None:
+        raise _not_found("Milestone", milestone_id)
+    return record
+
+
+@router.delete("/milestones/{milestone_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_milestone(milestone_id: int):
+    if not service.delete_record("milestones", milestone_id):
+        raise _not_found("Milestone", milestone_id)
+
+
+@router.post("/goals", response_model=Goal, status_code=status.HTTP_201_CREATED)
+def create_goal(payload: GoalCreate):
+    return service.create_goal(payload)
+
+
+@router.get("/goals", response_model=list[Goal])
+def list_goals():
+    return service.list_records("goals")
+
+
+@router.get("/goals/{goal_id}", response_model=Goal)
+def get_goal(goal_id: int):
+    record = service.get_record("goals", goal_id)
+    if record is None:
+        raise _not_found("Goal", goal_id)
+    return record
+
+
+@router.patch("/goals/{goal_id}", response_model=Goal)
+def update_goal(goal_id: int, payload: GoalUpdate):
+    record = service.update_goal(goal_id, payload)
+    if record is None:
+        raise _not_found("Goal", goal_id)
+    return record
+
+
+@router.delete("/goals/{goal_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_goal(goal_id: int):
+    if not service.delete_record("goals", goal_id):
+        raise _not_found("Goal", goal_id)
+
+
+@router.post("/tasks", response_model=Task, status_code=status.HTTP_201_CREATED)
+def create_task(payload: TaskCreate):
+    return service.create_task(payload)
+
+
+@router.get("/tasks", response_model=list[Task])
+def list_tasks():
+    return service.list_records("tasks")
+
+
+@router.get("/tasks/{task_id}", response_model=Task)
+def get_task(task_id: int):
+    record = service.get_record("tasks", task_id)
+    if record is None:
+        raise _not_found("Task", task_id)
+    return record
+
+
+@router.patch("/tasks/{task_id}", response_model=Task)
+def update_task(task_id: int, payload: TaskUpdate):
+    record = service.update_task(task_id, payload)
+    if record is None:
+        raise _not_found("Task", task_id)
+    return record
+
+
+@router.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_task(task_id: int):
+    if not service.delete_record("tasks", task_id):
+        raise _not_found("Task", task_id)
