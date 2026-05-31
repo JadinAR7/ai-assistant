@@ -613,6 +613,88 @@ def create_orbit_task(
         return {"success": False, "error": f"Unable to create Orbit task: {e}"}
 
 
+def _complete_orbit_task_record(task: dict) -> dict:
+    completed_at = datetime.now().isoformat()
+    updated_task = orbit_service.update_task(
+        task["id"],
+        {
+            "status": "completed",
+            "completed_at": completed_at,
+        },
+    )
+
+    if updated_task is None:
+        return {
+            "success": False,
+            "error": f"Orbit task {task['id']} could not be updated.",
+        }
+
+    return {
+        "success": True,
+        "task_id": updated_task.get("id"),
+        "title": updated_task.get("title"),
+        "status": updated_task.get("status"),
+        "completed_at": updated_task.get("completed_at"),
+    }
+
+
+def complete_orbit_task(
+    task_id: str | int | None = None,
+    title: str | None = None,
+):
+    parsed_task_id, error = _parse_optional_int(task_id, "task_id")
+    if error:
+        return {"success": False, "error": error}
+
+    try:
+        if parsed_task_id is not None:
+            task = orbit_service.get_record("tasks", parsed_task_id)
+            if task is None:
+                return {
+                    "success": False,
+                    "error": f"No Orbit task found with id {parsed_task_id}.",
+                }
+            return _complete_orbit_task_record(task)
+
+        search_title = _orbit_text(title)
+        if not search_title:
+            return {
+                "success": False,
+                "error": "Provide either task_id or title to complete an Orbit task.",
+            }
+
+        normalized_search = search_title.casefold()
+        matches = [
+            task
+            for task in orbit_service.list_records("tasks")
+            if normalized_search in str(task.get("title") or "").casefold()
+        ]
+
+        if not matches:
+            return {
+                "success": False,
+                "error": f"No Orbit task title matched '{search_title}'.",
+            }
+
+        if len(matches) > 1:
+            matching_tasks = [
+                {
+                    "task_id": task.get("id"),
+                    "title": task.get("title"),
+                }
+                for task in matches
+            ]
+            return {
+                "success": False,
+                "error": "Multiple Orbit tasks matched that title. Provide task_id to choose one.",
+                "matches": matching_tasks,
+            }
+
+        return _complete_orbit_task_record(matches[0])
+    except Exception as e:
+        return {"success": False, "error": f"Unable to complete Orbit task: {e}"}
+
+
 def create_orbit_goal(
     title: str = "",
     description: str | None = None,
@@ -3187,6 +3269,7 @@ TOOLS = {
     "get_orbit_goals": get_orbit_goals,
     "get_orbit_tasks": get_orbit_tasks,
     "create_orbit_task": create_orbit_task,
+    "complete_orbit_task": complete_orbit_task,
     "create_orbit_goal": create_orbit_goal,
     "update_orbit_milestone_progress": update_orbit_milestone_progress,
     "update_orbit_major_event_progress": update_orbit_major_event_progress,

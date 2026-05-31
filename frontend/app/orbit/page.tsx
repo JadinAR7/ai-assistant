@@ -5,6 +5,8 @@ export const dynamic = "force-dynamic";
 const CORPORATE_ESCAPE_TITLE = "Corporate Escape";
 const MAJOR_EVENTS_URL = "http://127.0.0.1:8000/orbit/major-events";
 const MILESTONES_URL = "http://127.0.0.1:8000/orbit/milestones";
+const TASKS_URL = "http://127.0.0.1:8000/orbit/tasks";
+const GOALS_URL = "http://127.0.0.1:8000/orbit/goals";
 
 type MajorEvent = {
   id: number;
@@ -25,6 +27,25 @@ type Milestone = {
   target_value: number | null;
   current_value: number | null;
   due_date: string | null;
+};
+
+type OrbitTask = {
+  id: number;
+  goal_id: number;
+  title: string;
+  description: string | null;
+  status: string;
+  due_date: string | null;
+  completed_at: string | null;
+};
+
+type OrbitGoal = {
+  id: number;
+  milestone_id: number;
+  title: string;
+  description: string | null;
+  status: string | null;
+  priority: number | null;
 };
 
 const blockers = [
@@ -51,9 +72,11 @@ async function fetchJson<T>(url: string): Promise<T> {
 }
 
 async function getOrbitData() {
-  const [majorEvents, milestones] = await Promise.all([
+  const [majorEvents, milestones, tasks, goals] = await Promise.all([
     fetchJson<MajorEvent[]>(MAJOR_EVENTS_URL),
     fetchJson<Milestone[]>(MILESTONES_URL),
+    fetchJson<OrbitTask[]>(TASKS_URL),
+    fetchJson<OrbitGoal[]>(GOALS_URL),
   ]);
 
   const event = majorEvents.find(
@@ -62,9 +85,11 @@ async function getOrbitData() {
 
   return {
     event,
+    goals,
     milestones: event
       ? milestones.filter((milestone) => milestone.major_event_id === event.id)
       : [],
+    tasks,
   };
 }
 
@@ -87,6 +112,14 @@ function formatStatus(value: string) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function formatPriority(value: number) {
+  if (value <= 0) {
+    return "Priority 0";
+  }
+
+  return `Priority ${value}`;
 }
 
 function getDaysRemaining(targetDate: string | null) {
@@ -148,7 +181,7 @@ export default async function OrbitPage() {
   try {
     orbitData = await getOrbitData();
   } catch (error) {
-    orbitData = { event: undefined, milestones: [] };
+    orbitData = { event: undefined, goals: [], milestones: [], tasks: [] };
     errorMessage =
       error instanceof Error
         ? error.message
@@ -251,6 +284,70 @@ export default async function OrbitPage() {
               </li>
             ))}
           </ul>
+        </Panel>
+
+        <Panel title="Inbox Tasks">
+          {orbitData.tasks.length > 0 ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              {orbitData.tasks.map((task) => (
+                <article
+                  key={task.id}
+                  className="rounded-xl border border-white/10 bg-neutral-950 p-4"
+                >
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <h3 className="text-sm font-semibold text-neutral-100">
+                      {task.title}
+                    </h3>
+                    <span className="shrink-0 rounded-full border border-blue-500/20 bg-blue-500/15 px-2 py-1 text-xs text-blue-200">
+                      {formatStatus(task.status)}
+                    </span>
+                  </div>
+                  {task.due_date ? (
+                    <p className="text-xs text-neutral-400">
+                      Due {formatDate(task.due_date)}
+                    </p>
+                  ) : null}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
+              No inbox tasks have been added to Orbit yet.
+            </div>
+          )}
+        </Panel>
+
+        <Panel title="Goals">
+          {orbitData.goals.length > 0 ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              {orbitData.goals.map((goal) => (
+                <article
+                  key={goal.id}
+                  className="rounded-xl border border-white/10 bg-neutral-950 p-4"
+                >
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <h3 className="text-sm font-semibold text-neutral-100">
+                      {goal.title}
+                    </h3>
+                    {goal.status ? (
+                      <span className="shrink-0 rounded-full border border-blue-500/20 bg-blue-500/15 px-2 py-1 text-xs text-blue-200">
+                        {formatStatus(goal.status)}
+                      </span>
+                    ) : null}
+                  </div>
+                  {goal.priority !== null && goal.priority !== undefined ? (
+                    <p className="text-xs text-neutral-400">
+                      {formatPriority(goal.priority)}
+                    </p>
+                  ) : null}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
+              No goals have been added to Orbit yet.
+            </div>
+          )}
         </Panel>
 
         <Panel title="Milestones">

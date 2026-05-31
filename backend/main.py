@@ -167,6 +167,24 @@ Rules:
 Example:
 TOOL: create_orbit_task title=Review_my_trading_journal_tonight
 
+- complete_orbit_task: marks an Orbit task completed by task ID or title
+
+Inputs:
+- task_id optional
+- title optional
+
+Rules:
+- If the user names a task without an ID, use title.
+- Use underscores instead of spaces in title values.
+- If multiple tasks match a title, the tool will list matches; ask Jadin which task ID to complete.
+
+Examples:
+User: Mark review my trading journal as done.
+TOOL: complete_orbit_task title=review_my_trading_journal
+
+User: Complete Orbit task 2.
+TOOL: complete_orbit_task task_id=2
+
 - create_orbit_goal: creates an Orbit goal
 
 Inputs:
