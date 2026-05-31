@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 
 const API_BASE =
@@ -508,6 +509,13 @@ ${record.message || "No scan message returned."}`;
           </div>
 
           <div className="flex items-center gap-2">
+            <Link
+              href="/orbit"
+              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+            >
+              Orbit
+            </Link>
+
             <button
               onClick={loadScanStatus}
               className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
