@@ -18,32 +18,205 @@ type Message = {
   retryText?: string;
 };
 
+type ScanRecord = {
+  timestamp?: string;
+  timezone?: string;
+  symbol?: string;
+  sessions?: string[];
+  session_label?: string;
+  success?: boolean;
+  screenshot_path?: string;
+  vision_success?: boolean;
+  vision_error?: string | null;
+  csv_success?: boolean;
+  message?: string;
+  comparison?: {
+    market_changes?: string[];
+    visual_context_changes?: string[];
+    system_status?: string[];
+  };
+  alert?: {
+    should_alert?: boolean;
+    alert_type?: string;
+    severity?: string;
+    reasons?: string[];
+  };
+  state?: {
+    htf_bias?: string;
+    execution_bias?: string;
+    price_relation?: string;
+    visual_4h_fvg?: boolean;
+    visual_15m_fvg?: boolean;
+    pdh_visible?: boolean;
+    vision_success?: boolean;
+    csv_success?: boolean;
+  };
+};
+
+type ScanStatus = {
+  success?: boolean;
+  symbol?: string;
+  timestamp?: string;
+  timezone?: string;
+  active_sessions?: string[];
+  should_scan_now?: boolean;
+};
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: generateId(),
       role: "assistant",
-      content: "What’s good, Jadin? Assistant is online.",
+      content: "What’s good, Jadin? Helix is online.",
     },
   ]);
 
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [latestScan, setLatestScan] = useState<ScanRecord | null>(null);
+  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
+
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+
   const [toolMode, setToolMode] = useState("auto");
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
-
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
   useEffect(() => {
-  loadHistory();
-}, []);
+    loadHistory();
+    loadScanStatus();
+    loadLatestScan();
+  }, []);
+
+  function addAssistantMessage(content: string, error = false) {
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: generateId(),
+        role: "assistant",
+        content,
+        error,
+      },
+    ]);
+  }
+
+  function formatScanSummary(record: ScanRecord) {
+    const alert = record.alert;
+    const comparison = record.comparison;
+
+    const marketChanges = comparison?.market_changes?.length
+      ? comparison.market_changes.map((item) => `- ${item}`).join("\n")
+      : "- No market comparison available.";
+
+    const visualChanges = comparison?.visual_context_changes?.length
+      ? comparison.visual_context_changes.map((item) => `- ${item}`).join("\n")
+      : "- No visual comparison available.";
+
+    const alertReasons = alert?.reasons?.length
+      ? alert.reasons.map((item) => `- ${item}`).join("\n")
+      : "- No alert decision available.";
+
+    return `## Latest MES Scan
+
+**Session:** ${record.session_label || "Unknown"}  
+**Vision:** ${record.vision_success ? "Success" : "Failed"}  
+**CSV:** ${record.csv_success ? "Success" : "Failed"}  
+**Alert:** ${alert?.should_alert ? "YES" : "No"}  
+**Severity:** ${alert?.severity || "none"}
+
+## Market Changes
+${marketChanges}
+
+## Visual Context Changes
+${visualChanges}
+
+## Alert Reasons
+${alertReasons}
+
+---
+
+${record.message || "No scan message returned."}`;
+  }
+
+  async function loadScanStatus() {
+    try {
+      const res = await fetch(`${API_BASE}/scan/status`);
+      const data = await res.json();
+      setScanStatus(data);
+    } catch {
+      console.log("Could not load scan status.");
+    }
+  }
+
+  async function loadLatestScan() {
+    try {
+      const res = await fetch(`${API_BASE}/scan/latest`);
+      const data = await res.json();
+
+      if (data?.record) {
+        setLatestScan(data.record);
+        return data.record;
+      }
+
+      return null;
+    } catch {
+      console.log("Could not load latest scan.");
+      return null;
+    }
+  }
+
+  async function forceScanMES() {
+    if (scanLoading || loading) return;
+
+    const userMessage: Message = {
+      id: generateId(),
+      role: "user",
+      content: "Force scan MES",
+    };
+
+    setMessages((prev) => [...prev, userMessage]);
+    setScanLoading(true);
+    setLoading(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/scan/force`, {
+        method: "POST",
+      });
+
+      if (!res.ok) {
+        throw new Error("Force scan failed");
+      }
+
+      const record: ScanRecord = await res.json();
+
+      setLatestScan(record);
+      await loadScanStatus();
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: generateId(),
+          role: "assistant",
+          content: formatScanSummary(record),
+        },
+      ]);
+    } catch {
+      addAssistantMessage(
+        "Force scan failed. Check FastAPI, Playwright, TradingView, and Ollama.",
+        true
+      );
+    } finally {
+      setScanLoading(false);
+      setLoading(false);
+    }
+  }
 
   async function sendMessage(messageText?: string) {
     const text = messageText ?? input;
@@ -121,7 +294,7 @@ export default function Home() {
           content: data.message || "No response.",
         },
       ]);
-    } catch (error) {
+    } catch {
       setMessages((prev) => [
         ...prev,
         {
@@ -144,13 +317,12 @@ export default function Home() {
     abortRef.current?.abort();
     abortRef.current = null;
     setLoading(false);
+    setScanLoading(false);
   }
 
   function deleteMessage(id: string) {
     setMessages((prev) => prev.filter((msg) => msg.id !== id));
   }
-
-  
 
   async function clearChat() {
     try {
@@ -235,107 +407,264 @@ export default function Home() {
     ]);
   }
 
+  const activeSessions =
+    scanStatus?.active_sessions && scanStatus.active_sessions.length > 0
+      ? scanStatus.active_sessions.join(" + ")
+      : "Inactive";
+
   return (
-    <main className="min-h-screen bg-neutral-950 text-white flex flex-col">
-      <header className="sticky top-0 z-10 border-b border-white/10 bg-neutral-950/80 backdrop-blur">
-        <div className="mx-auto flex max-w-3xl items-center justify-between px-4 py-4">
+    <main className="min-h-screen bg-neutral-950 text-white">
+      <header className="sticky top-0 z-20 border-b border-white/10 bg-neutral-950/80 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
           <div>
-            <h1 className="text-lg font-semibold">Jadin AI Assistant</h1>
+            <h1 className="text-lg font-semibold">Helix Command Center</h1>
             <p className="text-sm text-neutral-400">
               Local AI. Real tools. Full control.
             </p>
           </div>
 
-          <button
-            onClick={clearChat}
-            className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
-          >
-            Clear
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={loadScanStatus}
+              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+            >
+              Refresh Status
+            </button>
+
+            <button
+              onClick={clearChat}
+              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+            >
+              Clear
+            </button>
+          </div>
         </div>
       </header>
 
-      <section className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-6 pb-40">
-          {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={`group flex ${
-                msg.role === "user" ? "justify-end" : "justify-start"
-              }`}
-            >
+      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 px-4 py-4 pb-36 lg:grid-cols-[1fr_380px]">
+        <section className="min-h-[70vh] overflow-hidden rounded-2xl border border-white/10 bg-neutral-950">
+          <div
+            ref={messagesContainerRef}
+            className="flex max-h-[calc(100vh-190px)] flex-col gap-4 overflow-y-auto px-4 py-6"
+          >
+            {messages.map((msg) => (
               <div
-                className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-lg ${
-                  msg.role === "user"
-                    ? "bg-blue-600 text-white"
-                    : msg.error
-                    ? "border border-red-500/30 bg-red-950/40 text-red-100"
-                    : "border border-white/10 bg-neutral-900 text-neutral-100"
+                key={msg.id}
+                className={`group flex ${
+                  msg.role === "user" ? "justify-end" : "justify-start"
                 }`}
               >
-                <div className="prose prose-invert max-w-none prose-p:my-2 prose-headings:my-3 prose-ul:my-2 prose-li:my-1">
-                {msg.content.startsWith("TOOL:") ? (
-                  "Using tool..."
-                ) : (
-                  <ReactMarkdown>{msg.content}</ReactMarkdown>
-                )}
-              </div>
+                <div
+                  className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-lg ${
+                    msg.role === "user"
+                      ? "bg-blue-600 text-white"
+                      : msg.error
+                      ? "border border-red-500/30 bg-red-950/40 text-red-100"
+                      : "border border-white/10 bg-neutral-900 text-neutral-100"
+                  }`}
+                >
+                  <div className="prose prose-invert max-w-none prose-p:my-2 prose-headings:my-3 prose-ul:my-2 prose-li:my-1">
+                    {msg.content.startsWith("TOOL:") ? (
+                      "Using tool..."
+                    ) : (
+                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                    )}
+                  </div>
 
-                <div className="mt-2 flex gap-3 opacity-70">
-                  <button
-                    onClick={() => navigator.clipboard.writeText(msg.content)}
-                    className="text-xs text-neutral-400 underline underline-offset-4 hover:text-white"
-                  >
-                    Copy
-                  </button>
-
-                  {msg.error && msg.retryText && (
+                  <div className="mt-2 flex gap-3 opacity-70">
                     <button
-                      onClick={() => sendMessage(msg.retryText)}
-                      className="text-xs text-red-200 underline underline-offset-4"
+                      onClick={() => navigator.clipboard.writeText(msg.content)}
+                      className="text-xs text-neutral-400 underline underline-offset-4 hover:text-white"
                     >
-                      Retry
+                      Copy
                     </button>
-                  )}
 
-                  <button
-                    onClick={() => deleteMessage(msg.id)}
-                    className="text-xs text-neutral-400 underline underline-offset-4 hover:text-white"
-                  >
-                    Delete
-                  </button>
+                    {msg.error && msg.retryText && (
+                      <button
+                        onClick={() => sendMessage(msg.retryText)}
+                        className="text-xs text-red-200 underline underline-offset-4"
+                      >
+                        Retry
+                      </button>
+                    )}
+
+                    <button
+                      onClick={() => deleteMessage(msg.id)}
+                      className="text-xs text-neutral-400 underline underline-offset-4 hover:text-white"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            ))}
 
-          {loading && (
-            <div className="flex justify-start">
-              <div className="rounded-2xl border border-white/10 bg-neutral-900 px-4 py-3 text-sm text-neutral-400">
-                <div className="flex gap-1">
-                  <span className="animate-bounce">•</span>
-                  <span className="animate-bounce [animation-delay:0.1s]">
-                    •
-                  </span>
-                  <span className="animate-bounce [animation-delay:0.2s]">
-                    •
-                  </span>
+            {loading && (
+              <div className="flex justify-start">
+                <div className="rounded-2xl border border-white/10 bg-neutral-900 px-4 py-3 text-sm text-neutral-400">
+                  <div className="flex gap-1">
+                    <span className="animate-bounce">•</span>
+                    <span className="animate-bounce [animation-delay:0.1s]">
+                      •
+                    </span>
+                    <span className="animate-bounce [animation-delay:0.2s]">
+                      •
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
+            )}
 
-          <div ref={bottomRef} />
-        </div>
-      </section>
+            <div ref={bottomRef} />
+          </div>
+        </section>
+
+        <aside className="flex flex-col gap-4">
+          <section className="rounded-2xl border border-blue-500/30 bg-blue-950/20 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-blue-100">
+                  MES Scanner
+                </h2>
+                <p className="text-xs text-blue-200/70">
+                  Session: {activeSessions}
+                </p>
+              </div>
+
+              <span
+                className={`rounded-full px-2 py-1 text-xs ${
+                  scanStatus?.should_scan_now
+                    ? "bg-green-500/20 text-green-200"
+                    : "bg-neutral-800 text-neutral-300"
+                }`}
+              >
+                {scanStatus?.should_scan_now ? "Active" : "Idle"}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={forceScanMES}
+                disabled={scanLoading || loading}
+                className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {scanLoading ? "Scanning..." : "Scan MES"}
+              </button>
+
+              <button
+                onClick={async () => {
+                  const record = await loadLatestScan();
+
+                  if (record) {
+                    addAssistantMessage(formatScanSummary(record));
+                  } else {
+                    addAssistantMessage("No latest scan found yet. Run Scan MES first.", true);
+                  }
+                }}
+                className="rounded-xl border border-white/10 px-3 py-2 text-sm text-neutral-200 hover:bg-white/10"
+              >
+                Latest Scan
+              </button>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-4">
+            <h2 className="mb-3 text-sm font-semibold">Latest State</h2>
+
+            {latestScan ? (
+              <div className="space-y-3 text-sm">
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="rounded-xl bg-neutral-950 p-3">
+                    <p className="text-neutral-500">HTF bias</p>
+                    <p className="font-semibold">
+                      {latestScan.state?.htf_bias || "unknown"}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl bg-neutral-950 p-3">
+                    <p className="text-neutral-500">Execution</p>
+                    <p className="font-semibold">
+                      {latestScan.state?.execution_bias || "unknown"}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl bg-neutral-950 p-3">
+                    <p className="text-neutral-500">Price relation</p>
+                    <p className="font-semibold">
+                      {latestScan.state?.price_relation || "unknown"}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl bg-neutral-950 p-3">
+                    <p className="text-neutral-500">Alert</p>
+                    <p className="font-semibold">
+                      {latestScan.alert?.should_alert ? "Yes" : "No"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-xl bg-neutral-950 p-3 text-xs">
+                  <p className="mb-1 text-neutral-500">Last scan</p>
+                  <p className="break-words text-neutral-200">
+                    {latestScan.timestamp || "Unknown"}
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-neutral-950 p-3 text-xs">
+                  <p className="mb-1 text-neutral-500">Screenshot</p>
+                  <p className="break-words text-neutral-300">
+                    {latestScan.screenshot_path || "None"}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-neutral-400">
+                No scan loaded yet. Run Scan MES.
+              </p>
+            )}
+          </section>
+
+          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-4">
+            <h2 className="mb-3 text-sm font-semibold">Alert Decision</h2>
+
+            {latestScan?.alert ? (
+              <div className="space-y-2 text-sm">
+                <p>
+                  <span className="text-neutral-400">Should alert:</span>{" "}
+                  {latestScan.alert.should_alert ? "Yes" : "No"}
+                </p>
+                <p>
+                  <span className="text-neutral-400">Type:</span>{" "}
+                  {latestScan.alert.alert_type || "none"}
+                </p>
+                <p>
+                  <span className="text-neutral-400">Severity:</span>{" "}
+                  {latestScan.alert.severity || "none"}
+                </p>
+
+                <div className="pt-2">
+                  <p className="mb-1 text-xs text-neutral-500">Reasons</p>
+                  <ul className="list-disc space-y-1 pl-5 text-xs text-neutral-300">
+                    {(latestScan.alert.reasons || []).map((reason, index) => (
+                      <li key={`${reason}-${index}`}>{reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-neutral-400">
+                No alert decision loaded.
+              </p>
+            )}
+          </section>
+        </aside>
+      </div>
 
       <footer className="fixed bottom-0 left-0 right-0 border-t border-white/10 bg-neutral-950/90 backdrop-blur">
-        <div className="mx-auto max-w-3xl px-4 py-4">
+        <div className="mx-auto max-w-7xl px-4 py-4">
           {attachedFile && (
             <div className="mb-2 flex items-center justify-between rounded-xl border border-white/10 bg-neutral-900 px-3 py-2 text-xs text-neutral-300">
-              <span className="truncate">
-                Attached: {attachedFile.name}
-              </span>
+              <span className="truncate">Attached: {attachedFile.name}</span>
 
               <button
                 type="button"
@@ -346,6 +675,7 @@ export default function Home() {
               </button>
             </div>
           )}
+
           <div className="flex gap-2 rounded-2xl border border-white/10 bg-neutral-900 p-2 shadow-2xl">
             <button
               type="button"
@@ -367,7 +697,6 @@ export default function Home() {
                   handleFileUpload(file);
                 }
 
-                // Clear the input so selecting the same file again will trigger onChange.
                 e.currentTarget.value = "";
               }}
             />
@@ -391,7 +720,7 @@ export default function Home() {
                   sendMessage();
                 }
               }}
-              placeholder="Ask your assistant..."
+              placeholder="Ask Helix..."
               rows={1}
               className="min-h-11 flex-1 resize-none bg-transparent px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-500"
             />

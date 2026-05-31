@@ -13,11 +13,18 @@ from database import get_connection, log_tool
 from database import init_db, save_message, get_recent_messages, clear_messages
 
 
+# -------------------------
+# Environment / app setup
+# -------------------------
 load_dotenv()
 
 app = FastAPI(title="Jadin AI Assistant Backend")
 init_db()
 
+
+# -------------------------
+# CORS configuration
+# -------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -30,14 +37,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# -------------------------
+# Model configuration
+# -------------------------
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
 VISION_MODEL = os.getenv("VISION_MODEL", "qwen2.5vl:7b")
 
+
+# -------------------------
+# Assistant configuration
+# -------------------------
 MAX_HISTORY_MESSAGES = 20
 SUPPORTED_SYMBOLS = ["MNQ", "MES", "NQ", "ES"]
 
 
+# -------------------------
+# System prompt
+# -------------------------
 SYSTEM_MESSAGE = """
 You are Jadin's AI assistant.
 
@@ -240,11 +258,17 @@ General rules:
 """
 
 
+# -------------------------
+# Request models
+# -------------------------
 class ChatRequest(BaseModel):
     message: str
     tool_mode: str = "auto"
 
 
+# -------------------------
+# Utility helpers
+# -------------------------
 def detect_symbol(message: str, default: str = "ES") -> str:
     message_upper = message.upper()
 
@@ -265,6 +289,9 @@ def build_prompt():
     return SYSTEM_MESSAGE + "\n\n" + history_text + "\nAssistant:"
 
 
+# -------------------------
+# Ollama helpers
+# -------------------------
 def call_ollama(prompt: str, stream: bool = False, timeout: int = 120):
     response = requests.post(
         OLLAMA_URL,
@@ -281,6 +308,9 @@ def call_ollama(prompt: str, stream: bool = False, timeout: int = 120):
     return response
 
 
+# -------------------------
+# Tool parsing / execution
+# -------------------------
 def parse_tool_call(assistant_message: str):
     if "TOOL:" not in assistant_message:
         return None, {}
@@ -332,16 +362,25 @@ def build_followup_prompt(base_prompt: str, tool_result):
     )
 
 
+# -------------------------
+# Health endpoint
+# -------------------------
 @app.get("/")
 def health_check():
     return {"status": "backend running"}
 
 
+# -------------------------
+# Chat endpoint
+# -------------------------
 @app.post("/chat")
 def chat(request: ChatRequest):
     try:
         save_message("User", request.message)
 
+        # -------------------------
+        # Manual mode: CSV market analysis
+        # -------------------------
         if request.tool_mode == "market_csv":
             symbol = detect_symbol(request.message, default="ES")
 
@@ -365,6 +404,9 @@ def chat(request: ChatRequest):
                 "history_length": len(messages),
             }
 
+        # -------------------------
+        # Manual mode: refresh CSV exports
+        # -------------------------
         if request.tool_mode == "refresh_market_csvs":
             symbol = detect_symbol(request.message)
 
@@ -388,6 +430,9 @@ def chat(request: ChatRequest):
                 "history_length": len(messages),
             }
 
+        # -------------------------
+        # Manual mode: TradingView screenshot + CSV analysis
+        # -------------------------
         if request.tool_mode == "analyze_tradingview":
             symbol = detect_symbol(request.message)
 
@@ -414,6 +459,9 @@ def chat(request: ChatRequest):
                 "history_length": len(messages),
             }
 
+        # -------------------------
+        # Auto mode: ask text model, then run tool if requested
+        # -------------------------
         prompt = build_prompt()
 
         response = call_ollama(
@@ -467,6 +515,9 @@ def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=f"Chat failed: {e}")
 
 
+# -------------------------
+# Streaming chat endpoint
+# -------------------------
 @app.post("/chat/stream")
 def chat_stream(request: ChatRequest):
     def generate():
@@ -506,6 +557,9 @@ def chat_stream(request: ChatRequest):
     return StreamingResponse(generate(), media_type="text/plain")
 
 
+# -------------------------
+# Image / chart analysis endpoint
+# -------------------------
 @app.post("/analyze-image")
 async def analyze_image(
     file: UploadFile = File(...),
@@ -550,6 +604,83 @@ async def analyze_image(
         raise HTTPException(status_code=500, detail=f"Image analysis failed: {e}")
 
 
+# -------------------------
+# Scan endpoints
+# -------------------------
+@app.post("/scan/force")
+def force_scan():
+    from scheduled_scan import run_scan
+
+    record = run_scan(force=True)
+
+    if not record:
+        return {
+            "success": False,
+            "message": "No scan record returned.",
+        }
+
+    return record
+
+
+@app.get("/scan/latest")
+def latest_scan():
+    from scheduled_scan import SCAN_HISTORY_PATH, SYMBOL
+
+    if not SCAN_HISTORY_PATH.exists():
+        return {
+            "success": False,
+            "message": "No scan history found yet.",
+            "record": None,
+        }
+
+    latest = None
+
+    with SCAN_HISTORY_PATH.open("r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if record.get("symbol") != SYMBOL:
+                continue
+
+            latest = record
+
+    if not latest:
+        return {
+            "success": False,
+            "message": "No scan records found for symbol.",
+            "record": None,
+        }
+
+    return {
+        "success": True,
+        "record": latest,
+    }
+
+
+@app.get("/scan/status")
+def scan_status():
+    from datetime import datetime
+    from scheduled_scan import TIMEZONE, get_active_sessions, should_scan_now, SYMBOL
+
+    now = datetime.now(TIMEZONE)
+    sessions = get_active_sessions(now)
+
+    return {
+        "success": True,
+        "symbol": SYMBOL,
+        "timestamp": now.isoformat(),
+        "timezone": "America/Denver",
+        "active_sessions": sessions,
+        "should_scan_now": should_scan_now(now),
+    }
+
+
+# -------------------------
+# Memory / history endpoints
+# -------------------------
 @app.post("/reset")
 def reset_memory():
     clear_messages()
@@ -575,6 +706,9 @@ def chat_history():
     }
 
 
+# -------------------------
+# Tool log endpoint
+# -------------------------
 @app.get("/tool-logs")
 def get_tool_logs():
     conn = get_connection()
