@@ -11,6 +11,11 @@ import base64
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
+try:
+    from orbit import service as orbit_service
+except ImportError:
+    from backend.orbit import service as orbit_service
+
 
 load_dotenv()
 
@@ -385,6 +390,108 @@ def web_search(query: str = ""):
             "results": results,
         }
 
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------
+# Orbit planning tools
+# ---------------------------------------------------------------------
+
+def get_orbit_major_events():
+    try:
+        return {
+            "success": True,
+            "major_events": orbit_service.list_records("major_events"),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def get_orbit_milestones():
+    try:
+        return {
+            "success": True,
+            "milestones": orbit_service.list_records("milestones"),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def get_orbit_goals():
+    try:
+        return {
+            "success": True,
+            "goals": orbit_service.list_records("goals"),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def get_orbit_tasks():
+    try:
+        return {
+            "success": True,
+            "tasks": orbit_service.list_records("tasks"),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def get_corporate_escape_status():
+    try:
+        major_events = orbit_service.list_records("major_events")
+        event = next(
+            (
+                item
+                for item in major_events
+                if item.get("title", "").lower() == "corporate escape"
+            ),
+            None,
+        )
+
+        if event is None:
+            return {
+                "success": False,
+                "error": "Corporate Escape major event not found.",
+            }
+
+        milestones = [
+            {
+                "id": milestone.get("id"),
+                "title": milestone.get("title"),
+                "status": milestone.get("status"),
+                "progress_percent": milestone.get("progress_percent"),
+                "due_date": milestone.get("due_date"),
+            }
+            for milestone in orbit_service.list_records("milestones")
+            if milestone.get("major_event_id") == event.get("id")
+        ]
+
+        summary = {
+            "event_title": event.get("title"),
+            "target_date": event.get("target_date"),
+            "progress_percent": event.get("progress_percent"),
+            "status": event.get("status"),
+            "milestones": milestones,
+        }
+
+        milestone_lines = "\n".join(
+            f"- {milestone['title']}: {milestone['status']} "
+            f"({milestone['progress_percent']}%)"
+            for milestone in milestones
+        )
+
+        return {
+            "success": True,
+            "summary": summary,
+            "message": (
+                f"Corporate Escape is {summary['status']} at "
+                f"{summary['progress_percent']}% progress, targeting "
+                f"{summary['target_date']}.\n\n"
+                f"Linked milestones:\n{milestone_lines if milestone_lines else '- None'}"
+            ),
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -2776,6 +2883,13 @@ TOOLS = {
     "extract_links": extract_links,
     "create_reminder": create_reminder,
     "web_search": web_search,
+
+    # Orbit planning tools
+    "get_orbit_major_events": get_orbit_major_events,
+    "get_orbit_milestones": get_orbit_milestones,
+    "get_orbit_goals": get_orbit_goals,
+    "get_orbit_tasks": get_orbit_tasks,
+    "get_corporate_escape_status": get_corporate_escape_status,
 
     # Trading / market tools
     "refresh_market_csvs": refresh_market_csvs,
