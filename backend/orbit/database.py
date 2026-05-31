@@ -89,12 +89,41 @@ def init_orbit_db() -> None:
     """)
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS readiness_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            major_event_id INTEGER NOT NULL,
+            category_name TEXT NOT NULL,
+            current_score INTEGER NOT NULL DEFAULT 0,
+            target_score INTEGER NOT NULL DEFAULT 100,
+            notes TEXT,
+            last_updated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK (current_score >= 0 AND current_score <= 100),
+            CHECK (target_score >= 0 AND target_score <= 100),
+            UNIQUE (major_event_id, category_name),
+            FOREIGN KEY (major_event_id)
+                REFERENCES major_events (id)
+                ON DELETE CASCADE
+        )
+    """)
+
+    cursor.execute("""
         CREATE TRIGGER IF NOT EXISTS update_major_events_updated_at
         AFTER UPDATE ON major_events
         FOR EACH ROW
         BEGIN
             UPDATE major_events
             SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = OLD.id;
+        END
+    """)
+
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS update_readiness_categories_last_updated
+        AFTER UPDATE ON readiness_categories
+        FOR EACH ROW
+        BEGIN
+            UPDATE readiness_categories
+            SET last_updated = CURRENT_TIMESTAMP
             WHERE id = OLD.id;
         END
     """)

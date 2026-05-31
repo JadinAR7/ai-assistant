@@ -10,6 +10,8 @@ from .models import (
     MajorEventUpdate,
     MilestoneCreate,
     MilestoneUpdate,
+    ReadinessCategoryCreate,
+    ReadinessCategoryUpdate,
     ReviewCreate,
     TaskCreate,
     TaskUpdate,
@@ -54,6 +56,13 @@ TABLE_COLUMNS = {
         "review_type",
         "summary",
         "rating",
+    ],
+    "readiness_categories": [
+        "major_event_id",
+        "category_name",
+        "current_score",
+        "target_score",
+        "notes",
     ],
 }
 
@@ -205,3 +214,41 @@ def update_task(record_id: int, payload: TaskUpdate) -> dict[str, Any] | None:
 
 def create_review(payload: ReviewCreate) -> dict[str, Any]:
     return _create_record("reviews", _model_data(payload))
+
+
+def get_readiness_categories(major_event_id: int | None = None) -> list[dict[str, Any]]:
+    init_orbit_db()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    if major_event_id is None:
+        cursor.execute("SELECT * FROM readiness_categories ORDER BY major_event_id, id")
+    else:
+        cursor.execute(
+            """
+            SELECT *
+            FROM readiness_categories
+            WHERE major_event_id = ?
+            ORDER BY id
+            """,
+            (major_event_id,),
+        )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def create_readiness_category(payload: ReadinessCategoryCreate) -> dict[str, Any]:
+    return _create_record("readiness_categories", _model_data(payload))
+
+
+def update_readiness_category(
+    record_id: int,
+    payload: ReadinessCategoryUpdate,
+) -> dict[str, Any] | None:
+    return _update_record(
+        "readiness_categories",
+        record_id,
+        _model_data(payload, exclude_unset=True),
+    )
