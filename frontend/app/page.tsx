@@ -62,6 +62,80 @@ type ScanStatus = {
   should_scan_now?: boolean;
 };
 
+function formatTimestamp(timestamp?: string) {
+  if (!timestamp) return "Unknown";
+
+  try {
+    const date = new Date(timestamp);
+
+    return new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZoneName: "short",
+    }).format(date);
+  } catch {
+    return timestamp;
+  }
+}
+
+function getFileName(path?: string) {
+  if (!path) return "None";
+  return path.split("/").pop() || path;
+}
+
+function formatLabel(value?: string) {
+  if (!value) return "unknown";
+  return value.replaceAll("_", " ");
+}
+
+function getBiasBadgeClass(value?: string) {
+  const lower = value?.toLowerCase() || "";
+
+  if (lower.includes("bullish")) {
+    return "bg-green-500/15 text-green-300 border-green-500/20";
+  }
+
+  if (lower.includes("bearish")) {
+    return "bg-red-500/15 text-red-300 border-red-500/20";
+  }
+
+  if (lower.includes("neutral")) {
+    return "bg-yellow-500/15 text-yellow-300 border-yellow-500/20";
+  }
+
+  return "bg-neutral-800 text-neutral-300 border-white/10";
+}
+
+function getAlertBadgeClass(shouldAlert?: boolean, severity?: string) {
+  if (!shouldAlert) {
+    return "bg-neutral-800 text-neutral-300 border-white/10";
+  }
+
+  if (severity === "high") {
+    return "bg-red-500/15 text-red-300 border-red-500/20";
+  }
+
+  if (severity === "medium") {
+    return "bg-yellow-500/15 text-yellow-300 border-yellow-500/20";
+  }
+
+  return "bg-blue-500/15 text-blue-300 border-blue-500/20";
+}
+
+function buildCompactScanSummary(record: ScanRecord | null) {
+  if (!record) return "No scan loaded yet.";
+
+  const htf = record.state?.htf_bias || "unknown";
+  const execution = record.state?.execution_bias || "unknown";
+  const relation = formatLabel(record.state?.price_relation);
+  const alert = record.alert?.should_alert ? "Alert-worthy" : "No alert";
+
+  return `HTF ${htf}, execution ${execution}. Price relation: ${relation}. ${alert}.`;
+}
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -126,10 +200,14 @@ export default function Home() {
     return `## Latest MES Scan
 
 **Session:** ${record.session_label || "Unknown"}  
+**Time:** ${formatTimestamp(record.timestamp)}  
 **Vision:** ${record.vision_success ? "Success" : "Failed"}  
 **CSV:** ${record.csv_success ? "Success" : "Failed"}  
 **Alert:** ${alert?.should_alert ? "YES" : "No"}  
 **Severity:** ${alert?.severity || "none"}
+
+## Quick Read
+${buildCompactScanSummary(record)}
 
 ## Market Changes
 ${marketChanges}
@@ -412,6 +490,12 @@ ${record.message || "No scan message returned."}`;
       ? scanStatus.active_sessions.join(" + ")
       : "Inactive";
 
+  const htfBias = latestScan?.state?.htf_bias || "unknown";
+  const executionBias = latestScan?.state?.execution_bias || "unknown";
+  const priceRelation = formatLabel(latestScan?.state?.price_relation);
+  const alertShouldFire = latestScan?.alert?.should_alert || false;
+  const alertSeverity = latestScan?.alert?.severity || "none";
+
   return (
     <main className="min-h-screen bg-neutral-950 text-white">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-neutral-950/80 backdrop-blur">
@@ -558,13 +642,24 @@ ${record.message || "No scan message returned."}`;
                   if (record) {
                     addAssistantMessage(formatScanSummary(record));
                   } else {
-                    addAssistantMessage("No latest scan found yet. Run Scan MES first.", true);
+                    addAssistantMessage(
+                      "No latest scan found yet. Run Scan MES first.",
+                      true
+                    );
                   }
                 }}
                 className="rounded-xl border border-white/10 px-3 py-2 text-sm text-neutral-200 hover:bg-white/10"
               >
                 Latest Scan
               </button>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-4">
+            <h2 className="mb-3 text-sm font-semibold">Latest Scan Summary</h2>
+
+            <div className="rounded-xl border border-white/10 bg-neutral-950 p-3 text-sm text-neutral-200">
+              {buildCompactScanSummary(latestScan)}
             </div>
           </section>
 
@@ -576,44 +671,57 @@ ${record.message || "No scan message returned."}`;
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div className="rounded-xl bg-neutral-950 p-3">
                     <p className="text-neutral-500">HTF bias</p>
-                    <p className="font-semibold">
-                      {latestScan.state?.htf_bias || "unknown"}
-                    </p>
+                    <span
+                      className={`mt-2 inline-flex rounded-full border px-2 py-1 text-xs font-semibold ${getBiasBadgeClass(
+                        htfBias
+                      )}`}
+                    >
+                      {formatLabel(htfBias)}
+                    </span>
                   </div>
 
                   <div className="rounded-xl bg-neutral-950 p-3">
                     <p className="text-neutral-500">Execution</p>
-                    <p className="font-semibold">
-                      {latestScan.state?.execution_bias || "unknown"}
-                    </p>
+                    <span
+                      className={`mt-2 inline-flex rounded-full border px-2 py-1 text-xs font-semibold ${getBiasBadgeClass(
+                        executionBias
+                      )}`}
+                    >
+                      {formatLabel(executionBias)}
+                    </span>
                   </div>
 
                   <div className="rounded-xl bg-neutral-950 p-3">
                     <p className="text-neutral-500">Price relation</p>
-                    <p className="font-semibold">
-                      {latestScan.state?.price_relation || "unknown"}
+                    <p className="mt-2 font-semibold text-neutral-200">
+                      {priceRelation}
                     </p>
                   </div>
 
                   <div className="rounded-xl bg-neutral-950 p-3">
                     <p className="text-neutral-500">Alert</p>
-                    <p className="font-semibold">
-                      {latestScan.alert?.should_alert ? "Yes" : "No"}
-                    </p>
+                    <span
+                      className={`mt-2 inline-flex rounded-full border px-2 py-1 text-xs font-semibold ${getAlertBadgeClass(
+                        alertShouldFire,
+                        alertSeverity
+                      )}`}
+                    >
+                      {alertShouldFire ? "Yes" : "No"}
+                    </span>
                   </div>
                 </div>
 
                 <div className="rounded-xl bg-neutral-950 p-3 text-xs">
                   <p className="mb-1 text-neutral-500">Last scan</p>
                   <p className="break-words text-neutral-200">
-                    {latestScan.timestamp || "Unknown"}
+                    {formatTimestamp(latestScan.timestamp)}
                   </p>
                 </div>
 
                 <div className="rounded-xl bg-neutral-950 p-3 text-xs">
                   <p className="mb-1 text-neutral-500">Screenshot</p>
                   <p className="break-words text-neutral-300">
-                    {latestScan.screenshot_path || "None"}
+                    {getFileName(latestScan.screenshot_path)}
                   </p>
                 </div>
               </div>
