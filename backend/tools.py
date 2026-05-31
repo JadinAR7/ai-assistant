@@ -1140,6 +1140,118 @@ def get_orbit_reviews(limit: str | int | None = 10):
         return {"success": False, "error": f"Unable to get Orbit reviews: {e}"}
 
 
+def create_trade_session(
+    session_date: str | None = None,
+    symbol: str = "",
+    pnl: str | int | float | None = None,
+    notes: str | None = None,
+    rule_adherence: str | int | None = None,
+    confidence: str | int | None = None,
+    session_grade: str | None = None,
+    grade: str | None = None,
+):
+    if not symbol:
+        return {"success": False, "error": "Missing required field: symbol."}
+
+    if pnl is None or pnl == "":
+        return {"success": False, "error": "Missing required field: pnl."}
+
+    parsed_pnl, error = _parse_optional_float(pnl, "pnl")
+    if error:
+        return {"success": False, "error": error}
+
+    parsed_rule_adherence, error = _parse_optional_int(rule_adherence, "rule_adherence")
+    if error:
+        return {"success": False, "error": error}
+    if parsed_rule_adherence is not None and not 0 <= parsed_rule_adherence <= 100:
+        return {"success": False, "error": "rule_adherence must be between 0 and 100."}
+
+    parsed_confidence, error = _parse_optional_int(confidence, "confidence")
+    if error:
+        return {"success": False, "error": error}
+    if parsed_confidence is not None and not 0 <= parsed_confidence <= 10:
+        return {"success": False, "error": "confidence must be between 0 and 10."}
+
+    trade_date = session_date or datetime.now().date().isoformat()
+    resolved_grade = session_grade if session_grade is not None else grade
+
+    try:
+        trade_session = orbit_service.create_trade_session({
+            "session_date": trade_date,
+            "symbol": symbol.upper(),
+            "pnl": parsed_pnl,
+            "notes": _orbit_text(notes),
+            "rule_adherence": parsed_rule_adherence,
+            "confidence": parsed_confidence,
+            "session_grade": _orbit_text(resolved_grade),
+        })
+        summary = _orbit_summary(
+            trade_session,
+            [
+                "id",
+                "session_date",
+                "symbol",
+                "pnl",
+                "notes",
+                "rule_adherence",
+                "confidence",
+                "session_grade",
+                "created_at",
+            ],
+        )
+
+        return {
+            "success": True,
+            "trade_session_id": trade_session.get("id"),
+            "trade_session": summary,
+            "message": (
+                "Trade session logged successfully. "
+                f"Saved session id {trade_session.get('id')} for "
+                f"{trade_session.get('symbol')} on {trade_session.get('session_date')} "
+                f"with PnL {trade_session.get('pnl')}."
+            ),
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Unable to create trade session: {e}"}
+
+
+def get_trade_sessions(limit: str | int | None = 10):
+    parsed_limit, error = _parse_optional_int(limit, "limit")
+    if error:
+        return {"success": False, "error": error}
+
+    if parsed_limit is None:
+        parsed_limit = 10
+
+    if parsed_limit < 1:
+        return {"success": False, "error": "limit must be at least 1."}
+
+    try:
+        trade_sessions = orbit_service.list_trade_sessions()[:parsed_limit]
+        return {
+            "success": True,
+            "trade_sessions": [
+                _orbit_summary(
+                    trade_session,
+                    [
+                        "id",
+                        "session_date",
+                        "symbol",
+                        "pnl",
+                        "notes",
+                        "rule_adherence",
+                        "confidence",
+                        "session_grade",
+                        "created_at",
+                    ],
+                )
+                for trade_session in trade_sessions
+            ],
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Unable to get trade sessions: {e}"}
+
+
 def generate_orbit_daily_summary():
     try:
         event = _get_corporate_escape_event()
@@ -3937,6 +4049,8 @@ TOOLS = {
     "create_orbit_goal": create_orbit_goal,
     "create_orbit_review": create_orbit_review,
     "get_orbit_reviews": get_orbit_reviews,
+    "create_trade_session": create_trade_session,
+    "get_trade_sessions": get_trade_sessions,
     "update_orbit_milestone_progress": update_orbit_milestone_progress,
     "update_orbit_major_event_progress": update_orbit_major_event_progress,
     "get_corporate_escape_status": get_corporate_escape_status,

@@ -370,6 +370,13 @@ export default async function OrbitPage() {
             >
               Command Center
             </Link>
+
+            <Link
+              href="/trade-journal"
+              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+            >
+              Trade Journal
+            </Link>
           </div>
         </div>
       </header>

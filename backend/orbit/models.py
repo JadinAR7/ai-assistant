@@ -149,3 +149,33 @@ class ReadinessCategoryUpdate(BaseModel):
 class ReadinessCategory(ReadinessCategoryBase):
     id: int
     last_updated: datetime
+
+
+class TradeSessionBase(BaseModel):
+    session_date: date
+    symbol: str
+    pnl: float
+    notes: Optional[str] = None
+    rule_adherence: Optional[int] = Field(default=None, ge=0, le=100)
+    confidence: Optional[int] = Field(default=None, ge=0, le=10)
+    session_grade: Optional[str] = None
+
+
+class TradeSessionCreate(TradeSessionBase):
+    pass
+
+
+class TradeSessionUpdate(BaseModel):
+    session_date: Optional[date] = None
+    symbol: Optional[str] = None
+    pnl: Optional[float] = None
+    notes: Optional[str] = None
+    rule_adherence: Optional[int] = Field(default=None, ge=0, le=100)
+    confidence: Optional[int] = Field(default=None, ge=0, le=10)
+    session_grade: Optional[str] = None
+
+
+class TradeSessionRead(TradeSessionBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime

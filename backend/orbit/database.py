@@ -107,6 +107,23 @@ def init_orbit_db() -> None:
     """)
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trade_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_date TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            pnl REAL NOT NULL,
+            notes TEXT,
+            rule_adherence INTEGER,
+            confidence INTEGER,
+            session_grade TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK (rule_adherence IS NULL OR (rule_adherence >= 0 AND rule_adherence <= 100)),
+            CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 10))
+        )
+    """)
+
+    cursor.execute("""
         CREATE TRIGGER IF NOT EXISTS update_major_events_updated_at
         AFTER UPDATE ON major_events
         FOR EACH ROW
@@ -124,6 +141,17 @@ def init_orbit_db() -> None:
         BEGIN
             UPDATE readiness_categories
             SET last_updated = CURRENT_TIMESTAMP
+            WHERE id = OLD.id;
+        END
+    """)
+
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS update_trade_sessions_updated_at
+        AFTER UPDATE ON trade_sessions
+        FOR EACH ROW
+        BEGIN
+            UPDATE trade_sessions
+            SET updated_at = CURRENT_TIMESTAMP
             WHERE id = OLD.id;
         END
     """)

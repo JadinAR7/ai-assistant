@@ -15,6 +15,8 @@ from .models import (
     ReviewCreate,
     TaskCreate,
     TaskUpdate,
+    TradeSessionCreate,
+    TradeSessionUpdate,
 )
 
 
@@ -63,6 +65,15 @@ TABLE_COLUMNS = {
         "current_score",
         "target_score",
         "notes",
+    ],
+    "trade_sessions": [
+        "session_date",
+        "symbol",
+        "pnl",
+        "notes",
+        "rule_adherence",
+        "confidence",
+        "session_grade",
     ],
 }
 
@@ -180,6 +191,18 @@ def delete_record(table: str, record_id: int) -> bool:
     return deleted
 
 
+def _list_records_ordered(table: str, order_by: str) -> list[dict[str, Any]]:
+    init_orbit_db()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT * FROM {table} ORDER BY {order_by}")
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
 def create_major_event(payload: MajorEventCreate) -> dict[str, Any]:
     return _create_record("major_events", _model_data(payload))
 
@@ -252,3 +275,30 @@ def update_readiness_category(
         record_id,
         _model_data(payload, exclude_unset=True),
     )
+
+
+def create_trade_session(payload: TradeSessionCreate) -> dict[str, Any]:
+    return _create_record("trade_sessions", _model_data(payload))
+
+
+def list_trade_sessions() -> list[dict[str, Any]]:
+    return _list_records_ordered("trade_sessions", "session_date DESC, id DESC")
+
+
+def get_trade_session(record_id: int) -> dict[str, Any] | None:
+    return get_record("trade_sessions", record_id)
+
+
+def update_trade_session(
+    record_id: int,
+    payload: TradeSessionUpdate,
+) -> dict[str, Any] | None:
+    return _update_record(
+        "trade_sessions",
+        record_id,
+        _model_data(payload, exclude_unset=True),
+    )
+
+
+def delete_trade_session(record_id: int) -> bool:
+    return delete_record("trade_sessions", record_id)

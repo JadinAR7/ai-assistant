@@ -18,6 +18,9 @@ from .models import (
     Task,
     TaskCreate,
     TaskUpdate,
+    TradeSessionCreate,
+    TradeSessionRead,
+    TradeSessionUpdate,
 )
 
 
@@ -185,3 +188,35 @@ def update_readiness_category(readiness_id: int, payload: ReadinessCategoryUpdat
     if record is None:
         raise _not_found("Readiness category", readiness_id)
     return record
+
+
+@router.post("/trade-sessions", response_model=TradeSessionRead, status_code=status.HTTP_201_CREATED)
+def create_trade_session(payload: TradeSessionCreate):
+    return service.create_trade_session(payload)
+
+
+@router.get("/trade-sessions", response_model=list[TradeSessionRead])
+def list_trade_sessions():
+    return service.list_trade_sessions()
+
+
+@router.get("/trade-sessions/{trade_session_id}", response_model=TradeSessionRead)
+def get_trade_session(trade_session_id: int):
+    record = service.get_trade_session(trade_session_id)
+    if record is None:
+        raise _not_found("Trade session", trade_session_id)
+    return record
+
+
+@router.patch("/trade-sessions/{trade_session_id}", response_model=TradeSessionRead)
+def update_trade_session(trade_session_id: int, payload: TradeSessionUpdate):
+    record = service.update_trade_session(trade_session_id, payload)
+    if record is None:
+        raise _not_found("Trade session", trade_session_id)
+    return record
+
+
+@router.delete("/trade-sessions/{trade_session_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_trade_session(trade_session_id: int):
+    if not service.delete_trade_session(trade_session_id):
+        raise _not_found("Trade session", trade_session_id)

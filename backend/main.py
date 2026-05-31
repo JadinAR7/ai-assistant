@@ -228,6 +228,43 @@ Example:
 User: Show my recent Orbit reviews.
 TOOL: get_orbit_reviews limit=3
 
+- create_trade_session: logs an Orbit trade session
+
+Inputs:
+- symbol required
+- pnl required, numeric
+- session_date optional, YYYY-MM-DD; defaults to today when omitted
+- notes optional
+- rule_adherence optional, 0 through 100
+- confidence optional, 0 through 10
+- session_grade optional
+
+Rules:
+- You MUST use create_trade_session when Jadin asks to log, record, save, or journal a trade session.
+- You MUST use create_trade_session for prompts that include a trading symbol plus PnL, rule adherence, confidence, grade, or trade notes.
+- Use underscores instead of spaces in notes and session_grade values.
+- If Jadin says "grade", pass it as session_grade.
+- Never say a trade session was logged unless Tool Result success is True and a trade_session_id is present.
+- Do not calculate readiness from trade sessions yet.
+
+Examples:
+User: Log a trade session for MES with PnL 250, rule adherence 80, confidence 7, grade B, notes followed plan but exited early.
+TOOL: create_trade_session symbol=MES pnl=250 rule_adherence=80 confidence=7 session_grade=B notes=followed_plan_but_exited_early
+
+User: Save a trade journal entry: MNQ PnL -50, rule adherence 60, confidence 5, grade C, broke plan after news.
+TOOL: create_trade_session symbol=MNQ pnl=-50 rule_adherence=60 confidence=5 session_grade=C notes=broke_plan_after_news
+
+- get_trade_sessions: lists recent Orbit trade sessions
+
+Inputs:
+- limit optional
+
+Use get_trade_sessions when Jadin asks to show, list, or read recent trade sessions.
+
+Example:
+User: Show my recent trade sessions.
+TOOL: get_trade_sessions limit=5
+
 - update_orbit_milestone_progress: updates progress for an Orbit milestone
 
 Inputs:

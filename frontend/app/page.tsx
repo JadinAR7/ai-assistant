@@ -16,7 +16,7 @@ const modules = [
   {
     name: "Trade Journal",
     href: "/trade-journal",
-    status: "Soon",
+    status: "Live",
     description: "Session reviews, rule adherence, and performance memory.",
   },
   {
@@ -73,6 +73,12 @@ export default function HelixCorePage() {
                 className="rounded-lg border border-white/15 px-4 py-3 text-sm font-semibold text-neutral-100 transition hover:bg-white/10"
               >
                 Open Orbit
+              </Link>
+              <Link
+                href="/trade-journal"
+                className="rounded-lg border border-white/15 px-4 py-3 text-sm font-semibold text-neutral-100 transition hover:bg-white/10"
+              >
+                Open Trade Journal
               </Link>
             </div>
           </div>
