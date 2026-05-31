@@ -21,6 +21,8 @@ else:
 
 
 EVENT_TITLE = "Corporate Escape"
+INBOX_MILESTONE_TITLE = "Inbox / General"
+INBOX_GOAL_TITLE = "Inbox"
 EVENT_DATA = {
     "title": EVENT_TITLE,
     "description": (
@@ -64,6 +66,44 @@ def _get_major_event_id(cursor: Any, title: str) -> int | None:
     return int(row["id"])
 
 
+def _is_blank(value: Any) -> bool:
+    return value is None or str(value).strip() == ""
+
+
+def _get_milestone_id(cursor: Any, major_event_id: int, title: str) -> int | None:
+    cursor.execute(
+        """
+        SELECT id
+        FROM milestones
+        WHERE major_event_id = ? AND title = ?
+        ORDER BY id
+        LIMIT 1
+        """,
+        (major_event_id, title),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    return int(row["id"])
+
+
+def _get_goal_id(cursor: Any, milestone_id: int, title: str) -> int | None:
+    cursor.execute(
+        """
+        SELECT id
+        FROM goals
+        WHERE milestone_id = ? AND title = ?
+        ORDER BY id
+        LIMIT 1
+        """,
+        (milestone_id, title),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    return int(row["id"])
+
+
 def _seed_major_event(cursor: Any) -> int:
     event_id = _get_major_event_id(cursor, EVENT_TITLE)
     if event_id is None:
@@ -88,24 +128,18 @@ def _seed_major_event(cursor: Any) -> int:
         )
         return int(cursor.lastrowid)
 
-    cursor.execute(
-        """
-        UPDATE major_events
-        SET
-            description = ?,
-            target_date = ?,
-            status = ?,
-            progress_percent = ?
-        WHERE id = ?
-        """,
-        (
-            EVENT_DATA["description"],
-            EVENT_DATA["target_date"],
-            EVENT_DATA["status"],
-            EVENT_DATA["progress_percent"],
-            event_id,
-        ),
-    )
+    cursor.execute("SELECT description FROM major_events WHERE id = ?", (event_id,))
+    row = cursor.fetchone()
+    if row is not None and _is_blank(row["description"]):
+        cursor.execute(
+            """
+            UPDATE major_events
+            SET description = ?
+            WHERE id = ?
+            """,
+            (EVENT_DATA["description"], event_id),
+        )
+
     return event_id
 
 
@@ -156,6 +190,82 @@ def _seed_milestones(cursor: Any, event_id: int) -> None:
         )
 
 
+def _seed_inbox(cursor: Any, event_id: int) -> None:
+    milestone_id = _get_milestone_id(cursor, event_id, INBOX_MILESTONE_TITLE)
+    if milestone_id is None:
+        cursor.execute(
+            """
+            INSERT INTO milestones (
+                major_event_id,
+                title,
+                description,
+                status,
+                progress_percent
+            )
+            VALUES (?, ?, ?, ?, 0)
+            """,
+            (
+                event_id,
+                INBOX_MILESTONE_TITLE,
+                "Default catch-all milestone for loose Orbit goals and tasks.",
+                "active",
+            ),
+        )
+        milestone_id = int(cursor.lastrowid)
+    else:
+        cursor.execute(
+            """
+            UPDATE milestones
+            SET
+                description = ?,
+                status = ?
+            WHERE id = ?
+            """,
+            (
+                "Default catch-all milestone for loose Orbit goals and tasks.",
+                "active",
+                milestone_id,
+            ),
+        )
+
+    goal_id = _get_goal_id(cursor, milestone_id, INBOX_GOAL_TITLE)
+    if goal_id is None:
+        cursor.execute(
+            """
+            INSERT INTO goals (
+                milestone_id,
+                title,
+                description,
+                status,
+                priority
+            )
+            VALUES (?, ?, ?, ?, 0)
+            """,
+            (
+                milestone_id,
+                INBOX_GOAL_TITLE,
+                "Default catch-all goal for loose Orbit tasks.",
+                "active",
+            ),
+        )
+        return
+
+    cursor.execute(
+        """
+        UPDATE goals
+        SET
+            description = ?,
+            status = ?
+        WHERE id = ?
+        """,
+        (
+            "Default catch-all goal for loose Orbit tasks.",
+            "active",
+            goal_id,
+        ),
+    )
+
+
 def seed() -> None:
     init_orbit_db()
 
@@ -164,6 +274,7 @@ def seed() -> None:
         cursor = conn.cursor()
         event_id = _seed_major_event(cursor)
         _seed_milestones(cursor, event_id)
+        _seed_inbox(cursor, event_id)
         conn.commit()
     finally:
         conn.close()

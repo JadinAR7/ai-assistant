@@ -37,6 +37,9 @@ os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 TEXT_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
 VISION_MODEL = os.getenv("VISION_MODEL", "qwen2.5vl:7b")
+ORBIT_CORPORATE_ESCAPE_TITLE = "Corporate Escape"
+ORBIT_INBOX_MILESTONE_TITLE = "Inbox / General"
+ORBIT_INBOX_GOAL_TITLE = "Inbox"
 
 
 SYMBOL_CONFIG = {
@@ -495,6 +498,74 @@ def _orbit_summary(record: dict, fields: list[str]) -> dict:
     return {field: record.get(field) for field in fields}
 
 
+def _find_orbit_record(table: str, **matches) -> dict | None:
+    for record in orbit_service.list_records(table):
+        if all(record.get(key) == value for key, value in matches.items()):
+            return record
+    return None
+
+
+def _get_corporate_escape_event() -> dict | None:
+    return _find_orbit_record("major_events", title=ORBIT_CORPORATE_ESCAPE_TITLE)
+
+
+def _get_or_create_inbox_milestone() -> tuple[dict | None, str | None]:
+    event = _get_corporate_escape_event()
+    if event is None:
+        return None, "Corporate Escape major event not found; cannot create default Orbit Inbox milestone."
+
+    milestone = _find_orbit_record(
+        "milestones",
+        major_event_id=event.get("id"),
+        title=ORBIT_INBOX_MILESTONE_TITLE,
+    )
+    if milestone is not None:
+        return milestone, None
+
+    try:
+        milestone = orbit_service.create_milestone({
+            "major_event_id": event.get("id"),
+            "title": ORBIT_INBOX_MILESTONE_TITLE,
+            "description": "Default catch-all milestone for loose Orbit goals and tasks.",
+            "status": "active",
+            "progress_percent": 0,
+            "target_value": None,
+            "current_value": None,
+            "due_date": None,
+        })
+    except Exception as e:
+        return None, f"Unable to create default Orbit Inbox milestone: {e}"
+
+    return milestone, None
+
+
+def _get_or_create_inbox_goal() -> tuple[dict | None, str | None]:
+    milestone, error = _get_or_create_inbox_milestone()
+    if error:
+        return None, error
+
+    goal = _find_orbit_record(
+        "goals",
+        milestone_id=milestone.get("id"),
+        title=ORBIT_INBOX_GOAL_TITLE,
+    )
+    if goal is not None:
+        return goal, None
+
+    try:
+        goal = orbit_service.create_goal({
+            "milestone_id": milestone.get("id"),
+            "title": ORBIT_INBOX_GOAL_TITLE,
+            "description": "Default catch-all goal for loose Orbit tasks.",
+            "status": "active",
+            "priority": 0,
+        })
+    except Exception as e:
+        return None, f"Unable to create default Orbit Inbox goal: {e}"
+
+    return goal, None
+
+
 def create_orbit_task(
     title: str = "",
     description: str | None = None,
@@ -508,13 +579,19 @@ def create_orbit_task(
     if error:
         return {"success": False, "error": error}
 
-    if parsed_goal_id is None and not _orbit_column_allows_missing("tasks", "goal_id"):
-        return {
-            "success": False,
-            "error": "goal_id is required by the current Orbit database schema.",
-        }
-
     try:
+        if parsed_goal_id is None:
+            inbox_goal, error = _get_or_create_inbox_goal()
+            if error:
+                return {"success": False, "error": error}
+            parsed_goal_id = inbox_goal.get("id")
+
+        if parsed_goal_id is None and not _orbit_column_allows_missing("tasks", "goal_id"):
+            return {
+                "success": False,
+                "error": "goal_id is required by the current Orbit database schema.",
+            }
+
         payload = {
             "goal_id": parsed_goal_id,
             "title": _orbit_text(title),
@@ -530,6 +607,7 @@ def create_orbit_task(
             "task_id": task.get("id"),
             "title": task.get("title"),
             "due_date": task.get("due_date"),
+            "goal_id": task.get("goal_id"),
         }
     except Exception as e:
         return {"success": False, "error": f"Unable to create Orbit task: {e}"}
@@ -548,17 +626,23 @@ def create_orbit_goal(
     if error:
         return {"success": False, "error": error}
 
-    if parsed_milestone_id is None and not _orbit_column_allows_missing("goals", "milestone_id"):
-        return {
-            "success": False,
-            "error": "milestone_id is required by the current Orbit database schema.",
-        }
-
     parsed_priority, error = _parse_optional_int(priority, "priority")
     if error:
         return {"success": False, "error": error}
 
     try:
+        if parsed_milestone_id is None:
+            inbox_milestone, error = _get_or_create_inbox_milestone()
+            if error:
+                return {"success": False, "error": error}
+            parsed_milestone_id = inbox_milestone.get("id")
+
+        if parsed_milestone_id is None and not _orbit_column_allows_missing("goals", "milestone_id"):
+            return {
+                "success": False,
+                "error": "milestone_id is required by the current Orbit database schema.",
+            }
+
         payload = {
             "milestone_id": parsed_milestone_id,
             "title": _orbit_text(title),
@@ -573,6 +657,7 @@ def create_orbit_goal(
             "goal_id": goal.get("id"),
             "title": goal.get("title"),
             "priority": goal.get("priority"),
+            "milestone_id": goal.get("milestone_id"),
         }
     except Exception as e:
         return {"success": False, "error": f"Unable to create Orbit goal: {e}"}

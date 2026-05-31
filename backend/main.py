@@ -162,9 +162,10 @@ Inputs:
 Rules:
 - Use underscores instead of spaces in title and description values.
 - If the task belongs to an existing goal, include goal_id.
+- If no goal is named, omit goal_id and the task will go to the Orbit Inbox goal.
 
 Example:
-TOOL: create_orbit_task title=Review_trading_journal due_date=2026-05-31
+TOOL: create_orbit_task title=Review_my_trading_journal_tonight
 
 - create_orbit_goal: creates an Orbit goal
 
@@ -177,9 +178,10 @@ Inputs:
 Rules:
 - Use underscores instead of spaces in title and description values.
 - If the goal belongs to an existing milestone, include milestone_id.
+- If no milestone is named, omit milestone_id and the goal will go to the Orbit Inbox / General milestone.
 
 Example:
-TOOL: create_orbit_goal title=Improve_trading_review_cadence milestone_id=2 priority=1
+TOOL: create_orbit_goal title=Build_my_trading_review_routine priority=1
 
 - update_orbit_milestone_progress: updates progress for an Orbit milestone
 
