@@ -469,6 +469,16 @@ def _parse_optional_int(value: str | int | None, field_name: str) -> tuple[int |
         return None, f"{field_name} must be a valid integer."
 
 
+def _parse_optional_float(value: str | int | float | None, field_name: str) -> tuple[float | None, str | None]:
+    if value is None or value == "":
+        return None, None
+
+    try:
+        return float(value), None
+    except (TypeError, ValueError):
+        return None, f"{field_name} must be a valid number."
+
+
 def _parse_progress_percent(value: str | int | None) -> tuple[int | None, str | None]:
     progress_percent, error = _parse_required_int(value, "progress_percent")
     if error:
@@ -496,6 +506,32 @@ def _orbit_column_allows_missing(table: str, column: str) -> bool:
 
 def _orbit_summary(record: dict, fields: list[str]) -> dict:
     return {field: record.get(field) for field in fields}
+
+
+def _parse_orbit_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+
+
+def _orbit_table_exists(table: str) -> bool:
+    conn = get_orbit_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        )
+        return cursor.fetchone() is not None
+    finally:
+        conn.close()
 
 
 def _find_orbit_record(table: str, **matches) -> dict | None:
@@ -873,6 +909,152 @@ def get_corporate_escape_status():
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def _get_latest_orbit_reviews(limit: int = 3) -> list[dict]:
+    orbit_service.list_records("reviews")
+
+    conn = get_orbit_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(reviews)")
+        columns = {row["name"] for row in cursor.fetchall()}
+        order_column = "created_at" if "created_at" in columns else "id"
+        cursor.execute(
+            f"SELECT * FROM reviews ORDER BY {order_column} DESC LIMIT ?",
+            (limit,),
+        )
+
+        reviews = []
+        for row in cursor.fetchall():
+            review = dict(row)
+            reviews.append({
+                "id": review.get("id"),
+                "title": review.get("title"),
+                "review_type": review.get("review_type"),
+                "summary": review.get("summary"),
+                "rating": review.get("rating"),
+                "created_at": review.get("created_at"),
+            })
+        return reviews
+    finally:
+        conn.close()
+
+
+def create_orbit_review(
+    review_type: str = "",
+    title: str | None = None,
+    summary: str | None = None,
+    rating: str | int | float | None = None,
+):
+    if not review_type:
+        return {"success": False, "error": "Missing required field: review_type."}
+
+    parsed_rating, error = _parse_optional_float(rating, "rating")
+    if error:
+        return {"success": False, "error": error}
+
+    try:
+        review = orbit_service.create_review({
+            "title": _orbit_text(title),
+            "review_type": _orbit_text(review_type),
+            "summary": _orbit_text(summary),
+            "rating": parsed_rating,
+        })
+
+        return {
+            "success": True,
+            "review": _orbit_summary(
+                review,
+                ["id", "title", "review_type", "summary", "rating", "created_at"],
+            ),
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Unable to create Orbit review: {e}"}
+
+
+def get_orbit_reviews(limit: str | int | None = 10):
+    parsed_limit, error = _parse_optional_int(limit, "limit")
+    if error:
+        return {"success": False, "error": error}
+
+    if parsed_limit is None:
+        parsed_limit = 10
+
+    if parsed_limit < 1:
+        return {"success": False, "error": "limit must be at least 1."}
+
+    try:
+        return {
+            "success": True,
+            "reviews": _get_latest_orbit_reviews(limit=parsed_limit),
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Unable to get Orbit reviews: {e}"}
+
+
+def generate_orbit_daily_summary():
+    try:
+        event = _get_corporate_escape_event()
+        milestones = orbit_service.list_records("milestones")
+        if event is not None:
+            milestones = [
+                milestone
+                for milestone in milestones
+                if milestone.get("major_event_id") == event.get("id")
+            ]
+
+        tasks = orbit_service.list_records("tasks")
+        today = datetime.now().date()
+        completed_today = []
+        open_tasks = []
+
+        for task in tasks:
+            status = str(task.get("status") or "").casefold()
+            if status == "completed":
+                completed_at = _parse_orbit_datetime(task.get("completed_at"))
+                if completed_at is not None and completed_at.date() == today:
+                    completed_today.append(
+                        _orbit_summary(task, ["id", "title", "status", "completed_at"])
+                    )
+            else:
+                open_tasks.append(
+                    _orbit_summary(task, ["id", "title", "status", "due_date"])
+                )
+
+        key_milestones = [
+            _orbit_summary(
+                milestone,
+                ["id", "title", "status", "progress_percent", "due_date"],
+            )
+            for milestone in milestones
+        ]
+
+        progress_snapshot = {
+            "event_title": event.get("title") if event else ORBIT_CORPORATE_ESCAPE_TITLE,
+            "status": event.get("status") if event else "not_found",
+            "progress_percent": event.get("progress_percent") if event else None,
+            "target_date": event.get("target_date") if event else None,
+        }
+        suggested_review_prompt = (
+            "What moved Corporate Escape forward today, what stayed open, "
+            "and what is the single highest-leverage next action for tomorrow?"
+        )
+
+        return {
+            "success": True,
+            "progress_snapshot": progress_snapshot,
+            "completed_today": completed_today,
+            "still_open": open_tasks,
+            "key_milestones": key_milestones,
+            "latest_reviews": _get_latest_orbit_reviews(limit=3),
+            "suggested_review_prompt": suggested_review_prompt,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Unable to generate Orbit daily summary: {e}",
+        }
 
 
 # ---------------------------------------------------------------------
@@ -3271,9 +3453,12 @@ TOOLS = {
     "create_orbit_task": create_orbit_task,
     "complete_orbit_task": complete_orbit_task,
     "create_orbit_goal": create_orbit_goal,
+    "create_orbit_review": create_orbit_review,
+    "get_orbit_reviews": get_orbit_reviews,
     "update_orbit_milestone_progress": update_orbit_milestone_progress,
     "update_orbit_major_event_progress": update_orbit_major_event_progress,
     "get_corporate_escape_status": get_corporate_escape_status,
+    "generate_orbit_daily_summary": generate_orbit_daily_summary,
 
     # Trading / market tools
     "refresh_market_csvs": refresh_market_csvs,

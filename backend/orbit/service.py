@@ -10,6 +10,7 @@ from .models import (
     MajorEventUpdate,
     MilestoneCreate,
     MilestoneUpdate,
+    ReviewCreate,
     TaskCreate,
     TaskUpdate,
 )
@@ -47,6 +48,12 @@ TABLE_COLUMNS = {
         "status",
         "due_date",
         "completed_at",
+    ],
+    "reviews": [
+        "title",
+        "review_type",
+        "summary",
+        "rating",
     ],
 }
 
@@ -195,3 +202,6 @@ def create_task(payload: TaskCreate) -> dict[str, Any]:
 def update_task(record_id: int, payload: TaskUpdate) -> dict[str, Any] | None:
     return _update_record("tasks", record_id, _model_data(payload, exclude_unset=True))
 
+
+def create_review(payload: ReviewCreate) -> dict[str, Any]:
+    return _create_record("reviews", _model_data(payload))

@@ -11,6 +11,8 @@ from .models import (
     Milestone,
     MilestoneCreate,
     MilestoneUpdate,
+    Review,
+    ReviewCreate,
     Task,
     TaskCreate,
     TaskUpdate,
@@ -158,3 +160,13 @@ def update_task(task_id: int, payload: TaskUpdate):
 def delete_task(task_id: int):
     if not service.delete_record("tasks", task_id):
         raise _not_found("Task", task_id)
+
+
+@router.post("/reviews", response_model=Review, status_code=status.HTTP_201_CREATED)
+def create_review(payload: ReviewCreate):
+    return service.create_review(payload)
+
+
+@router.get("/reviews", response_model=list[Review])
+def list_reviews():
+    return service.list_records("reviews")

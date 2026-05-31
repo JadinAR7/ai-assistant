@@ -201,6 +201,33 @@ Rules:
 Example:
 TOOL: create_orbit_goal title=Build_my_trading_review_routine priority=1
 
+- create_orbit_review: saves an Orbit review
+
+Inputs:
+- review_type required
+- title optional
+- summary optional
+- rating optional
+
+Rules:
+- Use create_orbit_review when Jadin asks to save, log, or record an Orbit review.
+- Use underscores instead of spaces in title, review_type, and summary values.
+
+Example:
+User: Save a daily Orbit review: strong focus today, rating 8.
+TOOL: create_orbit_review review_type=daily title=Daily_Orbit_Review summary=Strong_focus_today rating=8
+
+- get_orbit_reviews: lists recent Orbit reviews
+
+Inputs:
+- limit optional
+
+Use get_orbit_reviews when Jadin asks to show, list, or read recent Orbit reviews.
+
+Example:
+User: Show my recent Orbit reviews.
+TOOL: get_orbit_reviews limit=3
+
 - update_orbit_milestone_progress: updates progress for an Orbit milestone
 
 Inputs:
@@ -233,6 +260,12 @@ Use get_corporate_escape_status when Jadin asks about:
 
 Example:
 TOOL: get_corporate_escape_status
+
+- generate_orbit_daily_summary: summarizes Corporate Escape progress, completed tasks, open tasks, milestones, and recent reviews
+
+Example:
+User: Generate my Orbit daily summary.
+TOOL: generate_orbit_daily_summary
 
 - capture_tradingview: opens TradingView using Jadin's saved profile and captures a chart screenshot
 

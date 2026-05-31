@@ -6,7 +6,7 @@ const CORPORATE_ESCAPE_TITLE = "Corporate Escape";
 const MAJOR_EVENTS_URL = "http://127.0.0.1:8000/orbit/major-events";
 const MILESTONES_URL = "http://127.0.0.1:8000/orbit/milestones";
 const TASKS_URL = "http://127.0.0.1:8000/orbit/tasks";
-const GOALS_URL = "http://127.0.0.1:8000/orbit/goals";
+const REVIEWS_URL = "http://127.0.0.1:8000/orbit/reviews";
 
 type MajorEvent = {
   id: number;
@@ -39,13 +39,13 @@ type OrbitTask = {
   completed_at: string | null;
 };
 
-type OrbitGoal = {
-  id: number;
-  milestone_id: number;
-  title: string;
-  description: string | null;
-  status: string | null;
-  priority: number | null;
+type OrbitReview = {
+  id: number | string;
+  title?: string | null;
+  review_type: string;
+  summary?: string | null;
+  rating?: number | string | null;
+  created_at?: string | null;
 };
 
 const blockers = [
@@ -72,11 +72,19 @@ async function fetchJson<T>(url: string): Promise<T> {
 }
 
 async function getOrbitData() {
-  const [majorEvents, milestones, tasks, goals] = await Promise.all([
+  const [majorEvents, milestones, tasks, reviewsResult] = await Promise.all([
     fetchJson<MajorEvent[]>(MAJOR_EVENTS_URL),
     fetchJson<Milestone[]>(MILESTONES_URL),
     fetchJson<OrbitTask[]>(TASKS_URL),
-    fetchJson<OrbitGoal[]>(GOALS_URL),
+    fetchJson<OrbitReview[]>(REVIEWS_URL)
+      .then((reviews) => ({ reviews, error: null }))
+      .catch((error: unknown) => ({
+        reviews: [],
+        error:
+          error instanceof Error
+            ? error.message
+            : "Orbit reviews could not be loaded.",
+      })),
   ]);
 
   const event = majorEvents.find(
@@ -85,12 +93,42 @@ async function getOrbitData() {
 
   return {
     event,
-    goals,
     milestones: event
       ? milestones.filter((milestone) => milestone.major_event_id === event.id)
       : [],
+    reviews: getLatestReviews(reviewsResult.reviews),
+    reviewsError: reviewsResult.error,
     tasks,
   };
+}
+
+function getLatestReviews(reviews: OrbitReview[]) {
+  return reviews
+    .map((review, index) => ({ review, index }))
+    .sort((left, right) => {
+      const leftTime = left.review.created_at
+        ? new Date(left.review.created_at).getTime()
+        : Number.NaN;
+      const rightTime = right.review.created_at
+        ? new Date(right.review.created_at).getTime()
+        : Number.NaN;
+
+      if (Number.isNaN(leftTime) && Number.isNaN(rightTime)) {
+        return left.index - right.index;
+      }
+
+      if (Number.isNaN(leftTime)) {
+        return 1;
+      }
+
+      if (Number.isNaN(rightTime)) {
+        return -1;
+      }
+
+      return rightTime - leftTime;
+    })
+    .slice(0, 3)
+    .map(({ review }) => review);
 }
 
 function formatDate(value: string | null) {
@@ -106,20 +144,28 @@ function formatDate(value: string | null) {
   }).format(new Date(value));
 }
 
+function formatDateTime(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
 function formatStatus(value: string) {
   return value
     .split("_")
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
-}
-
-function formatPriority(value: number) {
-  if (value <= 0) {
-    return "Priority 0";
-  }
-
-  return `Priority ${value}`;
 }
 
 function getDaysRemaining(targetDate: string | null) {
@@ -181,7 +227,13 @@ export default async function OrbitPage() {
   try {
     orbitData = await getOrbitData();
   } catch (error) {
-    orbitData = { event: undefined, goals: [], milestones: [], tasks: [] };
+    orbitData = {
+      event: undefined,
+      milestones: [],
+      reviews: [],
+      reviewsError: null,
+      tasks: [],
+    };
     errorMessage =
       error instanceof Error
         ? error.message
@@ -317,35 +369,48 @@ export default async function OrbitPage() {
           )}
         </Panel>
 
-        <Panel title="Goals">
-          {orbitData.goals.length > 0 ? (
+        <Panel title="Reviews">
+          {orbitData.reviews.length > 0 ? (
             <div className="grid gap-3 md:grid-cols-2">
-              {orbitData.goals.map((goal) => (
+              {orbitData.reviews.map((review) => (
                 <article
-                  key={goal.id}
+                  key={review.id}
                   className="rounded-xl border border-white/10 bg-neutral-950 p-4"
                 >
                   <div className="mb-3 flex items-start justify-between gap-3">
                     <h3 className="text-sm font-semibold text-neutral-100">
-                      {goal.title}
+                      {review.title ?? formatStatus(review.review_type)}
                     </h3>
-                    {goal.status ? (
-                      <span className="shrink-0 rounded-full border border-blue-500/20 bg-blue-500/15 px-2 py-1 text-xs text-blue-200">
-                        {formatStatus(goal.status)}
-                      </span>
-                    ) : null}
+                    <span className="shrink-0 rounded-full border border-blue-500/20 bg-blue-500/15 px-2 py-1 text-xs text-blue-200">
+                      {formatStatus(review.review_type)}
+                    </span>
                   </div>
-                  {goal.priority !== null && goal.priority !== undefined ? (
-                    <p className="text-xs text-neutral-400">
-                      {formatPriority(goal.priority)}
+                  {review.summary ? (
+                    <p className="text-sm text-neutral-400">
+                      {review.summary}
                     </p>
+                  ) : null}
+                  {(review.rating !== null &&
+                    review.rating !== undefined) ||
+                  review.created_at ? (
+                    <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-neutral-500">
+                      {review.rating !== null &&
+                      review.rating !== undefined ? (
+                        <span>Rating {review.rating}</span>
+                      ) : null}
+                      {review.created_at ? (
+                        <span>{formatDateTime(review.created_at)}</span>
+                      ) : null}
+                    </div>
                   ) : null}
                 </article>
               ))}
             </div>
           ) : (
             <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
-              No goals have been added to Orbit yet.
+              {orbitData.reviewsError
+                ? "Reviews are unavailable right now."
+                : "No reviews saved yet."}
             </div>
           )}
         </Panel>

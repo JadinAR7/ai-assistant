@@ -109,3 +109,18 @@ class TaskUpdate(BaseModel):
 class Task(TaskBase):
     id: int
 
+
+class ReviewBase(BaseModel):
+    title: Optional[str] = None
+    review_type: str
+    summary: Optional[str] = None
+    rating: Optional[float] = None
+
+
+class ReviewCreate(ReviewBase):
+    pass
+
+
+class Review(ReviewBase):
+    id: int
+    created_at: datetime
