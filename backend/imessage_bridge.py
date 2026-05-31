@@ -50,6 +50,20 @@ def has_any(text: str, phrases: list[str]) -> bool:
     return any(phrase in text for phrase in phrases)
 
 
+def strip_wake_prefix(text: str) -> str:
+    """
+    Removes optional iMessage wake words before routing local commands.
+    """
+    clean = normalize_text(text)
+    lower = clean.lower()
+
+    for prefix in ["hey helix ", "ok helix ", "helix "]:
+        if lower.startswith(prefix):
+            return clean[len(prefix) :].strip()
+
+    return clean
+
+
 # -------------------------
 # iMessage database helpers
 # -------------------------
@@ -242,7 +256,7 @@ def route_message(text: str) -> str:
     """
     Handles simple assistant commands locally before falling back to /chat.
     """
-    clean = text.strip()
+    clean = strip_wake_prefix(text)
     lower = clean.lower()
 
     # -------------------------
