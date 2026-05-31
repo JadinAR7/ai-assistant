@@ -1,857 +1,137 @@
-"use client";
-
-import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import ReactMarkdown from "react-markdown";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
-
-function generateId() {
-  return Math.random().toString(36).substring(2, 10);
-}
-
-type Message = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  error?: boolean;
-  retryText?: string;
-};
-
-type ScanRecord = {
-  timestamp?: string;
-  timezone?: string;
-  symbol?: string;
-  sessions?: string[];
-  session_label?: string;
-  success?: boolean;
-  screenshot_path?: string;
-  vision_success?: boolean;
-  vision_error?: string | null;
-  csv_success?: boolean;
-  message?: string;
-  comparison?: {
-    market_changes?: string[];
-    visual_context_changes?: string[];
-    system_status?: string[];
-  };
-  alert?: {
-    should_alert?: boolean;
-    alert_type?: string;
-    severity?: string;
-    reasons?: string[];
-  };
-  state?: {
-    htf_bias?: string;
-    execution_bias?: string;
-    price_relation?: string;
-    visual_4h_fvg?: boolean;
-    visual_15m_fvg?: boolean;
-    pdh_visible?: boolean;
-    vision_success?: boolean;
-    csv_success?: boolean;
-  };
-};
-
-type ScanStatus = {
-  success?: boolean;
-  symbol?: string;
-  timestamp?: string;
-  timezone?: string;
-  active_sessions?: string[];
-  should_scan_now?: boolean;
-};
-
-function formatTimestamp(timestamp?: string) {
-  if (!timestamp) return "Unknown";
-
-  try {
-    const date = new Date(timestamp);
-
-    return new Intl.DateTimeFormat("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-      timeZoneName: "short",
-    }).format(date);
-  } catch {
-    return timestamp;
-  }
-}
-
-function getFileName(path?: string) {
-  if (!path) return "None";
-  return path.split("/").pop() || path;
-}
-
-function formatLabel(value?: string) {
-  if (!value) return "unknown";
-  return value.replaceAll("_", " ");
-}
-
-function getBiasBadgeClass(value?: string) {
-  const lower = value?.toLowerCase() || "";
-
-  if (lower.includes("bullish")) {
-    return "bg-green-500/15 text-green-300 border-green-500/20";
-  }
-
-  if (lower.includes("bearish")) {
-    return "bg-red-500/15 text-red-300 border-red-500/20";
-  }
-
-  if (lower.includes("neutral")) {
-    return "bg-yellow-500/15 text-yellow-300 border-yellow-500/20";
-  }
-
-  return "bg-neutral-800 text-neutral-300 border-white/10";
-}
-
-function getAlertBadgeClass(shouldAlert?: boolean, severity?: string) {
-  if (!shouldAlert) {
-    return "bg-neutral-800 text-neutral-300 border-white/10";
-  }
-
-  if (severity === "high") {
-    return "bg-red-500/15 text-red-300 border-red-500/20";
-  }
-
-  if (severity === "medium") {
-    return "bg-yellow-500/15 text-yellow-300 border-yellow-500/20";
-  }
-
-  return "bg-blue-500/15 text-blue-300 border-blue-500/20";
-}
-
-function buildCompactScanSummary(record: ScanRecord | null) {
-  if (!record) return "No scan loaded yet.";
-
-  const htf = record.state?.htf_bias || "unknown";
-  const execution = record.state?.execution_bias || "unknown";
-  const relation = formatLabel(record.state?.price_relation);
-  const alert = record.alert?.should_alert ? "Alert-worthy" : "No alert";
-
-  return `HTF ${htf}, execution ${execution}. Price relation: ${relation}. ${alert}.`;
-}
-
-export default function Home() {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: generateId(),
-      role: "assistant",
-      content: "What’s good, Jadin? Helix is online.",
-    },
-  ]);
-
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [scanLoading, setScanLoading] = useState(false);
-  const [latestScan, setLatestScan] = useState<ScanRecord | null>(null);
-  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
-
-  const bottomRef = useRef<HTMLDivElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
-
-  const [toolMode, setToolMode] = useState("auto");
-  const [attachedFile, setAttachedFile] = useState<File | null>(null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
-
-  useEffect(() => {
-    loadHistory();
-    loadScanStatus();
-    loadLatestScan();
-  }, []);
-
-  function addAssistantMessage(content: string, error = false) {
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: generateId(),
-        role: "assistant",
-        content,
-        error,
-      },
-    ]);
-  }
-
-  function formatScanSummary(record: ScanRecord) {
-    const alert = record.alert;
-    const comparison = record.comparison;
-
-    const marketChanges = comparison?.market_changes?.length
-      ? comparison.market_changes.map((item) => `- ${item}`).join("\n")
-      : "- No market comparison available.";
-
-    const visualChanges = comparison?.visual_context_changes?.length
-      ? comparison.visual_context_changes.map((item) => `- ${item}`).join("\n")
-      : "- No visual comparison available.";
-
-    const alertReasons = alert?.reasons?.length
-      ? alert.reasons.map((item) => `- ${item}`).join("\n")
-      : "- No alert decision available.";
-
-    return `## Latest MES Scan
-
-**Session:** ${record.session_label || "Unknown"}  
-**Time:** ${formatTimestamp(record.timestamp)}  
-**Vision:** ${record.vision_success ? "Success" : "Failed"}  
-**CSV:** ${record.csv_success ? "Success" : "Failed"}  
-**Alert:** ${alert?.should_alert ? "YES" : "No"}  
-**Severity:** ${alert?.severity || "none"}
-
-## Quick Read
-${buildCompactScanSummary(record)}
-
-## Market Changes
-${marketChanges}
-
-## Visual Context Changes
-${visualChanges}
-
-## Alert Reasons
-${alertReasons}
-
----
-
-${record.message || "No scan message returned."}`;
-  }
-
-  async function loadScanStatus() {
-    try {
-      const res = await fetch(`${API_BASE}/scan/status`);
-      const data = await res.json();
-      setScanStatus(data);
-    } catch {
-      console.log("Could not load scan status.");
-    }
-  }
-
-  async function loadLatestScan() {
-    try {
-      const res = await fetch(`${API_BASE}/scan/latest`);
-      const data = await res.json();
-
-      if (data?.record) {
-        setLatestScan(data.record);
-        return data.record;
-      }
-
-      return null;
-    } catch {
-      console.log("Could not load latest scan.");
-      return null;
-    }
-  }
-
-  async function forceScanMES() {
-    if (scanLoading || loading) return;
-
-    const userMessage: Message = {
-      id: generateId(),
-      role: "user",
-      content: "Force scan MES",
-    };
-
-    setMessages((prev) => [...prev, userMessage]);
-    setScanLoading(true);
-    setLoading(true);
-
-    try {
-      const res = await fetch(`${API_BASE}/scan/force`, {
-        method: "POST",
-      });
-
-      if (!res.ok) {
-        throw new Error("Force scan failed");
-      }
-
-      const record: ScanRecord = await res.json();
-
-      setLatestScan(record);
-      await loadScanStatus();
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: generateId(),
-          role: "assistant",
-          content: formatScanSummary(record),
-        },
-      ]);
-    } catch {
-      addAssistantMessage(
-        "Force scan failed. Check FastAPI, Playwright, TradingView, and Ollama.",
-        true
-      );
-    } finally {
-      setScanLoading(false);
-      setLoading(false);
-    }
-  }
-
-  async function sendMessage(messageText?: string) {
-    const text = messageText ?? input;
-
-    if ((!text.trim() && !attachedFile) || loading) return;
-
-    const userMessage: Message = {
-      id: generateId(),
-      role: "user",
-      content: text || `Analyze attached image: ${attachedFile?.name}`,
-    };
-
-    setMessages((prev) => [...prev, userMessage]);
-    setInput("");
-    setLoading(true);
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      if (attachedFile) {
-        const formData = new FormData();
-        formData.append("file", attachedFile);
-        formData.append(
-          "prompt",
-          text || "Analyze this chart using Jadin's ICT trading model."
-        );
-
-        const res = await fetch(`${API_BASE}/analyze-image`, {
-          method: "POST",
-          body: formData,
-          signal: controller.signal,
-        });
-
-        if (!res.ok) throw new Error("Image analysis failed");
-
-        const data = await res.json();
-
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: generateId(),
-            role: "assistant",
-            content: data.message || "No image analysis returned.",
-          },
-        ]);
-
-        setAttachedFile(null);
-        return;
-      }
-
-      const res = await fetch(`${API_BASE}/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          message: text,
-          tool_mode: toolMode,
-        }),
-        signal: controller.signal,
-      });
-
-      if (!res.ok) {
-        throw new Error("Backend request failed");
-      }
-
-      const data = await res.json();
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: generateId(),
-          role: "assistant",
-          content: data.message || "No response.",
-        },
-      ]);
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: generateId(),
-          role: "assistant",
-          content: attachedFile
-            ? "Image analysis failed. Check FastAPI/Ollama vision model."
-            : "Backend connection failed. Check FastAPI.",
-          error: true,
-          retryText: text,
-        },
-      ]);
-    } finally {
-      abortRef.current = null;
-      setLoading(false);
-    }
-  }
-
-  function stopResponse() {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setLoading(false);
-    setScanLoading(false);
-  }
-
-  function deleteMessage(id: string) {
-    setMessages((prev) => prev.filter((msg) => msg.id !== id));
-  }
-
-  async function clearChat() {
-    try {
-      await fetch(`${API_BASE}/reset`, {
-        method: "POST",
-      });
-    } catch {
-      console.log("Could not reset backend memory.");
-    }
-
-    setMessages([
-      {
-        id: generateId(),
-        role: "assistant",
-        content: "Chat cleared. Backend memory reset too.",
-      },
-    ]);
-
-    messagesContainerRef.current?.scrollTo({
-      top: 0,
-      behavior: "smooth",
-    });
-  }
-
-  async function loadHistory() {
-    try {
-      const res = await fetch(`${API_BASE}/history`);
-      const data = await res.json();
-
-      if (!data.history?.length) return;
-
-      const loadedMessages: Message[] = data.history.map(
-        (item: { role: string; content: string }) => ({
-          id: generateId(),
-          role: item.role.toLowerCase() === "user" ? "user" : "assistant",
-          content: item.content,
-        })
-      );
-
-      setMessages(loadedMessages);
-    } catch {
-      console.log("Could not load history.");
-    }
-  }
-
-  async function handleFileUpload(file: File) {
-    const isImage =
-      file.type.startsWith("image/") ||
-      file.name.endsWith(".png") ||
-      file.name.endsWith(".jpg") ||
-      file.name.endsWith(".jpeg") ||
-      file.name.endsWith(".webp");
-
-    const isTextFile =
-      file.type.startsWith("text/") ||
-      file.name.endsWith(".py") ||
-      file.name.endsWith(".js") ||
-      file.name.endsWith(".ts") ||
-      file.name.endsWith(".tsx") ||
-      file.name.endsWith(".json") ||
-      file.name.endsWith(".md") ||
-      file.name.endsWith(".txt");
-
-    if (isImage) {
-      setAttachedFile(file);
-      return;
-    }
-
-    if (isTextFile) {
-      const text = await file.text();
-      setInput(`Attached file: ${file.name}\n\n${text.slice(0, 4000)}`);
-      return;
-    }
-
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: generateId(),
-        role: "assistant",
-        content: `Attachment "${file.name}" is not supported yet.`,
-      },
-    ]);
-  }
-
-  const activeSessions =
-    scanStatus?.active_sessions && scanStatus.active_sessions.length > 0
-      ? scanStatus.active_sessions.join(" + ")
-      : "Inactive";
-
-  const htfBias = latestScan?.state?.htf_bias || "unknown";
-  const executionBias = latestScan?.state?.execution_bias || "unknown";
-  const priceRelation = formatLabel(latestScan?.state?.price_relation);
-  const alertShouldFire = latestScan?.alert?.should_alert || false;
-  const alertSeverity = latestScan?.alert?.severity || "none";
-
+const modules = [
+  {
+    name: "Command Center",
+    href: "/command-center",
+    status: "Live",
+    description: "Chat, scan controls, market status, and latest MES reads.",
+  },
+  {
+    name: "Orbit",
+    href: "/orbit",
+    status: "Live",
+    description: "Planning, milestones, major events, and execution tracking.",
+  },
+  {
+    name: "Trade Journal",
+    href: "/trade-journal",
+    status: "Soon",
+    description: "Session reviews, rule adherence, and performance memory.",
+  },
+  {
+    name: "Ascend",
+    href: "/ascend",
+    status: "Soon",
+    description: "Long-term goals, training arcs, and progress systems.",
+  },
+];
+
+export default function HelixCorePage() {
   return (
-    <main className="min-h-screen bg-neutral-950 text-white">
-      <header className="sticky top-0 z-20 border-b border-white/10 bg-neutral-950/80 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
+    <main className="relative min-h-screen overflow-hidden bg-[#05070b] text-white">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,#14315f55,transparent_34%),linear-gradient(135deg,#07111f_0%,#05070b_45%,#0b1117_100%)]" />
+      <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.035)_1px,transparent_1px)] bg-[size:48px_48px] opacity-30" />
+
+      <section className="relative mx-auto flex min-h-screen max-w-7xl flex-col px-4 py-6 sm:px-6 lg:px-8">
+        <header className="flex items-center justify-between border-b border-white/10 pb-4">
           <div>
-            <h1 className="text-lg font-semibold">Helix Command Center</h1>
-            <p className="text-sm text-neutral-400">
-              Local AI. Real tools. Full control.
+            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-cyan-300">
+              Helix
             </p>
+            <h1 className="mt-1 text-xl font-semibold tracking-tight">
+              Core
+            </h1>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Link
-              href="/orbit"
-              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
-            >
-              Orbit
-            </Link>
-
-            <button
-              onClick={loadScanStatus}
-              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
-            >
-              Refresh Status
-            </button>
-
-            <button
-              onClick={clearChat}
-              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
-            >
-              Clear
-            </button>
+          <div className="rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-xs font-semibold text-emerald-200">
+            System online
           </div>
-        </div>
-      </header>
+        </header>
 
-      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 px-4 py-4 pb-36 lg:grid-cols-[1fr_380px]">
-        <section className="min-h-[70vh] overflow-hidden rounded-2xl border border-white/10 bg-neutral-950">
-          <div
-            ref={messagesContainerRef}
-            className="flex max-h-[calc(100vh-190px)] flex-col gap-4 overflow-y-auto px-4 py-6"
-          >
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`group flex ${
-                  msg.role === "user" ? "justify-end" : "justify-start"
-                }`}
+        <div className="grid flex-1 items-center gap-8 py-10 lg:grid-cols-[0.95fr_1.05fr]">
+          <div className="max-w-2xl">
+            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-cyan-300">
+              Assistant operating layer
+            </p>
+            <h2 className="mt-4 text-4xl font-semibold tracking-tight text-white sm:text-6xl">
+              Helix Core
+            </h2>
+            <p className="mt-5 max-w-xl text-base leading-7 text-neutral-300">
+              Helix online. What would you like to access today?
+            </p>
+
+            <div className="mt-8 flex flex-wrap gap-3">
+              <Link
+                href="/command-center"
+                className="rounded-lg bg-cyan-300 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200"
               >
-                <div
-                  className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-lg ${
-                    msg.role === "user"
-                      ? "bg-blue-600 text-white"
-                      : msg.error
-                      ? "border border-red-500/30 bg-red-950/40 text-red-100"
-                      : "border border-white/10 bg-neutral-900 text-neutral-100"
-                  }`}
-                >
-                  <div className="prose prose-invert max-w-none prose-p:my-2 prose-headings:my-3 prose-ul:my-2 prose-li:my-1">
-                    {msg.content.startsWith("TOOL:") ? (
-                      "Using tool..."
-                    ) : (
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
-                    )}
+                Open Command Center
+              </Link>
+              <Link
+                href="/orbit"
+                className="rounded-lg border border-white/15 px-4 py-3 text-sm font-semibold text-neutral-100 transition hover:bg-white/10"
+              >
+                Open Orbit
+              </Link>
+            </div>
+          </div>
+
+          <div className="relative">
+            <div className="rounded-lg border border-cyan-300/20 bg-slate-950/80 p-5 shadow-2xl shadow-cyan-950/40 backdrop-blur">
+              <div className="mb-5 flex items-center justify-between border-b border-white/10 pb-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.22em] text-neutral-500">
+                    Core access
+                  </p>
+                  <h3 className="mt-1 text-lg font-semibold">
+                    Module Directory
+                  </h3>
+                </div>
+                <div className="h-3 w-3 rounded-full bg-cyan-300 shadow-[0_0_24px_rgba(103,232,249,0.9)]" />
+              </div>
+
+              <div className="mb-5 grid place-items-center rounded-lg border border-cyan-300/15 bg-cyan-300/5 p-8">
+                <div className="grid h-44 w-44 place-items-center rounded-full border border-cyan-300/30 bg-slate-950 shadow-[inset_0_0_50px_rgba(34,211,238,0.14)]">
+                  <div className="grid h-28 w-28 place-items-center rounded-full border border-emerald-300/30 bg-emerald-300/10">
+                    <span className="text-2xl font-semibold tracking-[0.16em] text-cyan-100">
+                      HX
+                    </span>
                   </div>
+                </div>
+              </div>
 
-                  <div className="mt-2 flex gap-3 opacity-70">
-                    <button
-                      onClick={() => navigator.clipboard.writeText(msg.content)}
-                      className="text-xs text-neutral-400 underline underline-offset-4 hover:text-white"
-                    >
-                      Copy
-                    </button>
-
-                    {msg.error && msg.retryText && (
-                      <button
-                        onClick={() => sendMessage(msg.retryText)}
-                        className="text-xs text-red-200 underline underline-offset-4"
+              <div className="grid gap-3 sm:grid-cols-2">
+                {modules.map((module) => (
+                  <Link
+                    key={module.href}
+                    href={module.href}
+                    className="group rounded-lg border border-white/10 bg-white/[0.04] p-4 transition hover:border-cyan-300/50 hover:bg-cyan-300/10"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <h4 className="text-sm font-semibold text-white">
+                        {module.name}
+                      </h4>
+                      <span
+                        className={`rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${
+                          module.status === "Live"
+                            ? "border-emerald-300/30 bg-emerald-300/10 text-emerald-200"
+                            : "border-amber-300/30 bg-amber-300/10 text-amber-200"
+                        }`}
                       >
-                        Retry
-                      </button>
-                    )}
-
-                    <button
-                      onClick={() => deleteMessage(msg.id)}
-                      className="text-xs text-neutral-400 underline underline-offset-4 hover:text-white"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            {loading && (
-              <div className="flex justify-start">
-                <div className="rounded-2xl border border-white/10 bg-neutral-900 px-4 py-3 text-sm text-neutral-400">
-                  <div className="flex gap-1">
-                    <span className="animate-bounce">•</span>
-                    <span className="animate-bounce [animation-delay:0.1s]">
-                      •
-                    </span>
-                    <span className="animate-bounce [animation-delay:0.2s]">
-                      •
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div ref={bottomRef} />
-          </div>
-        </section>
-
-        <aside className="flex flex-col gap-4">
-          <section className="rounded-2xl border border-blue-500/30 bg-blue-950/20 p-4">
-            <div className="mb-3 flex items-center justify-between">
-              <div>
-                <h2 className="text-sm font-semibold text-blue-100">
-                  MES Scanner
-                </h2>
-                <p className="text-xs text-blue-200/70">
-                  Session: {activeSessions}
-                </p>
-              </div>
-
-              <span
-                className={`rounded-full px-2 py-1 text-xs ${
-                  scanStatus?.should_scan_now
-                    ? "bg-green-500/20 text-green-200"
-                    : "bg-neutral-800 text-neutral-300"
-                }`}
-              >
-                {scanStatus?.should_scan_now ? "Active" : "Idle"}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={forceScanMES}
-                disabled={scanLoading || loading}
-                className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {scanLoading ? "Scanning..." : "Scan MES"}
-              </button>
-
-              <button
-                onClick={async () => {
-                  const record = await loadLatestScan();
-
-                  if (record) {
-                    addAssistantMessage(formatScanSummary(record));
-                  } else {
-                    addAssistantMessage(
-                      "No latest scan found yet. Run Scan MES first.",
-                      true
-                    );
-                  }
-                }}
-                className="rounded-xl border border-white/10 px-3 py-2 text-sm text-neutral-200 hover:bg-white/10"
-              >
-                Latest Scan
-              </button>
-            </div>
-          </section>
-
-          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-4">
-            <h2 className="mb-3 text-sm font-semibold">Latest Scan Summary</h2>
-
-            <div className="rounded-xl border border-white/10 bg-neutral-950 p-3 text-sm text-neutral-200">
-              {buildCompactScanSummary(latestScan)}
-            </div>
-          </section>
-
-          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-4">
-            <h2 className="mb-3 text-sm font-semibold">Latest State</h2>
-
-            {latestScan ? (
-              <div className="space-y-3 text-sm">
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="rounded-xl bg-neutral-950 p-3">
-                    <p className="text-neutral-500">HTF bias</p>
-                    <span
-                      className={`mt-2 inline-flex rounded-full border px-2 py-1 text-xs font-semibold ${getBiasBadgeClass(
-                        htfBias
-                      )}`}
-                    >
-                      {formatLabel(htfBias)}
-                    </span>
-                  </div>
-
-                  <div className="rounded-xl bg-neutral-950 p-3">
-                    <p className="text-neutral-500">Execution</p>
-                    <span
-                      className={`mt-2 inline-flex rounded-full border px-2 py-1 text-xs font-semibold ${getBiasBadgeClass(
-                        executionBias
-                      )}`}
-                    >
-                      {formatLabel(executionBias)}
-                    </span>
-                  </div>
-
-                  <div className="rounded-xl bg-neutral-950 p-3">
-                    <p className="text-neutral-500">Price relation</p>
-                    <p className="mt-2 font-semibold text-neutral-200">
-                      {priceRelation}
+                        {module.status}
+                      </span>
+                    </div>
+                    <p className="mt-3 text-sm leading-6 text-neutral-400 group-hover:text-neutral-200">
+                      {module.description}
                     </p>
-                  </div>
-
-                  <div className="rounded-xl bg-neutral-950 p-3">
-                    <p className="text-neutral-500">Alert</p>
-                    <span
-                      className={`mt-2 inline-flex rounded-full border px-2 py-1 text-xs font-semibold ${getAlertBadgeClass(
-                        alertShouldFire,
-                        alertSeverity
-                      )}`}
-                    >
-                      {alertShouldFire ? "Yes" : "No"}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="rounded-xl bg-neutral-950 p-3 text-xs">
-                  <p className="mb-1 text-neutral-500">Last scan</p>
-                  <p className="break-words text-neutral-200">
-                    {formatTimestamp(latestScan.timestamp)}
-                  </p>
-                </div>
-
-                <div className="rounded-xl bg-neutral-950 p-3 text-xs">
-                  <p className="mb-1 text-neutral-500">Screenshot</p>
-                  <p className="break-words text-neutral-300">
-                    {getFileName(latestScan.screenshot_path)}
-                  </p>
-                </div>
+                  </Link>
+                ))}
               </div>
-            ) : (
-              <p className="text-sm text-neutral-400">
-                No scan loaded yet. Run Scan MES.
-              </p>
-            )}
-          </section>
-
-          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-4">
-            <h2 className="mb-3 text-sm font-semibold">Alert Decision</h2>
-
-            {latestScan?.alert ? (
-              <div className="space-y-2 text-sm">
-                <p>
-                  <span className="text-neutral-400">Should alert:</span>{" "}
-                  {latestScan.alert.should_alert ? "Yes" : "No"}
-                </p>
-                <p>
-                  <span className="text-neutral-400">Type:</span>{" "}
-                  {latestScan.alert.alert_type || "none"}
-                </p>
-                <p>
-                  <span className="text-neutral-400">Severity:</span>{" "}
-                  {latestScan.alert.severity || "none"}
-                </p>
-
-                <div className="pt-2">
-                  <p className="mb-1 text-xs text-neutral-500">Reasons</p>
-                  <ul className="list-disc space-y-1 pl-5 text-xs text-neutral-300">
-                    {(latestScan.alert.reasons || []).map((reason, index) => (
-                      <li key={`${reason}-${index}`}>{reason}</li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            ) : (
-              <p className="text-sm text-neutral-400">
-                No alert decision loaded.
-              </p>
-            )}
-          </section>
-        </aside>
-      </div>
-
-      <footer className="fixed bottom-0 left-0 right-0 border-t border-white/10 bg-neutral-950/90 backdrop-blur">
-        <div className="mx-auto max-w-7xl px-4 py-4">
-          {attachedFile && (
-            <div className="mb-2 flex items-center justify-between rounded-xl border border-white/10 bg-neutral-900 px-3 py-2 text-xs text-neutral-300">
-              <span className="truncate">Attached: {attachedFile.name}</span>
-
-              <button
-                type="button"
-                onClick={() => setAttachedFile(null)}
-                className="ml-3 text-neutral-400 underline underline-offset-4 hover:text-white"
-              >
-                Remove
-              </button>
             </div>
-          )}
-
-          <div className="flex gap-2 rounded-2xl border border-white/10 bg-neutral-900 p-2 shadow-2xl">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="rounded-xl border border-white/10 px-3 text-lg text-neutral-400 hover:bg-white/10"
-              title="Attach file"
-            >
-              +
-            </button>
-
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-
-                if (file) {
-                  handleFileUpload(file);
-                }
-
-                e.currentTarget.value = "";
-              }}
-            />
-
-            <select
-              value={toolMode}
-              onChange={(e) => setToolMode(e.target.value)}
-              className="rounded-xl border border-white/10 bg-neutral-950 px-2 text-xs text-neutral-300 outline-none"
-            >
-              <option value="auto">Auto</option>
-              <option value="market_csv">Market CSV</option>
-              <option value="analyze_tradingview">TradingView</option>
-            </select>
-
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  sendMessage();
-                }
-              }}
-              placeholder="Ask Helix..."
-              rows={1}
-              className="min-h-11 flex-1 resize-none bg-transparent px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-500"
-            />
-
-            <button
-              onClick={loading ? stopResponse : () => sendMessage()}
-              className={`rounded-xl px-4 py-2 text-sm font-semibold ${
-                loading ? "bg-red-500 text-white" : "bg-white text-black"
-              }`}
-            >
-              {loading ? "Stop" : "Send"}
-            </button>
           </div>
         </div>
-      </footer>
+      </section>
     </main>
   );
 }
