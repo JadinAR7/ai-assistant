@@ -245,7 +245,7 @@ Rules:
 - Use underscores instead of spaces in notes and session_grade values.
 - If Jadin says "grade", pass it as session_grade.
 - Never say a trade session was logged unless Tool Result success is True and a trade_session_id is present.
-- Do not calculate readiness from trade sessions yet.
+- Do not calculate or update readiness while logging a trade session.
 
 Examples:
 User: Log a trade session for MES with PnL 250, rule adherence 80, confidence 7, grade B, notes followed plan but exited early.
@@ -329,6 +329,33 @@ Rules:
 Example:
 User: Update Trading readiness to 45%.
 TOOL: update_readiness_category category_name=Trading current_score=45
+
+- suggest_trading_readiness_update: suggests whether Trading readiness should be manually updated
+
+Inputs:
+- recent_limit optional
+
+Returns:
+- current Trading readiness score
+- suggested action: Increase, Decrease, or Hold
+- suggested score
+- evidence strength: weak, moderate, or strong
+- confidence level
+- positive signals
+- concerns
+- recommended next action
+
+Rules:
+- Use suggest_trading_readiness_update when Jadin asks whether Trading readiness should be updated.
+- This tool is advisory only. It MUST NOT update readiness automatically.
+- If Jadin approves a suggested update afterward, use update_readiness_category separately.
+- Prefer HOLD when evidence is weak or confidence is low.
+- Do not recommend increasing Trading readiness from fewer than 5 trade sessions.
+- Prioritize consistency, rule adherence, confidence, and repeated performance over a single large win or loss.
+
+Example:
+User: Should I update my Trading readiness?
+TOOL: suggest_trading_readiness_update
 
 - generate_orbit_daily_summary: summarizes Corporate Escape progress, completed tasks, open tasks, milestones, and recent reviews
 

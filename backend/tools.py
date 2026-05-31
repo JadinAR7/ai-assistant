@@ -1058,6 +1058,360 @@ def update_readiness_category(
         return {"success": False, "error": f"Unable to update readiness category: {e}"}
 
 
+def _get_trading_readiness_category(categories: list[dict]) -> dict | None:
+    for category in categories:
+        if str(category.get("category_name") or "").casefold() == "trading":
+            return category
+    return None
+
+
+def _grade_to_score(grade: str | None) -> int | None:
+    if not grade:
+        return None
+
+    normalized = str(grade).strip().upper().replace(" ", "")
+    grade_scores = {
+        "A+": 100,
+        "A": 92,
+        "A-": 88,
+        "B+": 82,
+        "B": 76,
+        "B-": 70,
+        "C+": 64,
+        "C": 58,
+        "C-": 52,
+        "D": 40,
+        "F": 20,
+    }
+    return grade_scores.get(normalized)
+
+
+def _average(values: list[int | float | None]) -> float | None:
+    present_values = [value for value in values if value is not None]
+    if not present_values:
+        return None
+    return sum(present_values) / len(present_values)
+
+
+def _clamp_score(value: int | float) -> int:
+    return max(0, min(100, round(value)))
+
+
+def _evidence_strength(total_sessions: int) -> str:
+    if total_sessions < 5:
+        return "weak"
+    if total_sessions < 10:
+        return "moderate"
+    return "strong"
+
+
+def _readiness_confidence(total_sessions: int) -> str:
+    if total_sessions < 5:
+        return "low"
+    if total_sessions < 10:
+        return "medium"
+    return "high"
+
+
+def _common_note_themes(trade_sessions: list[dict], limit: int = 5) -> list[str]:
+    stop_words = {
+        "about",
+        "after",
+        "again",
+        "because",
+        "before",
+        "early",
+        "followed",
+        "from",
+        "into",
+        "just",
+        "notes",
+        "plan",
+        "session",
+        "that",
+        "this",
+        "trade",
+        "with",
+    }
+    counts: dict[str, int] = {}
+    for trade_session in trade_sessions:
+        note = str(trade_session.get("notes") or "").lower()
+        for word in re.findall(r"[a-z][a-z']{3,}", note):
+            if word in stop_words:
+                continue
+            counts[word] = counts.get(word, 0) + 1
+
+    return [
+        word
+        for word, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    ]
+
+
+def suggest_trading_readiness_update(recent_limit: str | int | None = 20):
+    parsed_limit, error = _parse_optional_int(recent_limit, "recent_limit")
+    if error:
+        return {"success": False, "error": error}
+
+    if parsed_limit is None:
+        parsed_limit = 20
+
+    if parsed_limit < 1:
+        return {"success": False, "error": "recent_limit must be at least 1."}
+
+    parsed_limit = min(parsed_limit, 50)
+
+    try:
+        event, categories, error = _get_corporate_escape_readiness_categories()
+        if error:
+            return {"success": False, "error": error}
+
+        trading_category = _get_trading_readiness_category(categories)
+        if trading_category is None:
+            return {
+                "success": False,
+                "error": "Trading readiness category not found.",
+            }
+
+        current_score = int(trading_category.get("current_score") or 0)
+        trade_sessions = orbit_service.list_trade_sessions()[:parsed_limit]
+        total_sessions = len(trade_sessions)
+        total_pnl = sum(float(trade_session.get("pnl") or 0) for trade_session in trade_sessions)
+        rule_values = [trade_session.get("rule_adherence") for trade_session in trade_sessions]
+        confidence_values = [trade_session.get("confidence") for trade_session in trade_sessions]
+        grade_values = [
+            _grade_to_score(trade_session.get("session_grade"))
+            for trade_session in trade_sessions
+        ]
+        average_rule_adherence = _average(rule_values)
+        average_confidence = _average(confidence_values)
+        average_grade_score = _average(grade_values)
+        profitable_sessions = [
+            trade_session
+            for trade_session in trade_sessions
+            if float(trade_session.get("pnl") or 0) > 0
+        ]
+        losing_sessions = [
+            trade_session
+            for trade_session in trade_sessions
+            if float(trade_session.get("pnl") or 0) < 0
+        ]
+        positive_pnl_rate = (
+            len(profitable_sessions) / total_sessions
+            if total_sessions
+            else None
+        )
+        disciplined_session_rate = (
+            len([
+                value
+                for value in rule_values
+                if value is not None and value >= 75
+            ])
+            / len([value for value in rule_values if value is not None])
+            if any(value is not None for value in rule_values)
+            else None
+        )
+        recent_session_grades = [
+            trade_session.get("session_grade")
+            for trade_session in trade_sessions[:5]
+            if trade_session.get("session_grade")
+        ]
+        common_themes = _common_note_themes(trade_sessions)
+        evidence_strength = _evidence_strength(total_sessions)
+        confidence_level = _readiness_confidence(total_sessions)
+
+        positive_signals = []
+        concerns = []
+        delta = 0
+
+        if evidence_strength == "weak":
+            concerns.append(
+                f"Only {total_sessions} recent trade session(s) are available; readiness should not increase from this sample."
+            )
+        else:
+            if average_rule_adherence is None:
+                concerns.append("Rule adherence is missing from all recent sessions.")
+            elif average_rule_adherence >= 85:
+                delta += 6
+                positive_signals.append(
+                    f"Average rule adherence is strong at {average_rule_adherence:.1f}%."
+                )
+            elif average_rule_adherence >= 75:
+                delta += 3
+                positive_signals.append(
+                    f"Average rule adherence is constructive at {average_rule_adherence:.1f}%."
+                )
+            elif average_rule_adherence < 60:
+                delta -= 8
+                concerns.append(f"Average rule adherence is weak at {average_rule_adherence:.1f}%.")
+            elif average_rule_adherence < 70:
+                delta -= 4
+                concerns.append(
+                    f"Average rule adherence is below target at {average_rule_adherence:.1f}%."
+                )
+
+            if disciplined_session_rate is not None:
+                if disciplined_session_rate >= 0.7:
+                    delta += 4
+                    positive_signals.append(
+                        f"{round(disciplined_session_rate * 100)}% of sessions met the rule-adherence threshold."
+                    )
+                elif disciplined_session_rate < 0.5:
+                    delta -= 4
+                    concerns.append(
+                        f"Only {round(disciplined_session_rate * 100)}% of sessions met the rule-adherence threshold."
+                    )
+
+            if average_confidence is None:
+                concerns.append("Confidence is missing from all recent sessions.")
+            elif average_confidence >= 7:
+                delta += 3
+                positive_signals.append(f"Average confidence is healthy at {average_confidence:.1f}/10.")
+            elif average_confidence < 4:
+                delta -= 4
+                concerns.append(f"Average confidence is low at {average_confidence:.1f}/10.")
+
+            if positive_pnl_rate is not None:
+                if positive_pnl_rate >= 0.65 and total_pnl > 0:
+                    delta += 4
+                    positive_signals.append(
+                        f"{len(profitable_sessions)} of {total_sessions} sessions were profitable."
+                    )
+                elif positive_pnl_rate <= 0.35 and total_pnl < 0:
+                    delta -= 5
+                    concerns.append(
+                        f"{len(losing_sessions)} of {total_sessions} sessions were losing sessions."
+                    )
+                elif total_pnl > 0:
+                    positive_signals.append(
+                        f"Recent total PnL is positive at {total_pnl:.2f}, but performance is not yet dominant across sessions."
+                    )
+                elif total_pnl < 0:
+                    concerns.append(
+                        f"Recent total PnL is negative at {total_pnl:.2f}, but readiness impact is based on repeated behavior first."
+                    )
+                else:
+                    concerns.append("Recent total PnL is flat.")
+
+            if average_grade_score is None:
+                concerns.append("Session grades are missing from all recent sessions.")
+            elif average_grade_score >= 80:
+                delta += 3
+                positive_signals.append("Recent session grades skew strong.")
+            elif average_grade_score < 60:
+                delta -= 3
+                concerns.append("Recent session grades skew weak.")
+
+        if total_sessions == 0:
+            concerns.append("No trade sessions are available yet.")
+        elif total_sessions < 5:
+            concerns.append("At least 5 trade sessions are needed before confidence can rise above low.")
+
+        missing_rule_count = sum(1 for value in rule_values if value is None)
+        missing_confidence_count = sum(1 for value in confidence_values if value is None)
+        missing_grade_count = sum(1 for value in grade_values if value is None)
+        notes_count = sum(1 for trade_session in trade_sessions if trade_session.get("notes"))
+
+        if missing_rule_count:
+            concerns.append(f"{missing_rule_count} session(s) are missing rule adherence.")
+        if missing_confidence_count:
+            concerns.append(f"{missing_confidence_count} session(s) are missing confidence.")
+        if missing_grade_count:
+            concerns.append(f"{missing_grade_count} session(s) are missing usable grades.")
+        if total_sessions > 0 and notes_count < max(2, total_sessions // 2):
+            concerns.append("Notes/themes are limited, so behavior patterns may be under-evidenced.")
+
+        if evidence_strength == "weak":
+            delta = 0
+            suggested_score = current_score
+        else:
+            max_change = 5 if evidence_strength == "moderate" else 15
+            delta = max(-max_change, min(max_change, delta))
+            suggested_score = _clamp_score(current_score + delta)
+
+        if suggested_score > current_score:
+            suggested_action = "Increase"
+        elif suggested_score < current_score:
+            suggested_action = "Decrease"
+        else:
+            suggested_action = "Hold"
+
+        if suggested_action == "Hold":
+            recommended_next_action = (
+                "Hold the current Trading readiness score and keep logging complete sessions until repeated behavior is clearer."
+            )
+        elif suggested_action == "Increase":
+            recommended_next_action = (
+                f"Consider a manual Trading readiness increase to {suggested_score}% after reviewing the repeated evidence."
+            )
+        else:
+            recommended_next_action = (
+                f"Consider lowering Trading readiness to {suggested_score}% or reviewing the sessions before updating."
+            )
+
+        if not positive_signals:
+            positive_signals.append("No strong positive readiness signal was found.")
+        if not concerns:
+            concerns.append("No major concerns found in the available sample.")
+
+        return {
+            "success": True,
+            "event_id": event.get("id"),
+            "readiness_id": trading_category.get("id"),
+            "category_name": "Trading",
+            "current_trading_readiness": current_score,
+            "current_score": current_score,
+            "suggested_action": suggested_action,
+            "suggested_score": suggested_score,
+            "evidence_strength": evidence_strength,
+            "confidence": confidence_level,
+            "confidence_level": confidence_level,
+            "signals": {
+                "recent_limit": parsed_limit,
+                "total_sessions": total_sessions,
+                "total_pnl": round(total_pnl, 2),
+                "average_rule_adherence": (
+                    round(average_rule_adherence, 1)
+                    if average_rule_adherence is not None
+                    else None
+                ),
+                "average_confidence": (
+                    round(average_confidence, 1)
+                    if average_confidence is not None
+                    else None
+                ),
+                "recent_session_grades": recent_session_grades,
+                "common_notes_themes": common_themes,
+                "profitable_sessions": len(profitable_sessions),
+                "losing_sessions": len(losing_sessions),
+                "positive_pnl_rate": (
+                    round(positive_pnl_rate, 2)
+                    if positive_pnl_rate is not None
+                    else None
+                ),
+                "disciplined_session_rate": (
+                    round(disciplined_session_rate, 2)
+                    if disciplined_session_rate is not None
+                    else None
+                ),
+            },
+            "positive_signals": positive_signals,
+            "concerns": concerns,
+            "reasons": positive_signals,
+            "risks_missing_evidence": concerns,
+            "recommended_next_action": recommended_next_action,
+            "message": (
+                f"Current Trading Readiness: {current_score}%. "
+                f"Suggested Action: {suggested_action}. "
+                f"Suggested Score: {suggested_score}%. "
+                f"Evidence Strength: {evidence_strength}. "
+                f"Confidence: {confidence_level}. "
+                "No readiness value was updated."
+            ),
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Unable to suggest Trading readiness update: {e}"}
+
+
 def _get_latest_orbit_reviews(limit: int = 3) -> list[dict]:
     orbit_service.list_records("reviews")
 
@@ -4056,6 +4410,7 @@ TOOLS = {
     "get_corporate_escape_status": get_corporate_escape_status,
     "get_corporate_escape_readiness": get_corporate_escape_readiness,
     "update_readiness_category": update_readiness_category,
+    "suggest_trading_readiness_update": suggest_trading_readiness_update,
     "generate_orbit_daily_summary": generate_orbit_daily_summary,
     "generate_orbit_focus": generate_orbit_focus,
 
