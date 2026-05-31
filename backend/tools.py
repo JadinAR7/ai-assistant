@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 import subprocess
 import os
 import json
@@ -521,6 +521,20 @@ def _parse_orbit_datetime(value: str | None) -> datetime | None:
             return None
 
 
+def _parse_orbit_date(value: str | None) -> date | None:
+    parsed = _parse_orbit_datetime(value)
+    if parsed is not None:
+        return parsed.date()
+
+    if not value:
+        return None
+
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
 def _orbit_table_exists(table: str) -> bool:
     conn = get_orbit_connection()
     try:
@@ -1029,6 +1043,7 @@ def generate_orbit_daily_summary():
             )
             for milestone in milestones
         ]
+        latest_reviews = _get_latest_orbit_reviews(limit=3)
 
         progress_snapshot = {
             "event_title": event.get("title") if event else ORBIT_CORPORATE_ESCAPE_TITLE,
@@ -1040,6 +1055,36 @@ def generate_orbit_daily_summary():
             "What moved Corporate Escape forward today, what stayed open, "
             "and what is the single highest-leverage next action for tomorrow?"
         )
+        completed_lines = [
+            f"- {task.get('title')}"
+            for task in completed_today[:5]
+        ] or ["- None logged today"]
+        open_lines = [
+            f"- {task.get('title')}"
+            for task in open_tasks[:5]
+        ] or ["- No open tasks"]
+        milestone_lines = [
+            f"- {milestone.get('title')}: {milestone.get('status')} ({milestone.get('progress_percent')}%)"
+            for milestone in key_milestones[:5]
+        ] or ["- No milestones found"]
+        review_lines = [
+            f"- {review.get('title') or review.get('review_type')}: {review.get('summary') or 'No summary'}"
+            for review in latest_reviews
+        ] or ["- No recent reviews"]
+        message = (
+            "## Orbit Daily Summary\n\n"
+            f"**Progress:** {progress_snapshot['event_title']} is "
+            f"{progress_snapshot['status']} at {progress_snapshot['progress_percent']}%.\n\n"
+            "**Completed today:**\n"
+            + "\n".join(completed_lines)
+            + "\n\n**Still open:**\n"
+            + "\n".join(open_lines)
+            + "\n\n**Key milestones:**\n"
+            + "\n".join(milestone_lines)
+            + "\n\n**Latest reviews:**\n"
+            + "\n".join(review_lines)
+            + f"\n\n**Review prompt:** {suggested_review_prompt}"
+        )
 
         return {
             "success": True,
@@ -1047,13 +1092,317 @@ def generate_orbit_daily_summary():
             "completed_today": completed_today,
             "still_open": open_tasks,
             "key_milestones": key_milestones,
-            "latest_reviews": _get_latest_orbit_reviews(limit=3),
+            "latest_reviews": latest_reviews,
             "suggested_review_prompt": suggested_review_prompt,
+            "message": message,
         }
     except Exception as e:
         return {
             "success": False,
             "error": f"Unable to generate Orbit daily summary: {e}",
+        }
+
+
+def _is_orbit_complete(record: dict) -> bool:
+    return str(record.get("status") or "").casefold() in {
+        "complete",
+        "completed",
+        "done",
+    }
+
+
+def _is_orbit_active(record: dict) -> bool:
+    return str(record.get("status") or "").casefold() in {
+        "active",
+        "in_progress",
+        "not_started",
+        "queued",
+    }
+
+
+def _days_until(value: str | None) -> int | None:
+    parsed_date = _parse_orbit_date(value)
+    if parsed_date is None:
+        return None
+
+    return (parsed_date - datetime.now().date()).days
+
+
+def _score_orbit_task(
+    task: dict,
+    goal: dict | None,
+    milestone: dict | None,
+    event: dict | None,
+) -> int:
+    score = 0
+
+    if event is not None and _is_orbit_active(event):
+        score += 25
+
+    if milestone is not None:
+        status = str(milestone.get("status") or "").casefold()
+        if status == "in_progress":
+            score += 24
+        elif status == "active":
+            score += 18
+        elif status in {"not_started", "queued"}:
+            score += 8
+
+        progress = milestone.get("progress_percent")
+        if isinstance(progress, int) and progress < 100:
+            score += max(0, 20 - progress // 5)
+
+        days_to_milestone = _days_until(milestone.get("due_date"))
+        if days_to_milestone is not None:
+            if days_to_milestone < 0:
+                score += 25
+            elif days_to_milestone <= 7:
+                score += 20
+            elif days_to_milestone <= 30:
+                score += 10
+
+    if goal is not None:
+        try:
+            score += int(goal.get("priority") or 0) * 6
+        except (TypeError, ValueError):
+            pass
+
+    task_status = str(task.get("status") or "").casefold()
+    if task_status == "in_progress":
+        score += 18
+    elif task_status == "active":
+        score += 12
+    elif task_status in {"not_started", "queued"}:
+        score += 5
+
+    days_to_task = _days_until(task.get("due_date"))
+    if days_to_task is not None:
+        if days_to_task < 0:
+            score += 35
+        elif days_to_task == 0:
+            score += 30
+        elif days_to_task <= 3:
+            score += 20
+        elif days_to_task <= 7:
+            score += 10
+
+    return score
+
+
+def _format_orbit_task_action(task_context: dict) -> str:
+    task = task_context["task"]
+    milestone = task_context.get("milestone")
+    action = task.get("title") or "Untitled Orbit task"
+
+    if milestone and milestone.get("title"):
+        return f"{action} ({milestone.get('title')})"
+
+    return action
+
+
+def _suggest_orbit_blocker(
+    active_events: list[dict],
+    incomplete_tasks: list[dict],
+    milestones: list[dict],
+    latest_reviews: list[dict],
+) -> str:
+    today = datetime.now().date()
+    overdue_tasks = []
+
+    for task in incomplete_tasks:
+        due_date = _parse_orbit_date(task.get("due_date"))
+        if due_date is not None and due_date < today:
+            overdue_tasks.append(task)
+
+    if overdue_tasks:
+        return f"{len(overdue_tasks)} overdue Orbit task(s) are competing for attention."
+
+    stalled_milestones = [
+        milestone
+        for milestone in milestones
+        if not _is_orbit_complete(milestone)
+        and int(milestone.get("progress_percent") or 0) == 0
+        and str(milestone.get("status") or "").casefold() in {"active", "in_progress"}
+    ]
+    if stalled_milestones:
+        return f"Milestone momentum is thin: {stalled_milestones[0].get('title')} is active but still at 0%."
+
+    if not incomplete_tasks:
+        return "No incomplete Orbit tasks are available to pull the plan forward."
+
+    if not latest_reviews:
+        return "There are no recent Orbit reviews, so today's focus has limited reflection context."
+
+    if not active_events:
+        return "No active major event is available, so task priority is less anchored."
+
+    return "The main blocker is choosing one execution lane and protecting it from context switching."
+
+
+def generate_orbit_focus():
+    try:
+        major_events = orbit_service.list_records("major_events")
+        goals = orbit_service.list_records("goals")
+        milestones = orbit_service.list_records("milestones")
+        tasks = orbit_service.list_records("tasks")
+        latest_reviews = _get_latest_orbit_reviews(limit=3)
+
+        active_events = [
+            event
+            for event in major_events
+            if _is_orbit_active(event) and not _is_orbit_complete(event)
+        ]
+        incomplete_tasks = [
+            task
+            for task in tasks
+            if not _is_orbit_complete(task)
+        ]
+
+        goals_by_id = {goal.get("id"): goal for goal in goals}
+        milestones_by_id = {milestone.get("id"): milestone for milestone in milestones}
+        active_event_ids = {event.get("id") for event in active_events}
+
+        task_contexts = []
+        for task in incomplete_tasks:
+            goal = goals_by_id.get(task.get("goal_id"))
+            milestone = milestones_by_id.get(goal.get("milestone_id")) if goal else None
+            event = None
+            if milestone:
+                event = next(
+                    (
+                        active_event
+                        for active_event in active_events
+                        if active_event.get("id") == milestone.get("major_event_id")
+                    ),
+                    None,
+                )
+
+            task_contexts.append({
+                "score": _score_orbit_task(task, goal, milestone, event),
+                "task": task,
+                "goal": goal,
+                "milestone": milestone,
+                "major_event": event,
+            })
+
+        task_contexts.sort(
+            key=lambda context: (
+                context["score"],
+                -(_days_until(context["task"].get("due_date")) or 9999),
+                int(context["task"].get("id") or 0) * -1,
+            ),
+            reverse=True,
+        )
+
+        top_context = task_contexts[0] if task_contexts else None
+        top_actions = [
+            _format_orbit_task_action(context)
+            for context in task_contexts[:3]
+        ]
+
+        active_milestones = [
+            milestone
+            for milestone in milestones
+            if milestone.get("major_event_id") in active_event_ids
+            and not _is_orbit_complete(milestone)
+        ]
+        active_milestones.sort(
+            key=lambda milestone: (
+                str(milestone.get("status") or "").casefold() != "in_progress",
+                _days_until(milestone.get("due_date")) is None,
+                _days_until(milestone.get("due_date")) or 9999,
+                -(int(milestone.get("progress_percent") or 0)),
+            )
+        )
+
+        suggested_milestone = None
+        if top_context and top_context.get("milestone"):
+            suggested_milestone = top_context["milestone"]
+        elif active_milestones:
+            suggested_milestone = active_milestones[0]
+
+        highest_leverage_priority = (
+            _format_orbit_task_action(top_context)
+            if top_context
+            else "Create or clarify the next Orbit task tied to the active major event."
+        )
+
+        if not top_actions:
+            top_actions = [
+                "Review active major events",
+                "Create one concrete next task",
+                "Save an Orbit review to refresh planning context",
+            ]
+
+        biggest_blocker = _suggest_orbit_blocker(
+            active_events,
+            incomplete_tasks,
+            milestones,
+            latest_reviews,
+        )
+
+        suggested_next_milestone = (
+            {
+                "id": suggested_milestone.get("id"),
+                "title": suggested_milestone.get("title"),
+                "status": suggested_milestone.get("status"),
+                "progress_percent": suggested_milestone.get("progress_percent"),
+                "due_date": suggested_milestone.get("due_date"),
+            }
+            if suggested_milestone
+            else None
+        )
+
+        suggested_milestone_title = (
+            suggested_next_milestone["title"]
+            if suggested_next_milestone
+            else "Define the next active milestone in Orbit."
+        )
+        message = (
+            "## Today’s Orbit Focus\n\n"
+            f"**Highest leverage priority:** {highest_leverage_priority}\n\n"
+            "**Top 3 actions:**\n"
+            + "\n".join(
+                f"{index}. {action}"
+                for index, action in enumerate(top_actions[:3], start=1)
+            )
+            + f"\n\n**Biggest blocker:** {biggest_blocker}\n\n"
+            f"**Suggested next milestone:** {suggested_milestone_title}"
+        )
+
+        return {
+            "success": True,
+            "highest_leverage_priority": highest_leverage_priority,
+            "top_3_actions_for_today": top_actions[:3],
+            "biggest_blocker": biggest_blocker,
+            "suggested_next_milestone": suggested_next_milestone,
+            "source_data": {
+                "active_major_events": [
+                    _orbit_summary(
+                        event,
+                        ["id", "title", "status", "progress_percent", "target_date"],
+                    )
+                    for event in active_events
+                ],
+                "incomplete_tasks": [
+                    _orbit_summary(task, ["id", "title", "status", "due_date", "goal_id"])
+                    for task in incomplete_tasks
+                ],
+                "milestones": [
+                    _orbit_summary(
+                        milestone,
+                        ["id", "title", "status", "progress_percent", "due_date", "major_event_id"],
+                    )
+                    for milestone in milestones
+                ],
+                "latest_reviews": latest_reviews,
+            },
+            "message": message,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Unable to generate Orbit focus: {e}",
         }
 
 
@@ -3459,6 +3808,7 @@ TOOLS = {
     "update_orbit_major_event_progress": update_orbit_major_event_progress,
     "get_corporate_escape_status": get_corporate_escape_status,
     "generate_orbit_daily_summary": generate_orbit_daily_summary,
+    "generate_orbit_focus": generate_orbit_focus,
 
     # Trading / market tools
     "refresh_market_csvs": refresh_market_csvs,

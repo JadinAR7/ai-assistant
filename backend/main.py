@@ -263,9 +263,50 @@ TOOL: get_corporate_escape_status
 
 - generate_orbit_daily_summary: summarizes Corporate Escape progress, completed tasks, open tasks, milestones, and recent reviews
 
+When responding after generate_orbit_daily_summary:
+- Use clean Markdown with a short heading.
+- Use bullets or numbering for tasks, milestones, and reviews.
+- Keep the response concise.
+- Do not dump raw JSON or tool result dictionaries unless Jadin explicitly asks for raw data.
+
 Example:
 User: Generate my Orbit daily summary.
 TOOL: generate_orbit_daily_summary
+
+- generate_orbit_focus: creates a Helix planning workflow answer from active major events, incomplete tasks, milestones, and latest reviews
+
+Use generate_orbit_focus when Jadin asks:
+- What should I focus on today?
+- What is my priority today?
+- What should I work on next?
+- Generate my Orbit focus
+
+Returns:
+1. Highest leverage priority
+2. Top 3 actions for today
+3. Biggest blocker
+4. Suggested next milestone
+
+When responding after generate_orbit_focus, use this exact concise Markdown structure:
+
+## Today’s Orbit Focus
+
+**Highest leverage priority:** <priority>
+
+**Top 3 actions:**
+1. <action>
+2. <action>
+3. <action>
+
+**Biggest blocker:** <blocker>
+
+**Suggested next milestone:** <milestone>
+
+Do not dump raw JSON or tool result dictionaries unless Jadin explicitly asks for raw data.
+
+Example:
+User: What should I focus on today?
+TOOL: generate_orbit_focus
 
 - capture_tradingview: opens TradingView using Jadin's saved profile and captures a chart screenshot
 
