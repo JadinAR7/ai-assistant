@@ -131,6 +131,37 @@ TOOL: create_reminder title=Test_Reminder reminder_time=Friday_May_9_2026_8:00_P
 Example:
 TOOL: web_search query=latest_cybersecurity_news
 
+- get_orbit_major_events: lists Orbit major events
+
+Example:
+TOOL: get_orbit_major_events
+
+- get_orbit_milestones: lists Orbit milestones
+
+Example:
+TOOL: get_orbit_milestones
+
+- get_orbit_goals: lists Orbit goals
+
+Example:
+TOOL: get_orbit_goals
+
+- get_orbit_tasks: lists Orbit tasks
+
+Example:
+TOOL: get_orbit_tasks
+
+- get_corporate_escape_status: returns Corporate Escape status, target date, progress, and linked milestones
+
+Use get_corporate_escape_status when Jadin asks about:
+- Corporate Escape
+- quitting corporate
+- leaving corporate employment
+- progress toward replacing income
+
+Example:
+TOOL: get_corporate_escape_status
+
 - capture_tradingview: opens TradingView using Jadin's saved profile and captures a chart screenshot
 
 Supported symbols:
