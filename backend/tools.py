@@ -13,8 +13,10 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 try:
     from orbit import service as orbit_service
+    from orbit.database import get_connection as get_orbit_connection
 except ImportError:
     from backend.orbit import service as orbit_service
+    from backend.orbit.database import get_connection as get_orbit_connection
 
 
 load_dotenv()
@@ -436,6 +438,216 @@ def get_orbit_tasks():
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def _orbit_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value.replace("_", " ").strip()
+
+
+def _parse_required_int(value: str | int | None, field_name: str) -> tuple[int | None, str | None]:
+    if value is None or value == "":
+        return None, f"Missing required field: {field_name}."
+
+    try:
+        return int(value), None
+    except (TypeError, ValueError):
+        return None, f"{field_name} must be a valid integer."
+
+
+def _parse_optional_int(value: str | int | None, field_name: str) -> tuple[int | None, str | None]:
+    if value is None or value == "":
+        return None, None
+
+    try:
+        return int(value), None
+    except (TypeError, ValueError):
+        return None, f"{field_name} must be a valid integer."
+
+
+def _parse_progress_percent(value: str | int | None) -> tuple[int | None, str | None]:
+    progress_percent, error = _parse_required_int(value, "progress_percent")
+    if error:
+        return None, error
+
+    if progress_percent < 0 or progress_percent > 100:
+        return None, "progress_percent must be between 0 and 100."
+
+    return progress_percent, None
+
+
+def _orbit_column_allows_missing(table: str, column: str) -> bool:
+    conn = get_orbit_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"PRAGMA table_info({table})")
+        for row in cursor.fetchall():
+            if row["name"] == column:
+                return not bool(row["notnull"])
+    finally:
+        conn.close()
+
+    return False
+
+
+def _orbit_summary(record: dict, fields: list[str]) -> dict:
+    return {field: record.get(field) for field in fields}
+
+
+def create_orbit_task(
+    title: str = "",
+    description: str | None = None,
+    goal_id: str | int | None = None,
+    due_date: str | None = None,
+):
+    if not title:
+        return {"success": False, "error": "Missing required field: title."}
+
+    parsed_goal_id, error = _parse_optional_int(goal_id, "goal_id")
+    if error:
+        return {"success": False, "error": error}
+
+    if parsed_goal_id is None and not _orbit_column_allows_missing("tasks", "goal_id"):
+        return {
+            "success": False,
+            "error": "goal_id is required by the current Orbit database schema.",
+        }
+
+    try:
+        payload = {
+            "goal_id": parsed_goal_id,
+            "title": _orbit_text(title),
+            "description": _orbit_text(description),
+            "status": "not_started",
+            "due_date": due_date,
+            "completed_at": None,
+        }
+        task = orbit_service.create_task(payload)
+
+        return {
+            "success": True,
+            "task_id": task.get("id"),
+            "title": task.get("title"),
+            "due_date": task.get("due_date"),
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Unable to create Orbit task: {e}"}
+
+
+def create_orbit_goal(
+    title: str = "",
+    description: str | None = None,
+    milestone_id: str | int | None = None,
+    priority: str | int | None = None,
+):
+    if not title:
+        return {"success": False, "error": "Missing required field: title."}
+
+    parsed_milestone_id, error = _parse_optional_int(milestone_id, "milestone_id")
+    if error:
+        return {"success": False, "error": error}
+
+    if parsed_milestone_id is None and not _orbit_column_allows_missing("goals", "milestone_id"):
+        return {
+            "success": False,
+            "error": "milestone_id is required by the current Orbit database schema.",
+        }
+
+    parsed_priority, error = _parse_optional_int(priority, "priority")
+    if error:
+        return {"success": False, "error": error}
+
+    try:
+        payload = {
+            "milestone_id": parsed_milestone_id,
+            "title": _orbit_text(title),
+            "description": _orbit_text(description),
+            "status": "not_started",
+            "priority": parsed_priority if parsed_priority is not None else 0,
+        }
+        goal = orbit_service.create_goal(payload)
+
+        return {
+            "success": True,
+            "goal_id": goal.get("id"),
+            "title": goal.get("title"),
+            "priority": goal.get("priority"),
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Unable to create Orbit goal: {e}"}
+
+
+def update_orbit_milestone_progress(
+    milestone_id: str | int | None = None,
+    progress_percent: str | int | None = None,
+    status: str | None = None,
+):
+    parsed_milestone_id, error = _parse_required_int(milestone_id, "milestone_id")
+    if error:
+        return {"success": False, "error": error}
+
+    parsed_progress, error = _parse_progress_percent(progress_percent)
+    if error:
+        return {"success": False, "error": error}
+
+    try:
+        payload = {"progress_percent": parsed_progress}
+        if status:
+            payload["status"] = status
+
+        milestone = orbit_service.update_milestone(parsed_milestone_id, payload)
+        if milestone is None:
+            return {
+                "success": False,
+                "error": f"Orbit milestone {parsed_milestone_id} not found.",
+            }
+
+        return {
+            "success": True,
+            "milestone": _orbit_summary(
+                milestone,
+                ["id", "title", "status", "progress_percent", "due_date"],
+            ),
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Unable to update Orbit milestone: {e}"}
+
+
+def update_orbit_major_event_progress(
+    event_id: str | int | None = None,
+    progress_percent: str | int | None = None,
+    status: str | None = None,
+):
+    parsed_event_id, error = _parse_required_int(event_id, "event_id")
+    if error:
+        return {"success": False, "error": error}
+
+    parsed_progress, error = _parse_progress_percent(progress_percent)
+    if error:
+        return {"success": False, "error": error}
+
+    try:
+        payload = {"progress_percent": parsed_progress}
+        if status:
+            payload["status"] = status
+
+        event = orbit_service.update_major_event(parsed_event_id, payload)
+        if event is None:
+            return {
+                "success": False,
+                "error": f"Orbit major event {parsed_event_id} not found.",
+            }
+
+        return {
+            "success": True,
+            "major_event": _orbit_summary(
+                event,
+                ["id", "title", "status", "progress_percent", "target_date"],
+            ),
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Unable to update Orbit major event: {e}"}
 
 
 def get_corporate_escape_status():
@@ -2889,6 +3101,10 @@ TOOLS = {
     "get_orbit_milestones": get_orbit_milestones,
     "get_orbit_goals": get_orbit_goals,
     "get_orbit_tasks": get_orbit_tasks,
+    "create_orbit_task": create_orbit_task,
+    "create_orbit_goal": create_orbit_goal,
+    "update_orbit_milestone_progress": update_orbit_milestone_progress,
+    "update_orbit_major_event_progress": update_orbit_major_event_progress,
     "get_corporate_escape_status": get_corporate_escape_status,
 
     # Trading / market tools

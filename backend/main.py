@@ -151,6 +151,58 @@ TOOL: get_orbit_goals
 Example:
 TOOL: get_orbit_tasks
 
+- create_orbit_task: creates an Orbit task
+
+Inputs:
+- title required
+- description optional
+- goal_id optional
+- due_date optional
+
+Rules:
+- Use underscores instead of spaces in title and description values.
+- If the task belongs to an existing goal, include goal_id.
+
+Example:
+TOOL: create_orbit_task title=Review_trading_journal due_date=2026-05-31
+
+- create_orbit_goal: creates an Orbit goal
+
+Inputs:
+- title required
+- description optional
+- milestone_id optional
+- priority optional
+
+Rules:
+- Use underscores instead of spaces in title and description values.
+- If the goal belongs to an existing milestone, include milestone_id.
+
+Example:
+TOOL: create_orbit_goal title=Improve_trading_review_cadence milestone_id=2 priority=1
+
+- update_orbit_milestone_progress: updates progress for an Orbit milestone
+
+Inputs:
+- milestone_id required
+- progress_percent required, 0 through 100
+- status optional
+
+Example:
+TOOL: update_orbit_milestone_progress milestone_id=2 progress_percent=20 status=in_progress
+
+- update_orbit_major_event_progress: updates progress for an Orbit major event
+
+Inputs:
+- event_id required
+- progress_percent required, 0 through 100
+- status optional
+
+Use update_orbit_major_event_progress when Jadin asks to update progress for Corporate Escape as a whole.
+
+Example:
+TOOL: update_orbit_major_event_progress event_id=1 progress_percent=20 status=active
+
 - get_corporate_escape_status: returns Corporate Escape status, target date, progress, and linked milestones
 
 Use get_corporate_escape_status when Jadin asks about:
