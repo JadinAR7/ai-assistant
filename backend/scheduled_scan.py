@@ -7,7 +7,11 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from news_risk import build_news_risk_summary, format_news_risk_section
-from tools import analyze_tradingview
+from tools import (
+    analyze_tradingview,
+    capture_tradingview,
+    extract_tradingview_visuals_from_path,
+)
 
 
 # -------------------------
@@ -15,6 +19,7 @@ from tools import analyze_tradingview
 # -------------------------
 SYMBOL = "MES"
 SCAN_TIMEFRAME = "15M"
+SCHEDULED_SCAN_TIMEFRAMES = ["4H", "1H", "15M"]
 SCAN_INTERVAL_SECONDS = 5 * 60
 TIMEZONE = ZoneInfo("America/Denver")
 
@@ -114,6 +119,126 @@ def attach_news_risk(result: dict, now: datetime) -> None:
         (result.get("message") or "")
         + "\n\n"
         + format_news_risk_section(news_risk)
+    ).strip()
+
+
+# -------------------------
+# Multi-timeframe visual context
+# -------------------------
+def _build_timeframe_capture_from_result(timeframe: str, result: dict) -> dict:
+    visual_extraction = result.get("visual_extraction") or {}
+
+    return {
+        "timeframe": timeframe,
+        "success": bool(result.get("screenshot_path")),
+        "screenshot_path": result.get("screenshot_path"),
+        "visual_extraction": visual_extraction,
+        "vision_success": visual_extraction.get("success", False),
+        "vision_error": visual_extraction.get("error"),
+        "error": result.get("error"),
+    }
+
+
+def _capture_timeframe_context(
+    *,
+    timeframe: str,
+    prompt: str,
+) -> dict:
+    capture_result = capture_tradingview(symbol=SYMBOL, timeframe=timeframe)
+
+    if not capture_result.get("success"):
+        return {
+            "timeframe": timeframe,
+            "success": False,
+            "screenshot_path": None,
+            "visual_extraction": None,
+            "vision_success": False,
+            "vision_error": None,
+            "error": capture_result.get("error") or capture_result.get("message"),
+        }
+
+    screenshot_path = capture_result.get("screenshot_path")
+    visual_extraction = extract_tradingview_visuals_from_path(
+        image_path=screenshot_path,
+        prompt=prompt,
+        symbol=SYMBOL,
+        source=f"scheduled {timeframe} TradingView capture",
+    )
+
+    return {
+        "timeframe": timeframe,
+        "success": True,
+        "screenshot_path": screenshot_path,
+        "visual_extraction": visual_extraction,
+        "vision_success": visual_extraction.get("success", False),
+        "vision_error": visual_extraction.get("error"),
+        "error": None,
+    }
+
+
+def collect_scheduled_timeframe_captures(
+    *,
+    primary_timeframe: str,
+    primary_result: dict,
+    session_label: str,
+) -> dict:
+    prompt = (
+        f"Scheduled {SYMBOL} scan during {session_label}. "
+        "Extract visible user markings only."
+    )
+    captures = {}
+
+    for timeframe in SCHEDULED_SCAN_TIMEFRAMES:
+        if timeframe == primary_timeframe:
+            captures[timeframe] = _build_timeframe_capture_from_result(
+                timeframe=timeframe,
+                result=primary_result,
+            )
+            continue
+
+        try:
+            captures[timeframe] = _capture_timeframe_context(
+                timeframe=timeframe,
+                prompt=prompt,
+            )
+        except Exception as e:
+            captures[timeframe] = {
+                "timeframe": timeframe,
+                "success": False,
+                "screenshot_path": None,
+                "visual_extraction": None,
+                "vision_success": False,
+                "vision_error": None,
+                "error": str(e),
+            }
+
+    return captures
+
+
+def format_timeframe_screenshots_section(timeframe_captures: dict | None) -> str:
+    lines = ["## Timeframe Screenshots"]
+
+    for timeframe in SCHEDULED_SCAN_TIMEFRAMES:
+        capture = (timeframe_captures or {}).get(timeframe) or {}
+        status = "captured" if capture.get("screenshot_path") else "failed"
+        lines.append(f"- {timeframe}: {status}")
+
+    return "\n".join(lines)
+
+
+def scheduled_timeframe_label() -> str:
+    return "/".join(SCHEDULED_SCAN_TIMEFRAMES)
+
+
+def attach_timeframe_screenshots_section(
+    result: dict,
+    timeframe_captures: dict | None,
+) -> None:
+    result["timeframe_captures"] = timeframe_captures or {}
+    result["message"] = (
+        (result.get("message") or "")
+        + "\n\n"
+        + format_timeframe_screenshots_section(timeframe_captures)
     ).strip()
 
 
@@ -477,6 +602,7 @@ def build_scan_record(
         "session_label": " + ".join(sessions),
         "success": result.get("success", False),
         "screenshot_path": result.get("screenshot_path"),
+        "timeframe_captures": result.get("timeframe_captures") or {},
         "vision_success": visual_extraction.get("success", False),
         "vision_error": visual_extraction.get("error"),
         "csv_success": csv_analysis.get("success", False),
@@ -628,10 +754,13 @@ def run_scan(
     force: bool = False,
     update_runtime_status: bool = False,
     timeframe: str = SCAN_TIMEFRAME,
+    multi_timeframe: bool = False,
 ) -> dict | None:
     now = datetime.now(TIMEZONE)
     sessions = get_active_sessions(now)
     timeframe = timeframe.upper()
+    primary_timeframe = SCAN_TIMEFRAME if multi_timeframe else timeframe
+    status_timeframe = scheduled_timeframe_label() if multi_timeframe else primary_timeframe
 
     if not force and not sessions:
         print(f"[{now.isoformat()}] Outside scan window. No scan ran.")
@@ -639,23 +768,35 @@ def run_scan(
 
     session_label = " + ".join(sessions) if sessions else "Forced Scan"
 
-    print(f"[{now.isoformat()}] Running {SYMBOL} {timeframe} scan during: {session_label}")
+    print(f"[{now.isoformat()}] Running {SYMBOL} {status_timeframe} scan during: {session_label}")
 
     try:
         if update_runtime_status:
             write_scanner_runtime_status(
                 scanner_enabled=True,
-                timeframe=timeframe,
+                timeframe=status_timeframe,
                 running_scan=True,
             )
 
         result = analyze_tradingview(
             symbol=SYMBOL,
-            timeframe=timeframe,
+            timeframe=primary_timeframe,
             prompt=f"Scheduled {SYMBOL} scan during {session_label}. Analyze with marked levels.",
         )
 
+        if multi_timeframe:
+            timeframe_captures = collect_scheduled_timeframe_captures(
+                primary_timeframe=primary_timeframe,
+                primary_result=result,
+                session_label=session_label,
+            )
+        else:
+            timeframe_captures = {}
+
         attach_news_risk(result, now)
+
+        if multi_timeframe:
+            attach_timeframe_screenshots_section(result, timeframe_captures)
 
         previous_scan = load_last_successful_scan()
 
@@ -683,7 +824,7 @@ def run_scan(
         if update_runtime_status:
             write_scanner_runtime_status(
                 scanner_enabled=True,
-                timeframe=timeframe,
+                timeframe=status_timeframe,
                 running_scan=False,
                 last_scan_timestamp=record.get("timestamp"),
                 latest_scan_success=record.get("success"),
@@ -731,7 +872,8 @@ def run_scan(
             "timestamp": now.isoformat(),
             "timezone": "America/Denver",
             "symbol": SYMBOL,
-            "timeframe": timeframe,
+            "timeframe": primary_timeframe,
+            "timeframe_captures": {},
             "sessions": sessions if sessions else ["Forced Scan"],
             "session_label": session_label,
             "success": False,
@@ -743,7 +885,7 @@ def run_scan(
         if update_runtime_status:
             write_scanner_runtime_status(
                 scanner_enabled=True,
-                timeframe=timeframe,
+                timeframe=status_timeframe,
                 running_scan=False,
                 last_scan_timestamp=error_record.get("timestamp"),
                 latest_scan_success=False,
@@ -754,11 +896,12 @@ def run_scan(
 
 
 def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
-    timeframe = timeframe.upper()
+    timeframe = SCAN_TIMEFRAME
 
     print("Scheduled scanner started.")
     print(f"Symbol: {SYMBOL}")
-    print(f"Timeframe: {timeframe}")
+    print(f"Timeframes: {scheduled_timeframe_label()}")
+    print(f"Primary analysis timeframe: {timeframe}")
     print(f"Interval: {SCAN_INTERVAL_SECONDS // 60} minutes")
     print(f"History file: {SCAN_HISTORY_PATH}")
     print("Press CTRL+C to stop.")
@@ -767,18 +910,23 @@ def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
     latest_scan = load_latest_scan()
     write_scanner_runtime_status(
         scanner_enabled=True,
-        timeframe=timeframe,
+        timeframe=scheduled_timeframe_label(),
         last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
         latest_scan_success=latest_scan.get("success") if latest_scan else None,
     )
 
     try:
         while True:
-            run_scan(force=False, update_runtime_status=True, timeframe=timeframe)
+            run_scan(
+                force=False,
+                update_runtime_status=True,
+                timeframe=timeframe,
+                multi_timeframe=True,
+            )
             latest_scan = load_latest_scan()
             write_scanner_runtime_status(
                 scanner_enabled=True,
-                timeframe=timeframe,
+                timeframe=scheduled_timeframe_label(),
                 last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
                 latest_scan_success=latest_scan.get("success") if latest_scan else None,
             )
@@ -789,7 +937,7 @@ def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
         latest_scan = load_latest_scan()
         write_scanner_runtime_status(
             scanner_enabled=False,
-            timeframe=timeframe,
+            timeframe=scheduled_timeframe_label(),
             last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
             latest_scan_success=latest_scan.get("success") if latest_scan else None,
         )
@@ -813,7 +961,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--timeframe",
         default=SCAN_TIMEFRAME,
-        help=f"TradingView timeframe to capture. Defaults to {SCAN_TIMEFRAME}.",
+        help=(
+            "TradingView timeframe for forced manual scans. "
+            f"Scheduled scans always collect {scheduled_timeframe_label()} with {SCAN_TIMEFRAME} primary analysis."
+        ),
     )
 
     args = parser.parse_args()
@@ -821,6 +972,6 @@ if __name__ == "__main__":
     if args.force:
         run_scan(force=True, timeframe=args.timeframe)
     elif args.once:
-        run_scan(force=False, timeframe=args.timeframe)
+        run_scan(force=False, timeframe=SCAN_TIMEFRAME, multi_timeframe=True)
     else:
-        run_loop(timeframe=args.timeframe)
+        run_loop()

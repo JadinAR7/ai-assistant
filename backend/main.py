@@ -885,10 +885,14 @@ async def analyze_image(
 # Scan endpoints
 # -------------------------
 @app.post("/scan/force")
-def force_scan(timeframe: str | None = None):
+def force_scan(timeframe: str | None = None, multi_timeframe: bool = True):
     from scheduled_scan import SCAN_TIMEFRAME, run_scan
 
-    record = run_scan(force=True, timeframe=timeframe or SCAN_TIMEFRAME)
+    record = run_scan(
+        force=True,
+        timeframe=timeframe or SCAN_TIMEFRAME,
+        multi_timeframe=multi_timeframe,
+    )
 
     if not record:
         return {
