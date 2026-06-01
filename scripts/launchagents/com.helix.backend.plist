@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.helix.backend</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/jadinrobinson/ai-assistant/scripts/start_backend.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/jadinrobinson/ai-assistant/backend</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>SCAN_NOTIFY_ENABLED</key>
+    <string>false</string>
+    <key>SCAN_NOTIFY_IMESSAGE_ENABLED</key>
+    <string>false</string>
+    <key>SCAN_NOTIFY_TTS_ENABLED</key>
+    <string>false</string>
+    <key>SCAN_NOTIFY_IMESSAGE_RECIPIENT</key>
+    <string></string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/jadinrobinson/ai-assistant/backend/logs/backend.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jadinrobinson/ai-assistant/backend/logs/backend.err.log</string>
+</dict>
+</plist>

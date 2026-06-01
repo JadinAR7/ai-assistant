@@ -38,3 +38,6 @@ backend/pictures/tradingview_screenshots/
 # macOS junk
 .DS_Store
 random.txt
+
+# Logs
+backend/logs/*.log

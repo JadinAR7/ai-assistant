@@ -55,10 +55,16 @@ type ScanRecord = {
 };
 
 type ScanStatus = {
-  success?: boolean;
   symbol?: string;
-  timestamp?: string;
   timezone?: string;
+  scanner_enabled?: boolean;
+  process_running?: boolean;
+  process_id?: number | null;
+  heartbeat_timestamp?: string | null;
+  running_scan?: boolean;
+  last_scan_timestamp?: string | null;
+  latest_scan_success?: boolean | null;
+  scan_interval_seconds?: number;
   active_sessions?: string[];
   should_scan_now?: boolean;
 };
@@ -90,6 +96,29 @@ function getFileName(path?: string) {
 function formatLabel(value?: string) {
   if (!value) return "unknown";
   return value.replaceAll("_", " ");
+}
+
+function getAgeSeconds(timestamp?: string | null) {
+  if (!timestamp) return null;
+
+  const value = new Date(timestamp).getTime();
+
+  if (Number.isNaN(value)) return null;
+
+  return Math.max(0, Math.floor((Date.now() - value) / 1000));
+}
+
+function formatRelativeAge(timestamp?: string | null) {
+  const seconds = getAgeSeconds(timestamp);
+
+  if (seconds === null) return "Unknown";
+  if (seconds < 60) return `${seconds}s ago`;
+
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
 }
 
 function getBiasBadgeClass(value?: string) {
@@ -151,6 +180,7 @@ export default function Home() {
   const [scanLoading, setScanLoading] = useState(false);
   const [latestScan, setLatestScan] = useState<ScanRecord | null>(null);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
+  const [scanStatusError, setScanStatusError] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -168,6 +198,14 @@ export default function Home() {
     loadHistory();
     loadScanStatus();
     loadLatestScan();
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      loadScanStatus();
+    }, 12_000);
+
+    return () => window.clearInterval(timer);
   }, []);
 
   function addAssistantMessage(content: string, error = false) {
@@ -227,9 +265,16 @@ ${record.message || "No scan message returned."}`;
   async function loadScanStatus() {
     try {
       const res = await fetch(`${API_BASE}/scan/status`);
+
+      if (!res.ok) {
+        throw new Error("Scan status request failed");
+      }
+
       const data = await res.json();
       setScanStatus(data);
+      setScanStatusError(false);
     } catch {
+      setScanStatusError(true);
       console.log("Could not load scan status.");
     }
   }
@@ -490,6 +535,29 @@ ${record.message || "No scan message returned."}`;
     scanStatus?.active_sessions && scanStatus.active_sessions.length > 0
       ? scanStatus.active_sessions.join(" + ")
       : "Inactive";
+  const heartbeatAgeSeconds = getAgeSeconds(scanStatus?.heartbeat_timestamp);
+  const scanIntervalSeconds = scanStatus?.scan_interval_seconds || 0;
+  const heartbeatIsStale =
+    heartbeatAgeSeconds !== null &&
+    scanIntervalSeconds > 0 &&
+    heartbeatAgeSeconds > scanIntervalSeconds * 2;
+  const scannerTone = !scanStatus?.process_running
+    ? "inactive"
+    : heartbeatIsStale || heartbeatAgeSeconds === null
+    ? "warning"
+    : "active";
+  const scannerBadgeClass =
+    scannerTone === "active"
+      ? "bg-green-500/20 text-green-200"
+      : scannerTone === "warning"
+      ? "bg-yellow-500/20 text-yellow-200"
+      : "bg-red-500/20 text-red-200";
+  const scannerBadgeText =
+    scannerTone === "active"
+      ? "Active"
+      : scannerTone === "warning"
+      ? "Warning"
+      : "Inactive";
 
   const htfBias = latestScan?.state?.htf_bias || "unknown";
   const executionBias = latestScan?.state?.execution_bias || "unknown";
@@ -633,19 +701,81 @@ ${record.message || "No scan message returned."}`;
                   MES Scanner
                 </h2>
                 <p className="text-xs text-blue-200/70">
-                  Session: {activeSessions}
+                  {scanStatus?.running_scan
+                    ? "Scanning now..."
+                    : `Session: ${activeSessions}`}
                 </p>
               </div>
 
               <span
-                className={`rounded-full px-2 py-1 text-xs ${
-                  scanStatus?.should_scan_now
-                    ? "bg-green-500/20 text-green-200"
-                    : "bg-neutral-800 text-neutral-300"
-                }`}
+                className={`rounded-full px-2 py-1 text-xs ${scannerBadgeClass}`}
               >
-                {scanStatus?.should_scan_now ? "Active" : "Idle"}
+                {scannerBadgeText}
               </span>
+            </div>
+
+            {scanStatusError ? (
+              <div className="mb-3 rounded-xl border border-yellow-500/20 bg-yellow-950/30 px-3 py-2 text-xs text-yellow-100">
+                Status unavailable.
+              </div>
+            ) : (
+              <div className="mb-3 grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-xl bg-neutral-950/70 p-3">
+                  <p className="text-neutral-500">Process</p>
+                  <p className="mt-1 font-semibold text-neutral-100">
+                    {scanStatus?.process_running ? "Running" : "Not running"}
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-neutral-950/70 p-3">
+                  <p className="text-neutral-500">Running scan</p>
+                  <p className="mt-1 font-semibold text-neutral-100">
+                    {scanStatus?.running_scan ? "Yes" : "No"}
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-neutral-950/70 p-3">
+                  <p className="text-neutral-500">Heartbeat age</p>
+                  <p className="mt-1 font-semibold text-neutral-100">
+                    {formatRelativeAge(scanStatus?.heartbeat_timestamp)}
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-neutral-950/70 p-3">
+                  <p className="text-neutral-500">Last scan age</p>
+                  <p className="mt-1 font-semibold text-neutral-100">
+                    {formatRelativeAge(scanStatus?.last_scan_timestamp)}
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-neutral-950/70 p-3">
+                  <p className="text-neutral-500">Last success</p>
+                  <p className="mt-1 font-semibold text-neutral-100">
+                    {scanStatus?.latest_scan_success === null ||
+                    scanStatus?.latest_scan_success === undefined
+                      ? "Unknown"
+                      : scanStatus.latest_scan_success
+                      ? "Yes"
+                      : "No"}
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-neutral-950/70 p-3">
+                  <p className="text-neutral-500">Next interval</p>
+                  <p className="mt-1 font-semibold text-neutral-100">
+                    {scanStatus?.scan_interval_seconds
+                      ? `${Math.round(scanStatus.scan_interval_seconds / 60)}m`
+                      : "Unknown"}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="mb-3 rounded-xl bg-neutral-950/70 p-3 text-xs">
+              <p className="text-neutral-500">Active sessions</p>
+              <p className="mt-1 font-semibold text-neutral-100">
+                {activeSessions}
+              </p>
             </div>
 
             <div className="grid grid-cols-2 gap-2">
