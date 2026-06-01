@@ -2040,7 +2040,8 @@ def capture_tradingview(symbol: str = "MNQ", timeframe: str | None = None):
         tv_symbol = config["tv_symbol"]
         profile_dir = get_tradingview_profile_dir()
 
-        interval = TRADINGVIEW_TIMEFRAMES.get(timeframe) if timeframe else None
+        capture_timeframes = {**TRADINGVIEW_TIMEFRAMES, "5M": "5"}
+        interval = capture_timeframes.get(timeframe) if timeframe else None
         chart_url = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
 
         if interval:

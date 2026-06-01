@@ -20,7 +20,7 @@ from tools import (
 # -------------------------
 SYMBOL = "MES"
 SCAN_TIMEFRAME = "15M"
-SCHEDULED_SCAN_TIMEFRAMES = ["4H", "1H", "15M"]
+SCHEDULED_SCAN_TIMEFRAMES = ["4H", "1H", "15M", "5M"]
 SCAN_INTERVAL_SECONDS = 5 * 60
 TIMEZONE = ZoneInfo("America/Denver")
 
@@ -783,7 +783,7 @@ def _behavior_visual_text_from_visuals(visuals: dict) -> str:
 def _behavior_text_by_timeframe(record: dict) -> dict[str, str]:
     return {
         timeframe: _behavior_visual_text_from_visuals(_visuals_for_timeframe(record, timeframe))
-        for timeframe in ["15M", "1H", "4H"]
+        for timeframe in ["15M", "5M", "1H", "4H"]
     }
 
 
@@ -860,6 +860,7 @@ def classify_behavior(record: dict) -> dict:
 
     text_by_timeframe = _behavior_text_by_timeframe(record)
     visual_text_15m = text_by_timeframe.get("15M", "")
+    visual_text_5m = text_by_timeframe.get("5M", "")
     visual_text_htf = " ".join(
         text for timeframe, text in text_by_timeframe.items()
         if timeframe in ["1H", "4H"] and text
@@ -898,6 +899,8 @@ def classify_behavior(record: dict) -> dict:
             "supply",
             "movement away",
             "away from",
+            "failed continuation",
+            "continuation failed",
         ],
         "reclaim": [
             "reclaim",
@@ -928,6 +931,10 @@ def classify_behavior(record: dict) -> dict:
             "breakaway",
             "large candle",
             "aggressive move",
+            "mss",
+            "bos",
+            "market structure shift",
+            "break of structure",
         ],
         "consolidation": [
             "range",
@@ -945,11 +952,14 @@ def classify_behavior(record: dict) -> dict:
 
     for classification, terms in behavior_terms.items():
         score_15m = _count_terms(visual_text_15m, terms)
+        score_5m = _count_terms(visual_text_5m, terms)
         score_htf = _count_terms(visual_text_htf, terms)
-        weighted_scores[classification] = (score_15m * 2) + score_htf
+        weighted_scores[classification] = (score_15m * 2) + min(score_5m, 2) + score_htf
 
         if score_15m:
             _append_term_evidence(evidence, "15M", visual_text_15m, terms)
+        if score_5m:
+            _append_term_evidence(evidence, "5M structure confirmation", visual_text_5m, terms)
         if score_htf:
             _append_term_evidence(evidence, "1H/4H", visual_text_htf, terms)
 
@@ -1020,7 +1030,7 @@ def classify_behavior(record: dict) -> dict:
         data_limitations.append("Primary visual extraction did not succeed.")
 
     missing_visual_tfs = [
-        timeframe for timeframe in ["15M", "1H", "4H"]
+        timeframe for timeframe in ["15M", "5M", "1H", "4H"]
         if not text_by_timeframe.get(timeframe)
     ]
 
@@ -1166,7 +1176,10 @@ def _record_visual_context(record: dict) -> dict:
 
     all_visual_text = [_visual_text_from_visuals(visuals_15m)]
 
-    for capture in timeframe_captures.values():
+    for timeframe, capture in timeframe_captures.items():
+        if timeframe == "5M":
+            continue
+
         all_visual_text.append(_visual_text_from_visuals(_visuals_from_capture(capture)))
 
     return {
