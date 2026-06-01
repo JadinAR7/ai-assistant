@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import subprocess
 import os
 import json
@@ -81,6 +81,15 @@ TIMEFRAME_LABELS = {
     "1H": "1 hour",
     "4H": "4 hours",
     "1D": "1 day",
+}
+
+
+CSV_STALENESS_THRESHOLDS_MINUTES = {
+    "1M": 5,
+    "15M": 30,
+    "1H": 90,
+    "4H": 6 * 60,
+    "1D": 36 * 60,
 }
 
 
@@ -2353,6 +2362,55 @@ def zone_relation_to_price(current_price: float, low: float, high: float):
     return "inside"
 
 
+def get_csv_freshness(df, timeframe: str) -> dict:
+    timeframe = timeframe.upper()
+    threshold_minutes = CSV_STALENESS_THRESHOLDS_MINUTES.get(timeframe)
+
+    if "time" not in df.columns:
+        return {
+            "timeframe": timeframe,
+            "latest_csv_time": None,
+            "age_minutes": None,
+            "threshold_minutes": threshold_minutes,
+            "is_stale": True,
+            "stale_reason": "CSV has no time column; freshness cannot be verified.",
+        }
+
+    latest_time = df["time"].max()
+
+    if pd.isna(latest_time):
+        return {
+            "timeframe": timeframe,
+            "latest_csv_time": None,
+            "age_minutes": None,
+            "threshold_minutes": threshold_minutes,
+            "is_stale": True,
+            "stale_reason": "CSV time column has no valid timestamps.",
+        }
+
+    latest_time = latest_time.to_pydatetime() if hasattr(latest_time, "to_pydatetime") else latest_time
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    age_minutes = max((now_utc - latest_time).total_seconds() / 60, 0)
+
+    is_stale = threshold_minutes is not None and age_minutes > threshold_minutes
+    stale_reason = None
+
+    if is_stale:
+        stale_reason = (
+            f"{timeframe} CSV latest row is {round(age_minutes, 1)} minutes old; "
+            f"threshold is {threshold_minutes} minutes."
+        )
+
+    return {
+        "timeframe": timeframe,
+        "latest_csv_time": f"{latest_time.isoformat()}Z",
+        "age_minutes": round(age_minutes, 1),
+        "threshold_minutes": threshold_minutes,
+        "is_stale": is_stale,
+        "stale_reason": stale_reason,
+    }
+
+
 def analyze_dataframe(df):
     current_price = float(df.iloc[-1]["close"])
 
@@ -2635,6 +2693,8 @@ def format_market_response(analysis: dict) -> str:
     context_bias = context.get("bias", "neutral")
     context_tf = context.get("bias_timeframe", "1D")
     current_price = context.get("current_price")
+    csv_freshness = analysis.get("csv_freshness", {})
+    stale_warning = _csv_stale_warning(csv_freshness)
 
     daily = analysis.get("daily")
     h4 = analysis.get("h4")
@@ -2658,8 +2718,11 @@ def format_market_response(analysis: dict) -> str:
 
     response.append(
         f"**{symbol} Data Read:** Main context is **{context_bias}** from the "
-        f"**{context_tf}**. Current price is around **{current_price}**."
+        f"**{context_tf}**. CSV 1M close is around **{current_price}**."
     )
+
+    if stale_warning:
+        response.append(f"**Data Freshness:** {stale_warning}")
 
     response.append("## Computed Zones")
 
@@ -2692,7 +2755,8 @@ def format_market_response(analysis: dict) -> str:
     )
 
     response.append(
-        "**Bottom Line:** CSV controls price, levels, and structure. Screenshot only confirms markings."
+        "**Bottom Line:** CSV controls historical structure/FVG mapping. "
+        "Vision controls live visible chart context when CSV is stale."
     )
 
     return "\n\n".join(response)
@@ -2720,6 +2784,14 @@ def analyze_market_csv(
         htf_df = load_market_csv(htf)
         mtf_df = load_market_csv(mtf)
         ltf_df = load_market_csv(ltf)
+
+        csv_freshness = {
+            "1D": get_csv_freshness(daily_df, "1D"),
+            "4H": get_csv_freshness(h4_df, "4H"),
+            "1H": get_csv_freshness(htf_df, "1H"),
+            "15M": get_csv_freshness(mtf_df, "15M"),
+            "1M": get_csv_freshness(ltf_df, "1M"),
+        }
 
         daily_analysis = analyze_dataframe(daily_df)
         h4_analysis = analyze_dataframe(h4_df)
@@ -2808,6 +2880,7 @@ def analyze_market_csv(
             "ltf": {"timeframe": "1M", **ltf_analysis},
 
             "zone_ranking": zone_ranking,
+            "csv_freshness": csv_freshness,
 
             "trade_plan": {
                 "direction": trade_direction,
@@ -2837,8 +2910,8 @@ def analyze_market_csv(
 
             "analysis_rules": {
                 "model": "ICT-based",
-                "source_of_truth": "CSV data controls price, levels, FVGs, targets, and structure.",
-                "screenshot_role": "Screenshot confirms user drawings and visible chart context only.",
+                "source_of_truth": "CSV controls historical structure/FVG mapping.",
+                "screenshot_role": "Vision controls live visible chart context when CSV is stale.",
                 "timeframe_priority": "1D > 4H > 1H > 15M > 1M",
                 "entry_model": "Liquidity sweep -> MSS/BOS -> BRTC retest -> continuation",
                 "do_not_use": "VWAP",
@@ -2851,6 +2924,7 @@ def analyze_market_csv(
             "symbol": symbol,
             "analysis": analysis,
             "zone_ranking": zone_ranking,
+            "csv_freshness": csv_freshness,
             "message": format_market_response(analysis),
         }
 
@@ -3174,14 +3248,15 @@ def build_merged_market_state(
     merged = {
         "success": True,
         "source_priority": [
-            "CSV controls numeric price, FVGs, structure, targets, and bias.",
-            "Vision controls visible user drawings, labels, and screenshot context.",
-            "If CSV and screenshot disagree numerically, trust CSV.",
+            "CSV controls historical structure/FVG mapping.",
+            "Vision controls live visible chart context when CSV is stale.",
+            "If LTF CSV is stale, do not treat CSV close as live current price.",
         ],
         "symbol": analysis.get("symbol"),
         "csv_state": {
             "context": analysis.get("context"),
             "files_used": analysis.get("files_used"),
+            "csv_freshness": analysis.get("csv_freshness"),
             "zone_ranking": analysis.get("zone_ranking"),
             "trade_plan": analysis.get("trade_plan"),
             "targets": analysis.get("trade_plan", {}).get("targets"),
@@ -3236,6 +3311,7 @@ def build_compact_market_state(merged_state: dict):
     trade_plan = csv_state.get("trade_plan", {})
     targets = csv_state.get("targets") or trade_plan.get("targets", {})
     zone_ranking = csv_state.get("zone_ranking", {})
+    csv_freshness = csv_state.get("csv_freshness", {})
 
     current_price = context.get("current_price")
 
@@ -3275,6 +3351,7 @@ def build_compact_market_state(merged_state: dict):
     return {
         "symbol": merged_state.get("symbol"),
         "source_priority": merged_state.get("source_priority", []),
+        "csv_freshness": csv_freshness,
         "context": {
             "current_price": current_price,
             "htf_bias_timeframe": context.get("bias_timeframe"),
@@ -3449,6 +3526,22 @@ def _fmt_targets(values: list | None, limit: int = 3):
         return "None identified"
 
     return ", ".join(_fmt_price(value) for value in values[:limit])
+
+
+def _csv_stale_warning(csv_freshness: dict) -> str | None:
+    ltf_freshness = (csv_freshness or {}).get("1M", {})
+
+    if not ltf_freshness.get("is_stale"):
+        return None
+
+    latest_time = ltf_freshness.get("latest_csv_time") or "unknown time"
+    age = ltf_freshness.get("age_minutes")
+    age_text = f"{age} minutes old" if age is not None else "age unknown"
+
+    return (
+        f"Warning: 1M CSV is stale ({latest_time}, {age_text}). "
+        "CSV close is historical context, not confirmed live price; live chart price may differ."
+    )
 
 
 def _visual_marking_summary(
@@ -3960,8 +4053,10 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
     zones = state.get("zones", {})
     targets = state.get("targets", {})
     visual = state.get("visual_state", {})
+    csv_freshness = state.get("csv_freshness", {})
 
     current_price = context.get("current_price")
+    stale_warning = _csv_stale_warning(csv_freshness)
     htf_bias = context.get("htf_bias") or "neutral"
     htf_tf = context.get("htf_bias_timeframe") or "HTF"
     execution_bias = context.get("execution_bias") or "neutral"
@@ -4004,7 +4099,17 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
 
     lines = [
         "## HTF Context",
-        f"{symbol} is around {_fmt_price(current_price)}. {htf_tf} bias is {htf_bias}. H4 is {h4.get('bias', 'unknown')} and H1 is {h1.get('bias', 'unknown')}.",
+        f"{symbol} CSV 1M close is around {_fmt_price(current_price)}. {htf_tf} bias is {htf_bias}. H4 is {h4.get('bias', 'unknown')} and H1 is {h1.get('bias', 'unknown')}.",
+    ]
+
+    if stale_warning:
+        lines.extend([
+            "",
+            "## Data Freshness",
+            stale_warning,
+        ])
+
+    lines.extend([
         "",
         "## Current Structure",
         f"Execution bias is {execution_bias}. M15 structure is {m15.get('structure', 'unknown')}; M1 structure is {m1.get('structure', 'unknown')}.",
@@ -4032,8 +4137,8 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
         f"- Bearish scenario: {scenario_down}",
         "",
         "## Bottom Line",
-        "CSV controls price, levels, FVGs, and structure. Screenshot markings are confirmation only.",
-    ]
+        "CSV controls historical structure/FVG mapping. Vision controls live visible chart context when CSV is stale.",
+    ])
 
     return "\n".join(lines)
 
@@ -4286,6 +4391,7 @@ def analyze_tradingview(symbol: str = "MNQ", prompt: str = "", timeframe: str | 
                 "screenshot_path": screenshot_path,
                 "visual_extraction": visual_result,
                 "csv_analysis": csv_result,
+                "csv_freshness": csv_result.get("csv_freshness"),
                 "message": (
                     "Screenshot was captured and visual markings were extracted, "
                     "but CSV analysis failed.\n\n"
@@ -4312,6 +4418,7 @@ def analyze_tradingview(symbol: str = "MNQ", prompt: str = "", timeframe: str | 
             "screenshot_path": screenshot_path,
             "visual_extraction": visual_result,
             "csv_analysis": csv_result,
+            "csv_freshness": csv_result.get("csv_freshness"),
             "merged_state": merged_state,
             "message": message + f"\n\nScreenshot saved: `{screenshot_path}`",
         }
@@ -4355,6 +4462,7 @@ def analyze_uploaded_chart_image(
                 "symbol": symbol,
                 "visual_extraction": visual_result,
                 "csv_analysis": csv_result,
+                "csv_freshness": csv_result.get("csv_freshness"),
                 "message": (
                     "Image visual extraction ran, but CSV analysis failed. "
                     f"CSV error: {csv_result.get('error')}"
@@ -4377,6 +4485,7 @@ def analyze_uploaded_chart_image(
             },
             "visual_extraction": visual_result,
             "csv_analysis": csv_result,
+            "csv_freshness": csv_result.get("csv_freshness"),
             "merged_state": merged_state,
             "message": message,
         }

@@ -6,6 +6,7 @@ from datetime import datetime, time as dt_time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from news_risk import build_news_risk_summary, format_news_risk_section
 from tools import analyze_tradingview
 
 
@@ -83,6 +84,37 @@ def get_active_sessions(now: datetime) -> list[str]:
 
 def should_scan_now(now: datetime) -> bool:
     return len(get_active_sessions(now)) > 0
+
+
+def attach_news_risk(result: dict, now: datetime) -> None:
+    try:
+        news_risk = build_news_risk_summary(now=now)
+    except Exception as e:
+        news_risk = {
+            "success": False,
+            "timestamp": now.isoformat(),
+            "timezone": "America/Denver",
+            "risk": "Low",
+            "next_major_event": None,
+            "time_until_event": None,
+            "event_importance": None,
+            "upcoming_events": [],
+            "upcoming_red_usd_events": [],
+            "upcoming_orange_usd_events": [],
+            "fed_speakers": [],
+            "breaking_news": [],
+            "provider_status": {
+                "calendar": [f"news risk unavailable: {e}"],
+                "breaking_news": [f"news risk unavailable: {e}"],
+            },
+        }
+
+    result["news_risk"] = news_risk
+    result["message"] = (
+        (result.get("message") or "")
+        + "\n\n"
+        + format_news_risk_section(news_risk)
+    ).strip()
 
 
 # -------------------------
@@ -448,6 +480,9 @@ def build_scan_record(
         "vision_success": visual_extraction.get("success", False),
         "vision_error": visual_extraction.get("error"),
         "csv_success": csv_analysis.get("success", False),
+        "csv_freshness": csv_analysis.get("csv_freshness")
+        or csv_analysis.get("analysis", {}).get("csv_freshness"),
+        "news_risk": result.get("news_risk"),
         "message": result.get("message"),
         "comparison": comparison or {
             "market_changes": [],
@@ -619,6 +654,8 @@ def run_scan(
             timeframe=timeframe,
             prompt=f"Scheduled {SYMBOL} scan during {session_label}. Analyze with marked levels.",
         )
+
+        attach_news_risk(result, now)
 
         previous_scan = load_last_successful_scan()
 
