@@ -1827,6 +1827,217 @@ def attach_opportunity_watch(record: dict) -> None:
 
 
 # -------------------------
+# Alert eligibility v1
+# -------------------------
+ALERT_ELIGIBILITY_LEVELS = ["none", "low", "medium", "high"]
+
+
+def _level_rank(level: str) -> int:
+    try:
+        return ALERT_ELIGIBILITY_LEVELS.index(level)
+    except ValueError:
+        return 0
+
+
+def _min_level(level: str, cap: str) -> str:
+    return level if _level_rank(level) <= _level_rank(cap) else cap
+
+
+def _major_state_change(comparison: dict | None) -> tuple[bool, list[str]]:
+    comparison = comparison or {}
+    market_changes = comparison.get("market_changes") or []
+
+    changes = [
+        str(item).strip()
+        for item in market_changes
+        if item
+        and "No major market structure change detected" not in str(item)
+        and "No previous successful scan found for comparison" not in str(item)
+    ]
+
+    return bool(changes), changes
+
+
+def _strong_visual_evidence(record: dict) -> bool:
+    behavior = record.get("behavior_classification") or {}
+    classification = str(behavior.get("classification") or "unknown").lower()
+    confidence = str(behavior.get("confidence") or "low").lower()
+    structure_confirmation = str(behavior.get("structure_confirmation") or "").lower()
+
+    return (
+        classification in ["acceptance", "rejection", "reclaim", "sweep", "displacement"]
+        and confidence in ["medium", "high"]
+        and "5m confirms" in structure_confirmation
+    )
+
+
+def evaluate_chart_alert_eligibility(record: dict) -> dict:
+    """
+    Classifies whether Jadin should be notified to look at the chart.
+
+    This is notification triage only. It does not create trade signals, entries,
+    stop losses, targets, or any outbound message.
+    """
+    opportunity = record.get("opportunity_watch") or {}
+    behavior = record.get("behavior_classification") or {}
+    liquidity_draw = record.get("liquidity_draw") or {}
+    state = record.get("state") or extract_structured_state(record)
+    comparison = record.get("comparison") or {}
+
+    opportunity_type = str(opportunity.get("opportunity_type") or "no_opportunity")
+    opportunity_confidence = str(opportunity.get("confidence") or "low").lower()
+    behavior_classification = str(behavior.get("classification") or "unknown").lower()
+    behavior_confidence = str(behavior.get("confidence") or "low").lower()
+    structure_confirmation = str(behavior.get("structure_confirmation") or "5M unclear")
+    has_5m_confirmation = "5m confirms" in structure_confirmation.lower()
+    htf_bias = state.get("htf_bias") or "unknown"
+    execution_bias = state.get("execution_bias") or "unknown"
+    news_risk_level = _news_risk_level(record)
+    csv_stale = _csv_is_stale(record)
+    strong_visual = _strong_visual_evidence(record)
+    major_change, major_change_reasons = _major_state_change(comparison)
+
+    clean_behavior = behavior_classification in [
+        "acceptance",
+        "rejection",
+        "reclaim",
+        "sweep",
+        "displacement",
+    ]
+
+    reasons = []
+    blockers = []
+    what_to_watch_next = []
+
+    if opportunity_type == "no_opportunity":
+        level = "none"
+        blockers.append("Opportunity Watch is No Opportunity.")
+        what_to_watch_next.extend(opportunity.get("next_confirmation_needed") or [])
+    elif opportunity_confidence == "low":
+        level = "medium" if major_change else "low"
+        reasons.append(f"Opportunity Watch is {OPPORTUNITY_TYPE_LABELS.get(opportunity_type, opportunity_type)} with low confidence.")
+        if major_change:
+            reasons.extend(major_change_reasons)
+        else:
+            blockers.append("Low-confidence opportunity keeps notification eligibility low without a major state change.")
+    elif opportunity_confidence == "medium" and clean_behavior:
+        level = "medium"
+        reasons.append(f"Opportunity Watch is {OPPORTUNITY_TYPE_LABELS.get(opportunity_type, opportunity_type)} with medium confidence.")
+        reasons.append(f"Behavior is clean enough to review: {behavior_classification}.")
+    elif opportunity_confidence == "high" and clean_behavior and news_risk_level == "low":
+        level = "high"
+        reasons.append(f"Opportunity Watch is {OPPORTUNITY_TYPE_LABELS.get(opportunity_type, opportunity_type)} with high confidence.")
+        reasons.append(f"Behavior is clean enough to review: {behavior_classification}.")
+        reasons.append("News Risk is Low.")
+    elif clean_behavior:
+        level = "low"
+        reasons.append(f"Opportunity Watch is {OPPORTUNITY_TYPE_LABELS.get(opportunity_type, opportunity_type)}.")
+        blockers.append(f"Opportunity confidence is {opportunity_confidence}, below the threshold for medium eligibility.")
+    else:
+        level = "low"
+        reasons.append(f"Opportunity Watch is {OPPORTUNITY_TYPE_LABELS.get(opportunity_type, opportunity_type)}.")
+        blockers.append(f"Behavior classification is {behavior_classification}, not clean directional behavior.")
+
+    if behavior_classification in ["consolidation", "unknown"]:
+        level = _min_level(level, "low")
+        blockers.append(f"Behavior classification is {behavior_classification}, which caps eligibility at Low.")
+
+    if news_risk_level == "high":
+        level = _min_level(level, "medium")
+        blockers.append("News Risk is High, which caps eligibility at Medium.")
+    elif news_risk_level == "medium":
+        blockers.append("News Risk is Medium; notification requires cleaner confirmation.")
+
+    if csv_stale:
+        if strong_visual:
+            reasons.append("CSV is stale, but visual evidence is strong enough to avoid the Low cap.")
+        else:
+            level = _min_level(level, "low")
+            blockers.append("CSV is stale and visual evidence is not strong enough to exceed Low eligibility.")
+
+    if not has_5m_confirmation:
+        if level == "high":
+            level = "medium"
+        elif level == "medium" and behavior_confidence == "low":
+            level = "low"
+        blockers.append("5M structure confirmation is unclear, so eligibility is capped at Low/Medium.")
+    else:
+        reasons.append(structure_confirmation)
+
+    primary_draw = (liquidity_draw.get("primary_draw") or {}).get("label")
+    liquidity_confidence = liquidity_draw.get("confidence")
+    if primary_draw:
+        reasons.append(f"Liquidity Draw points to {primary_draw} with {liquidity_confidence or 'unknown'} confidence.")
+
+    if htf_bias != "unknown" or execution_bias != "unknown":
+        reasons.append(f"Bias context: HTF {htf_bias}, execution {execution_bias}.")
+
+    if htf_bias != execution_bias and htf_bias in ["bullish", "bearish"] and execution_bias in ["bullish", "bearish"]:
+        blockers.append("HTF bias and execution bias conflict; chart review needs structure resolution.")
+
+    what_to_watch_next.extend(opportunity.get("next_confirmation_needed") or [])
+    what_to_watch_next.extend(behavior.get("missing_confirmation") or [])
+
+    if primary_draw:
+        what_to_watch_next.append(f"Watch whether price continues toward, sweeps, rejects, or reclaims {primary_draw}.")
+
+    if not what_to_watch_next:
+        what_to_watch_next.append("Wait for clearer opportunity, behavior, and 5M structure confirmation.")
+
+    if not reasons and level == "none":
+        reasons.append("No notification-worthy chart-review context is active.")
+
+    blockers = _dedupe_text(blockers)
+    reasons = _dedupe_text(reasons)
+    what_to_watch_next = _dedupe_text(what_to_watch_next)
+    should_notify = level in ["medium", "high"]
+
+    return {
+        "level": level,
+        "should_notify": should_notify,
+        "reasons": reasons,
+        "blockers": blockers,
+        "what_to_watch_next": what_to_watch_next,
+        "does_not_generate_trade_signals": True,
+    }
+
+
+def format_alert_eligibility_section(alert_eligibility: dict) -> str:
+    level = str(alert_eligibility.get("level") or "none").capitalize()
+    notify = "Yes" if alert_eligibility.get("should_notify") else "No"
+    reasons = alert_eligibility.get("reasons") or ["No notification-worthy chart-review context is active."]
+    blockers = alert_eligibility.get("blockers") or ["No blocker recorded."]
+    what_to_watch_next = alert_eligibility.get("what_to_watch_next") or [
+        "Wait for clearer opportunity, behavior, and 5M structure confirmation."
+    ]
+
+    lines = [
+        "## Alert Eligibility",
+        f"Level: {level}",
+        f"Notify: {notify}",
+        "",
+        "Reasons:",
+    ]
+    lines.extend(f"- {item}" for item in reasons)
+    lines.extend(["", "Blockers:"])
+    lines.extend(f"- {item}" for item in blockers)
+    lines.extend(["", "What to watch next:"])
+    lines.extend(f"- {item}" for item in what_to_watch_next)
+
+    return "\n".join(lines)
+
+
+def attach_alert_eligibility(record: dict) -> None:
+    alert_eligibility = evaluate_chart_alert_eligibility(record)
+    record["alert_eligibility"] = alert_eligibility
+    record["message"] = (
+        (record.get("message") or "")
+        + "\n\n"
+        + format_alert_eligibility_section(alert_eligibility)
+    ).strip()
+
+
+# -------------------------
 # Runtime scanner status
 # -------------------------
 def _process_is_running(process_id: int | None) -> bool:
@@ -2206,6 +2417,14 @@ def build_scan_record(
             "severity": "none",
             "reasons": [],
         },
+        "alert_eligibility": {
+            "level": "none",
+            "should_notify": False,
+            "reasons": [],
+            "blockers": [],
+            "what_to_watch_next": [],
+            "does_not_generate_trade_signals": True,
+        },
     }
 
     record["state"] = extract_structured_state(record)
@@ -2407,6 +2626,7 @@ def run_scan(
         attach_liquidity_draw(record)
         attach_behavior_classification(record)
         attach_opportunity_watch(record)
+        attach_alert_eligibility(record)
 
         save_scan_record(record)
 
@@ -2454,6 +2674,18 @@ def run_scan(
         for item in alert.get("reasons", []):
             print("-", item)
 
+        print()
+        print("Alert eligibility:")
+        alert_eligibility = record.get("alert_eligibility", {})
+        print("Level:", alert_eligibility.get("level"))
+        print("Notify:", alert_eligibility.get("should_notify"))
+        print("Reasons:")
+        for item in alert_eligibility.get("reasons", []):
+            print("-", item)
+        print("Blockers:")
+        for item in alert_eligibility.get("blockers", []):
+            print("-", item)
+
         return record
 
     except Exception as e:
@@ -2467,6 +2699,14 @@ def run_scan(
             "session_label": session_label,
             "success": False,
             "error": str(e),
+            "alert_eligibility": {
+                "level": "none",
+                "should_notify": False,
+                "reasons": ["Scan failed before alert eligibility could be evaluated."],
+                "blockers": [str(e)],
+                "what_to_watch_next": ["Fix the scan failure, then rerun MES chart review."],
+                "does_not_generate_trade_signals": True,
+            },
         }
 
         save_scan_record(error_record)
