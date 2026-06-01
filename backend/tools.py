@@ -8,6 +8,7 @@ import time
 import requests
 import pandas as pd
 import base64
+from pathlib import Path
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -29,10 +30,14 @@ DISPLACEMENT_MULTIPLIER = 1.5
 CSV_DATA_DIR = os.path.join(BASE_DIR, "csv_data")
 SCREENSHOTS_DIR = os.path.join(BASE_DIR, "pictures", "tradingview_screenshots")
 DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads", "tradingview_csv")
+USER_DOWNLOADS_DIR = Path.home() / "Downloads"
+TRADINGVIEW_EXPORT_DOWNLOAD_TIMEOUT_SECONDS = 45
+DEBUG_EXPORTS_DIR = Path(__file__).resolve().parent / "downloads" / "debug_exports"
 
 os.makedirs(CSV_DATA_DIR, exist_ok=True)
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+DEBUG_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 TEXT_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
@@ -68,6 +73,7 @@ SYMBOL_CONFIG = {
 
 TRADINGVIEW_TIMEFRAMES = {
     "1M": "1",
+    "5M": "5",
     "15M": "15",
     "1H": "60",
     "4H": "240",
@@ -77,6 +83,7 @@ TRADINGVIEW_TIMEFRAMES = {
 
 TIMEFRAME_LABELS = {
     "1M": "1 minute",
+    "5M": "5 minutes",
     "15M": "15 minutes",
     "1H": "1 hour",
     "4H": "4 hours",
@@ -85,8 +92,9 @@ TIMEFRAME_LABELS = {
 
 
 CSV_STALENESS_THRESHOLDS_MINUTES = {
-    "1M": 5,
-    "15M": 30,
+    "1M": 15,
+    "5M": 20,
+    "15M": 45,
     "1H": 90,
     "4H": 6 * 60,
     "1D": 36 * 60,
@@ -2169,32 +2177,563 @@ def _try_click_export_chart_data(page):
     return False
 
 
-def _normalize_downloaded_csv(download_path: str, symbol: str, timeframe: str):
+def _save_export_debug_screenshot(page, symbol: str, timeframe: str, reason: str) -> str | None:
+    try:
+        clean_reason = re.sub(r"[^a-zA-Z0-9_-]+", "_", reason).strip("_")[:60] or "failure"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = DEBUG_EXPORTS_DIR / f"{symbol}_{timeframe}_{clean_reason}_{timestamp}.png"
+        page.screenshot(path=str(path), full_page=False)
+        return str(path)
+    except Exception:
+        return None
+
+
+def _locator_is_top_chart_toolbar_target(page, locator) -> bool:
+    try:
+        box = locator.bounding_box(timeout=1500)
+    except Exception:
+        box = None
+
+    if not box:
+        return False
+
+    viewport = page.viewport_size or {"width": 1600, "height": 900}
+
+    # The chart layout dropdown lives in the top toolbar, away from the logo
+    # and away from the profile/account area on the far right.
+    if box["y"] > 140:
+        return False
+    if box["x"] < 80:
+        return False
+    if box["x"] > viewport["width"] - 260:
+        return False
+
+    return True
+
+
+def _click_first_top_chart_toolbar_target(page, candidates: list) -> bool:
+    for locator in candidates:
+        try:
+            count = min(locator.count(), 5)
+        except Exception:
+            continue
+
+        for index in range(count):
+            item = locator.nth(index)
+            try:
+                if not item.is_visible(timeout=1000):
+                    continue
+                if not _locator_is_top_chart_toolbar_target(page, item):
+                    continue
+
+                item.click(timeout=5000)
+                page.wait_for_timeout(750)
+                return True
+            except Exception:
+                continue
+
+    return False
+
+
+def _visible_menu_item_texts(page) -> list[str]:
+    texts = []
+    candidates = [
+        page.locator("[role='menuitem']"),
+        page.locator("[data-name*='menu']"),
+    ]
+
+    for locator in candidates:
+        try:
+            count = min(locator.count(), 20)
+        except Exception:
+            continue
+
+        for index in range(count):
+            try:
+                item = locator.nth(index)
+                if item.is_visible(timeout=500):
+                    text = " ".join(item.inner_text(timeout=1000).split())
+                    if text and text not in texts:
+                        texts.append(text)
+            except Exception:
+                continue
+
+    return texts[:20]
+
+
+def _click_tradingview_layout_dropdown(page) -> dict:
+    logs = []
+    layout_name_pattern = re.compile(r"Trade day(?:\s+\d{1,2}/\d{1,2})?", re.I)
+
+    layout_name = page.get_by_text(layout_name_pattern).first
+    try:
+        if layout_name.count() > 0 and layout_name.is_visible(timeout=2000):
+            found_text = " ".join(layout_name.inner_text(timeout=1000).split())
+            logs.append(f"found layout name: {found_text}")
+
+            anchored_candidates = [
+                layout_name.locator("xpath=ancestor-or-self::*[self::button][1]"),
+                layout_name.locator("xpath=ancestor::*[self::button][1]"),
+                layout_name.locator("xpath=ancestor::*[contains(@data-name, 'layout')][1]"),
+                layout_name.locator("xpath=ancestor::*[1]/following-sibling::button[1]"),
+                layout_name.locator("xpath=ancestor::*[1]//button").last,
+                layout_name.locator("xpath=following::button[1]"),
+            ]
+
+            if _click_first_top_chart_toolbar_target(page, anchored_candidates):
+                logs.append("clicked chart layout dropdown")
+                logs.append(f"menu items visible after click: {_visible_menu_item_texts(page)}")
+                return {"success": True, "logs": logs}
+    except Exception as e:
+        logs.append(f"layout-name anchored selector failed: {e}")
+
+    logs.append("layout name not found; trying scoped top-toolbar layout selectors")
+
+    top_toolbar = page.locator(
+        "[data-name='top-toolbar'], [data-name='header-toolbar'], "
+        ".chart-toolbar, .layout__area--top"
+    )
+    scoped_candidates = [
+        top_toolbar.locator("button[data-name='header-toolbar-layouts']"),
+        top_toolbar.locator("[data-name='header-toolbar-layouts']"),
+        top_toolbar.get_by_role("button", name=re.compile(r"Manage layouts", re.I)),
+        top_toolbar.get_by_role("button", name=re.compile(r"Trade day", re.I)),
+        page.locator("button[data-name='header-toolbar-layouts']"),
+        page.locator("[data-name='header-toolbar-layouts']"),
+    ]
+
+    if _click_first_top_chart_toolbar_target(page, scoped_candidates):
+        logs.append("clicked chart layout dropdown")
+        logs.append(f"menu items visible after click: {_visible_menu_item_texts(page)}")
+        return {"success": True, "logs": logs}
+
+    logs.append("chart layout dropdown not found in top toolbar")
+    return {"success": False, "logs": logs}
+
+
+def _click_download_chart_data_menu_item(page) -> bool:
+    candidates = [
+        page.get_by_role("menuitem", name=re.compile(r"Download chart data", re.I)).first,
+        page.get_by_text(re.compile(r"Download chart data", re.I)).first,
+        page.locator("text=/Download chart data/i").first,
+    ]
+
+    for locator in candidates:
+        try:
+            if locator.count() > 0:
+                locator.click(timeout=5000)
+                page.wait_for_timeout(750)
+                return True
+        except Exception:
+            continue
+
+    return False
+
+
+def _wait_for_download_chart_data_modal(page) -> bool:
+    candidates = [
+        page.get_by_role("heading", name=re.compile(r"Download chart data", re.I)).first,
+        page.get_by_role("dialog").filter(has_text=re.compile(r"Download chart data", re.I)).first,
+        page.get_by_text(re.compile(r"Download chart data", re.I)).first,
+    ]
+
+    for locator in candidates:
+        try:
+            locator.wait_for(state="visible", timeout=8000)
+            return True
+        except Exception:
+            continue
+
+    return False
+
+
+def _download_chart_data_button(page):
+    dialog = page.get_by_role("dialog").filter(has_text=re.compile(r"Download chart data", re.I)).first
+
+    candidates = [
+        dialog.get_by_role("button", name=re.compile(r"^Download$", re.I)).first,
+        page.get_by_role("button", name=re.compile(r"^Download$", re.I)).first,
+        page.locator("button:has-text('Download')").last,
+    ]
+
+    for locator in candidates:
+        try:
+            if locator.count() > 0:
+                return locator
+        except Exception:
+            continue
+
+    return None
+
+
+def _download_snapshot(downloads_dir: Path = USER_DOWNLOADS_DIR) -> set[Path]:
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+    return {path.resolve() for path in downloads_dir.iterdir() if path.is_file()}
+
+
+def _completed_csv_candidates(downloads_dir: Path, snapshot: set[Path]) -> list[Path]:
+    candidates = []
+
+    for path in downloads_dir.glob("*.csv"):
+        resolved = path.resolve()
+
+        if resolved in snapshot:
+            continue
+
+        if path.name.endswith((".crdownload", ".download", ".tmp")):
+            continue
+
+        candidates.append(path)
+
+    return sorted(candidates, key=lambda item: item.stat().st_mtime, reverse=True)
+
+
+def _wait_for_new_downloaded_csv(
+    snapshot: set[Path],
+    timeout_seconds: int = TRADINGVIEW_EXPORT_DOWNLOAD_TIMEOUT_SECONDS,
+    downloads_dir: Path = USER_DOWNLOADS_DIR,
+) -> tuple[Path | None, list[Path]]:
+    deadline = time.time() + timeout_seconds
+
+    while time.time() < deadline:
+        candidates = _completed_csv_candidates(downloads_dir, snapshot)
+
+        if candidates:
+            selected = candidates[0]
+            last_size = -1
+
+            for _ in range(5):
+                current_size = selected.stat().st_size
+                if current_size > 0 and current_size == last_size:
+                    return selected, candidates
+
+                last_size = current_size
+                time.sleep(0.5)
+
+        time.sleep(0.5)
+
+    return None, []
+
+
+def move_new_downloaded_csv_to_temp(
+    symbol: str,
+    timeframe: str,
+    temp_dir: Path,
+    snapshot: set[Path],
+    downloads_dir: Path = USER_DOWNLOADS_DIR,
+    timeout_seconds: int = TRADINGVIEW_EXPORT_DOWNLOAD_TIMEOUT_SECONDS,
+) -> dict:
+    symbol = symbol.upper()
+    timeframe = timeframe.upper()
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    downloaded_path, new_csvs = _wait_for_new_downloaded_csv(
+        snapshot=snapshot,
+        timeout_seconds=timeout_seconds,
+        downloads_dir=downloads_dir,
+    )
+
+    if not downloaded_path:
+        return {
+            "success": False,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "downloads_dir": str(downloads_dir),
+            "error": (
+                f"No new CSV appeared in {downloads_dir} within "
+                f"{timeout_seconds} seconds."
+            ),
+            "new_csvs": [],
+        }
+
+    final_path = temp_dir / f"{symbol}_{timeframe}.csv"
+    if final_path.exists():
+        final_path.unlink()
+
+    shutil.move(str(downloaded_path), final_path)
+
+    return {
+        "success": True,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "downloads_dir": str(downloads_dir),
+        "downloaded_path": str(downloaded_path),
+        "temp_path": str(final_path),
+        "new_csvs": [str(path) for path in new_csvs],
+        "warning": (
+            f"Multiple new CSV downloads appeared; used newest: {downloaded_path.name}"
+            if len(new_csvs) > 1
+            else None
+        ),
+    }
+
+
+def export_tradingview_csv(symbol: str, timeframe: str, temp_dir: Path) -> dict:
+    """
+    Export one TradingView chart CSV through the confirmed layout dropdown flow.
+
+    Playwright's download event is primary because persistent browser profiles do
+    not always write downloads to the user's normal ~/Downloads folder.
+    """
+    symbol = symbol.upper()
+    timeframe = timeframe.upper()
+    temp_dir = Path(temp_dir)
+    final_path = temp_dir / f"{symbol}_{timeframe}.csv"
+    logs = []
+
+    try:
+        interval = TRADINGVIEW_TIMEFRAMES.get(timeframe)
+        if not interval:
+            return {
+                "success": False,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "logs": logs,
+                "error": f"Unsupported TradingView timeframe: {timeframe}",
+            }
+
+        config = get_symbol_config(symbol)
+        tv_symbol = config["tv_symbol"]
+        profile_dir = get_tradingview_profile_dir()
+        snapshot = _download_snapshot(USER_DOWNLOADS_DIR)
+        logs.append(f"{timeframe}: existing downloads snapshot count: {len(snapshot)}")
+        chart_url = f"https://www.tradingview.com/chart/?symbol={tv_symbol}&interval={interval}"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        with sync_playwright() as p:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=profile_dir,
+                headless=False,
+                viewport={"width": 1600, "height": 900},
+                accept_downloads=True,
+            )
+
+            page = context.pages[0] if context.pages else context.new_page()
+            page.bring_to_front()
+            page.goto(chart_url, wait_until="domcontentloaded", timeout=90000)
+            page.wait_for_timeout(12000)
+
+            layout_click = _click_tradingview_layout_dropdown(page)
+            logs.extend(f"{timeframe}: {message}" for message in layout_click.get("logs") or [])
+
+            if not layout_click.get("success"):
+                screenshot_path = _save_export_debug_screenshot(
+                    page,
+                    symbol,
+                    timeframe,
+                    "layout_dropdown_not_found",
+                )
+                context.close()
+                return {
+                    "success": False,
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "logs": logs + [
+                        f"{timeframe}: failed to click layout dropdown",
+                        *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
+                    ],
+                    "error": (
+                        "Could not find TradingView layout dropdown / Manage layouts button. "
+                        "UI may have changed or export may require manual action."
+                    ),
+                    "debug_screenshot": screenshot_path,
+                }
+
+            if not _click_download_chart_data_menu_item(page):
+                screenshot_path = _save_export_debug_screenshot(
+                    page,
+                    symbol,
+                    timeframe,
+                    "download_chart_data_menu_not_found",
+                )
+                context.close()
+                return {
+                    "success": False,
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "logs": logs + [
+                        f"{timeframe}: failed to click Download chart data",
+                        *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
+                    ],
+                    "error": "Could not find TradingView menu item: Download chart data...",
+                    "debug_screenshot": screenshot_path,
+                }
+
+            logs.append(f"{timeframe}: clicked Download chart data")
+
+            if not _wait_for_download_chart_data_modal(page):
+                screenshot_path = _save_export_debug_screenshot(
+                    page,
+                    symbol,
+                    timeframe,
+                    "download_chart_data_modal_not_found",
+                )
+                context.close()
+                return {
+                    "success": False,
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "logs": logs + [
+                        f"{timeframe}: Download chart data modal did not appear",
+                        *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
+                    ],
+                    "error": "TradingView Download chart data modal did not appear.",
+                    "debug_screenshot": screenshot_path,
+                }
+
+            logs.append(f"{timeframe}: modal appeared")
+
+            download_button = _download_chart_data_button(page)
+            if not download_button:
+                screenshot_path = _save_export_debug_screenshot(
+                    page,
+                    symbol,
+                    timeframe,
+                    "modal_download_button_not_found",
+                )
+                context.close()
+                return {
+                    "success": False,
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "logs": logs + [
+                        f"{timeframe}: modal Download button not found",
+                        *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
+                    ],
+                    "error": "TradingView Download chart data modal opened, but Download button was not found.",
+                    "debug_screenshot": screenshot_path,
+                }
+
+            try:
+                with page.expect_download(timeout=TRADINGVIEW_EXPORT_DOWNLOAD_TIMEOUT_SECONDS * 1000) as download_info:
+                    download_button.click(timeout=5000)
+
+                download = download_info.value
+                logs.append(f"{timeframe}: download event captured")
+
+                if final_path.exists():
+                    final_path.unlink()
+
+                download.save_as(str(final_path))
+                logs.append(f"{timeframe}: saved CSV path: {final_path}")
+                context.close()
+
+                return {
+                    "success": True,
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "downloaded_path": download.suggested_filename,
+                    "temp_path": str(final_path),
+                    "logs": logs,
+                }
+
+            except PlaywrightTimeoutError:
+                logs.append(
+                    f"{timeframe}: Playwright download event timed out; checking Downloads fallback"
+                )
+
+                handoff = move_new_downloaded_csv_to_temp(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    temp_dir=temp_dir,
+                    snapshot=snapshot,
+                    downloads_dir=USER_DOWNLOADS_DIR,
+                )
+                if not handoff.get("success"):
+                    screenshot_path = _save_export_debug_screenshot(
+                        page,
+                        symbol,
+                        timeframe,
+                        "download_event_and_fallback_failed",
+                    )
+                    if screenshot_path:
+                        handoff["debug_screenshot"] = screenshot_path
+                        logs.append(f"{timeframe}: failure screenshot: {screenshot_path}")
+
+                context.close()
+
+                if not handoff.get("success"):
+                    logs.append(f"{timeframe}: {handoff.get('error')}")
+                    handoff["logs"] = logs
+                    return handoff
+
+                logs.append(f"{timeframe}: downloaded file detected: {handoff['downloaded_path']}")
+                if handoff.get("warning"):
+                    logs.append(f"{timeframe}: warning: {handoff['warning']}")
+                logs.append(f"{timeframe}: saved CSV path: {handoff['temp_path']}")
+                handoff["logs"] = logs
+                return handoff
+
+            except Exception as e:
+                screenshot_path = _save_export_debug_screenshot(
+                    page,
+                    symbol,
+                    timeframe,
+                    "download_click_failed",
+                )
+                context.close()
+
+                return {
+                    "success": False,
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "logs": logs + [
+                        f"{timeframe}: failed while clicking modal Download: {e}",
+                        *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
+                    ],
+                    "error": f"TradingView modal Download click failed: {e}",
+                    "debug_screenshot": screenshot_path,
+                }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "logs": logs,
+            "error": str(e),
+            "message": f"TradingView CSV export failed for {symbol} {timeframe}: {e}",
+        }
+
+
+def _normalize_downloaded_csv(download_path: str, symbol: str, timeframe: str, destination_dir: str | None = None):
     clean_name = f"{symbol.upper()}_{timeframe.upper()}.csv"
-    destination = safe_path(clean_name)
+    if destination_dir:
+        os.makedirs(destination_dir, exist_ok=True)
+        destination = os.path.abspath(os.path.join(destination_dir, clean_name))
+        destination_root = os.path.abspath(destination_dir)
+
+        if os.path.commonpath([destination, destination_root]) != destination_root:
+            raise ValueError("Access denied: outside CSV export directory")
+    else:
+        destination = safe_path(clean_name)
+
     shutil.copyfile(download_path, destination)
 
     return clean_name
 
 
-def refresh_market_csvs(symbol: str = "MNQ"):
+def export_market_csvs_to_directory(symbol: str = "MNQ", output_dir: str | None = None, timeframes: list[str] | None = None):
     """
-    Best-effort TradingView CSV export.
+    Best-effort TradingView CSV export into output_dir.
 
     This depends on TradingView UI and account permissions.
-    If it fails, export CSVs manually into backend/csv_data using:
+    If output_dir is omitted, files are written into backend/csv_data using:
         MNQ_1D.csv
         MNQ_4H.csv
         MNQ_1H.csv
         MNQ_15M.csv
+        MNQ_5M.csv
         MNQ_1M.csv
     """
     symbol = symbol.upper()
+    requested_timeframes = [item.upper() for item in (timeframes or list(TRADINGVIEW_TIMEFRAMES.keys()))]
 
     try:
         config = get_symbol_config(symbol)
         tv_symbol = config["tv_symbol"]
         profile_dir = get_tradingview_profile_dir()
+        output_dir = output_dir or CSV_DATA_DIR
 
         exported = {}
         failures = {}
@@ -2209,7 +2748,13 @@ def refresh_market_csvs(symbol: str = "MNQ"):
 
             page = context.pages[0] if context.pages else context.new_page()
 
-            for timeframe, interval in TRADINGVIEW_TIMEFRAMES.items():
+            for timeframe in requested_timeframes:
+                interval = TRADINGVIEW_TIMEFRAMES.get(timeframe)
+
+                if not interval:
+                    failures[timeframe] = f"Unsupported TradingView timeframe: {timeframe}"
+                    continue
+
                 chart_url = f"https://www.tradingview.com/chart/?symbol={tv_symbol}&interval={interval}"
 
                 try:
@@ -2249,6 +2794,7 @@ def refresh_market_csvs(symbol: str = "MNQ"):
                             temp_path,
                             symbol=symbol,
                             timeframe=timeframe,
+                            destination_dir=output_dir,
                         )
 
                         exported[timeframe] = clean_name
@@ -2267,7 +2813,9 @@ def refresh_market_csvs(symbol: str = "MNQ"):
 
         return {
             "success": success,
+            "implemented": True,
             "symbol": symbol,
+            "output_dir": output_dir,
             "exported": exported,
             "failures": failures,
             "message": (
@@ -2276,7 +2824,7 @@ def refresh_market_csvs(symbol: str = "MNQ"):
                 else (
                     "CSV refresh failed. TradingView export automation is brittle. "
                     "Manually export CSVs into backend/csv_data as SYMBOL_1D.csv, "
-                    "SYMBOL_4H.csv, SYMBOL_1H.csv, SYMBOL_15M.csv, SYMBOL_1M.csv."
+                    "SYMBOL_4H.csv, SYMBOL_1H.csv, SYMBOL_15M.csv, SYMBOL_5M.csv, SYMBOL_1M.csv."
                 )
             ),
         }
@@ -2288,6 +2836,10 @@ def refresh_market_csvs(symbol: str = "MNQ"):
             "error": str(e),
             "message": f"CSV refresh failed: {e}",
         }
+
+
+def refresh_market_csvs(symbol: str = "MNQ"):
+    return export_market_csvs_to_directory(symbol=symbol, output_dir=CSV_DATA_DIR)
 
 
 # ---------------------------------------------------------------------
@@ -2696,6 +3248,7 @@ def format_market_response(analysis: dict) -> str:
     current_price = context.get("current_price")
     csv_freshness = analysis.get("csv_freshness", {})
     stale_warning = _csv_stale_warning(csv_freshness)
+    freshness_note = _csv_recent_context_note(csv_freshness)
 
     daily = analysis.get("daily")
     h4 = analysis.get("h4")
@@ -2724,6 +3277,8 @@ def format_market_response(analysis: dict) -> str:
 
     if stale_warning:
         response.append(f"**Data Freshness:** {stale_warning}")
+    elif freshness_note:
+        response.append(f"**Data Freshness:** {freshness_note}")
 
     response.append("## Computed Zones")
 
@@ -3529,6 +4084,43 @@ def _fmt_targets(values: list | None, limit: int = 3):
     return ", ".join(_fmt_price(value) for value in values[:limit])
 
 
+def _csv_refresh_last_success_age_minutes() -> float | None:
+    try:
+        from csv_refresh import get_csv_refresh_status
+
+        status = get_csv_refresh_status()
+        last_success = status.get("last_success") if isinstance(status, dict) else None
+        if not last_success:
+            return None
+
+        parsed = datetime.fromisoformat(str(last_success))
+        now = datetime.now(parsed.tzinfo) if parsed.tzinfo else datetime.now()
+        return max((now - parsed).total_seconds() / 60, 0)
+    except Exception:
+        return None
+
+
+def _csv_recent_context_note(csv_freshness: dict) -> str | None:
+    ltf_freshness = (csv_freshness or {}).get("1M", {})
+
+    if ltf_freshness.get("is_stale"):
+        return None
+
+    age = ltf_freshness.get("age_minutes")
+    threshold = CSV_STALENESS_THRESHOLDS_MINUTES.get("1M")
+
+    if age is None or threshold is None:
+        return None
+
+    if age <= 5:
+        return None
+
+    return (
+        f"1M CSV is recent CSV context ({age} minutes old; "
+        f"stale threshold is {threshold} minutes)."
+    )
+
+
 def _csv_stale_warning(csv_freshness: dict) -> str | None:
     ltf_freshness = (csv_freshness or {}).get("1M", {})
 
@@ -3537,6 +4129,16 @@ def _csv_stale_warning(csv_freshness: dict) -> str | None:
 
     latest_time = ltf_freshness.get("latest_csv_time") or "unknown time"
     age = ltf_freshness.get("age_minutes")
+    threshold = CSV_STALENESS_THRESHOLDS_MINUTES.get("1M")
+
+    if age is not None and threshold is not None:
+        last_success_age = _csv_refresh_last_success_age_minutes()
+        if age <= threshold and last_success_age is not None and last_success_age <= 20:
+            return (
+                f"1M CSV is recent CSV context ({age} minutes old; "
+                f"stale threshold is {threshold} minutes)."
+            )
+
     age_text = f"{age} minutes old" if age is not None else "age unknown"
 
     return (
@@ -4095,6 +4697,7 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
     current_price = context.get("current_price")
     ltf_csv_stale = _is_ltf_csv_stale(csv_freshness)
     stale_warning = _csv_stale_warning(csv_freshness)
+    freshness_note = _csv_recent_context_note(csv_freshness)
     htf_bias = context.get("htf_bias") or "neutral"
     htf_tf = context.get("htf_bias_timeframe") or "HTF"
     execution_bias = context.get("execution_bias") or "neutral"
@@ -4145,6 +4748,12 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
             "",
             "## Data Freshness",
             stale_warning,
+        ])
+    elif freshness_note:
+        lines.extend([
+            "",
+            "## Data Freshness",
+            freshness_note,
         ])
 
     lines.extend([

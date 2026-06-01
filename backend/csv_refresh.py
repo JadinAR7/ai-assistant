@@ -17,7 +17,7 @@ CSV_REFRESH_STATUS_PATH = BASE_DIR / "csv_refresh_status.json"
 CSV_REFRESH_TEMP_ROOT = BASE_DIR / "downloads" / "csv_refresh_tmp"
 
 DEFAULT_SYMBOL = "MES"
-REFRESH_TIMEFRAMES = ["1D", "4H", "1H", "15M", "1M"]
+REFRESH_TIMEFRAMES = ["1D", "4H", "1H", "15M", "5M", "1M"]
 
 REQUIRED_CSV_COLUMNS = {"open", "high", "low", "close"}
 
@@ -133,6 +133,7 @@ def _default_status(now: datetime | None = None) -> dict:
         "last_refresh_reason": None,
         "next_expected_window": _next_expected_window(now),
         "files_refreshed": [],
+        "logs": [],
     }
 
 
@@ -175,6 +176,11 @@ def _expected_csv_names(symbol: str = DEFAULT_SYMBOL) -> dict[str, str]:
         timeframe: f"{symbol}_{timeframe}.csv"
         for timeframe in REFRESH_TIMEFRAMES
     }
+
+
+def _append_log(logs: list[str], message: str) -> None:
+    print(f"[csv-refresh] {message}")
+    logs.append(message)
 
 
 def _verify_csv_file(path: Path) -> tuple[bool, str | None]:
@@ -220,10 +226,14 @@ def _verify_replacement_set(temp_dir: Path, symbol: str = DEFAULT_SYMBOL) -> tup
     return len(verified) == len(REFRESH_TIMEFRAMES), verified, failures
 
 
-def _replace_active_csvs_after_verification(verified_files: dict, symbol: str = DEFAULT_SYMBOL) -> list[str]:
+def _replace_active_csvs_after_verification(
+    verified_files: dict,
+    symbol: str = DEFAULT_SYMBOL,
+    logs: list[str] | None = None,
+) -> list[str]:
     """
-    Future use only: active CSVs are replaced after all replacements verify.
-    Existing CSVs are never deleted first; each verified file is copied into place.
+    Active CSVs are replaced only after every replacement verifies.
+    Each file is copied to a sibling temp file before os.replace touches active data.
     """
     refreshed = []
     expected_names = _expected_csv_names(symbol)
@@ -231,8 +241,13 @@ def _replace_active_csvs_after_verification(verified_files: dict, symbol: str = 
 
     for timeframe, source in verified_files.items():
         destination = CSV_DATA_DIR / expected_names[timeframe]
-        shutil.copyfile(source, destination)
+        replacement = destination.with_suffix(destination.suffix + ".new")
+        shutil.copyfile(source, replacement)
+        Path(replacement).replace(destination)
         refreshed.append(str(destination))
+
+        if logs is not None:
+            _append_log(logs, f"replaced {destination}")
 
     return refreshed
 
@@ -240,23 +255,51 @@ def _replace_active_csvs_after_verification(verified_files: dict, symbol: str = 
 # -------------------------
 # Refresh runner
 # -------------------------
-def _run_placeholder_export(temp_dir: Path, symbol: str = DEFAULT_SYMBOL) -> dict:
+def _run_tradingview_export(temp_dir: Path, symbol: str = DEFAULT_SYMBOL) -> dict:
+    from tools import export_tradingview_csv
+
+    exported = {}
+    failures = {}
+    logs = []
+
+    for timeframe in REFRESH_TIMEFRAMES:
+        result = export_tradingview_csv(
+            symbol=symbol,
+            timeframe=timeframe,
+            temp_dir=temp_dir,
+        )
+        logs.extend(result.get("logs") or [])
+
+        if result.get("success"):
+            exported[timeframe] = result.get("temp_path")
+        else:
+            failures[timeframe] = (
+                result.get("error")
+                or result.get("message")
+                or f"{timeframe} TradingView export failed."
+            )
+            break
+
     return {
-        "success": False,
-        "implemented": False,
+        "success": len(exported) == len(REFRESH_TIMEFRAMES),
+        "implemented": True,
         "symbol": symbol,
         "temp_dir": str(temp_dir),
-        "files_refreshed": [],
+        "exported": exported,
+        "failures": failures,
+        "logs": logs,
         "message": (
-            "CSV refresh scheduler foundation is installed, but safe TradingView "
-            "CSV export is not implemented yet. Existing CSVs were left untouched."
+            f"TradingView CSV export completed for {sorted(exported.keys())}."
+            if len(exported) == len(REFRESH_TIMEFRAMES)
+            else f"TradingView CSV export failed before replacement: {failures}"
         ),
     }
 
 
-def run_csv_refresh(force: bool = False) -> dict:
+def run_csv_refresh(force: bool = False, exporter=None) -> dict:
     now = _normalize_now()
     status = _read_status()
+    logs = []
 
     if not status.get("enabled", True):
         status.update({
@@ -265,6 +308,7 @@ def run_csv_refresh(force: bool = False) -> dict:
             "last_refresh_reason": "disabled",
             "next_expected_window": _next_expected_window(now),
             "files_refreshed": [],
+            "logs": ["CSV refresh is disabled."],
         })
         _write_status(status)
 
@@ -284,6 +328,7 @@ def run_csv_refresh(force: bool = False) -> dict:
             "last_refresh_reason": "outside_refresh_window",
             "next_expected_window": _next_expected_window(now),
             "files_refreshed": [],
+            "logs": ["Outside CSV refresh window. No CSV refresh ran."],
         })
         _write_status(status)
 
@@ -296,27 +341,55 @@ def run_csv_refresh(force: bool = False) -> dict:
 
     refresh_reason = "manual_force" if force else scheduled_reason
     CSV_REFRESH_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    exporter = exporter or _run_tradingview_export
 
     with tempfile.TemporaryDirectory(prefix="csv_refresh_", dir=CSV_REFRESH_TEMP_ROOT) as temp_path:
         temp_dir = Path(temp_path)
-        export_result = _run_placeholder_export(temp_dir, DEFAULT_SYMBOL)
+        _append_log(logs, f"temp export path: {temp_dir}")
+        export_result = exporter(temp_dir, DEFAULT_SYMBOL)
+        for export_log in export_result.get("logs") or []:
+            _append_log(logs, export_log)
 
-        # The verification/replacement path is ready for a real exporter, but
-        # remains inactive until exports are downloaded into temp_dir.
+        found_files = sorted(path.name for path in temp_dir.glob("*.csv"))
+        _append_log(logs, f"files found: {found_files}")
+
         verified_all, verified_files, verification_failures = _verify_replacement_set(
             temp_dir,
             DEFAULT_SYMBOL,
         )
+        _append_log(logs, f"files verified: {sorted(verified_files.keys())}")
+
+        for timeframe in REFRESH_TIMEFRAMES:
+            if timeframe in verified_files:
+                _append_log(logs, f"{timeframe}: verification result: ok")
+            else:
+                _append_log(
+                    logs,
+                    f"{timeframe}: verification result: failed - {verification_failures.get(timeframe)}",
+                )
+
+        if verification_failures:
+            _append_log(logs, f"verification failures: {verification_failures}")
+
         files_refreshed = []
 
         if export_result.get("success") and verified_all:
             files_refreshed = _replace_active_csvs_after_verification(
                 verified_files,
                 DEFAULT_SYMBOL,
+                logs=logs,
             )
 
     success = bool(export_result.get("success") and files_refreshed)
-    error = None if success else export_result.get("message")
+    if success:
+        error = None
+        message = f"CSV refresh completed safely. Refreshed {len(files_refreshed)} files."
+    elif not export_result.get("success"):
+        error = export_result.get("message") or export_result.get("error") or "CSV export failed."
+        message = f"CSV refresh failed before replacement: {error}"
+    else:
+        error = f"CSV verification failed: {verification_failures}"
+        message = "CSV refresh failed verification. Existing CSVs were left untouched."
 
     status.update({
         "last_attempt": now.isoformat(),
@@ -325,19 +398,21 @@ def run_csv_refresh(force: bool = False) -> dict:
         "last_refresh_reason": refresh_reason,
         "next_expected_window": _next_expected_window(now),
         "files_refreshed": files_refreshed,
+        "logs": logs,
     })
     _write_status(status)
 
     return {
         "success": success,
-        "implemented": bool(export_result.get("implemented")),
+        "implemented": bool(export_result.get("implemented", True)),
         "refresh_reason": refresh_reason,
         "status": status,
         "files_refreshed": files_refreshed,
+        "logs": logs,
         "verification": {
             "verified_all": verified_all,
             "verified_files": verified_files,
             "failures": verification_failures,
         },
-        "message": export_result.get("message"),
+        "message": message,
     }
