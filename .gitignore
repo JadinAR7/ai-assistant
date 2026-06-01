@@ -9,6 +9,8 @@ backend/.venv/
 backend/.env
 backend/assistant.db
 backend/*.jsonl
+# Future runtime state files
+backend/*_status.json
 
 # Frontend
 frontend/node_modules/

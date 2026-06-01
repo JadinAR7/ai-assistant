@@ -937,6 +937,23 @@ def scan_status():
 
 
 # -------------------------
+# CSV refresh endpoints
+# -------------------------
+@app.get("/csv-refresh/status")
+def csv_refresh_status():
+    from csv_refresh import get_csv_refresh_status
+
+    return get_csv_refresh_status()
+
+
+@app.post("/csv-refresh/force")
+def force_csv_refresh():
+    from csv_refresh import run_csv_refresh
+
+    return run_csv_refresh(force=True)
+
+
+# -------------------------
 # Memory / history endpoints
 # -------------------------
 @app.post("/reset")
