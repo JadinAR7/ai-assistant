@@ -8,6 +8,7 @@ const MILESTONES_URL = "http://127.0.0.1:8000/orbit/milestones";
 const TASKS_URL = "http://127.0.0.1:8000/orbit/tasks";
 const REVIEWS_URL = "http://127.0.0.1:8000/orbit/reviews";
 const READINESS_URL = "http://127.0.0.1:8000/orbit/readiness";
+const MORNING_BRIEFING_URL = "http://127.0.0.1:8000/orbit/morning-briefing";
 
 type MajorEvent = {
   id: number;
@@ -59,18 +60,20 @@ type ReadinessCategory = {
   last_updated: string;
 };
 
-const blockers = [
-  "Income replacement target needs a final number.",
-  "Trading metrics are not connected to Orbit yet.",
-  "Business launch path needs a concrete first offer.",
-];
+type MorningBriefingTask = {
+  id: number;
+  title: string;
+  status: string;
+  due_date: string | null;
+  goal_id: number;
+};
 
-const weeklyFocus = [
-  "Document the exact corporate exit criteria.",
-  "Review the last five trading sessions for repeatable edge.",
-  "Choose one business experiment to validate this week.",
-  "Create a simple readiness score rubric.",
-];
+type MorningBriefing = {
+  success: boolean;
+  top_tasks: MorningBriefingTask[];
+  current_blockers: string[];
+  suggested_next_action: string;
+};
 
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url, { cache: "no-store" });
@@ -83,7 +86,14 @@ async function fetchJson<T>(url: string): Promise<T> {
 }
 
 async function getOrbitData() {
-  const [majorEvents, milestones, tasks, reviewsResult, readinessResult] = await Promise.all([
+  const [
+    majorEvents,
+    milestones,
+    tasks,
+    reviewsResult,
+    readinessResult,
+    briefingResult,
+  ] = await Promise.all([
     fetchJson<MajorEvent[]>(MAJOR_EVENTS_URL),
     fetchJson<Milestone[]>(MILESTONES_URL),
     fetchJson<OrbitTask[]>(TASKS_URL),
@@ -105,6 +115,15 @@ async function getOrbitData() {
             ? error.message
             : "Orbit readiness could not be loaded.",
       })),
+    fetchJson<MorningBriefing>(MORNING_BRIEFING_URL)
+      .then((briefing) => ({ briefing, error: null }))
+      .catch((error: unknown) => ({
+        briefing: null,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Orbit briefing could not be loaded.",
+      })),
   ]);
 
   const event = majorEvents.find(
@@ -124,6 +143,8 @@ async function getOrbitData() {
         )
       : readinessResult.readiness,
     readinessError: readinessResult.error,
+    morningBriefing: briefingResult.briefing,
+    morningBriefingError: briefingResult.error,
     tasks,
   };
 }
@@ -333,6 +354,8 @@ export default async function OrbitPage() {
       reviewsError: null,
       readiness: [],
       readinessError: null,
+      morningBriefing: null,
+      morningBriefingError: null,
       tasks: [],
     };
     errorMessage =
@@ -344,6 +367,20 @@ export default async function OrbitPage() {
   const event = orbitData.event;
   const daysRemaining = getDaysRemaining(event?.target_date ?? null);
   const progressPercentage = event?.progress_percent ?? 0;
+  const morningBriefing = orbitData.morningBriefing;
+  const priorityTasks = morningBriefing?.top_tasks.slice(0, 3) ?? [];
+  const activeBlockers = morningBriefing?.current_blockers ?? [];
+  const suggestedNextAction =
+    morningBriefing?.suggested_next_action &&
+    morningBriefing.suggested_next_action !== "No suggested action yet"
+      ? morningBriefing.suggested_next_action
+      : null;
+  const openTasks = orbitData.tasks.filter(
+    (task) =>
+      !["complete", "completed", "done", "cancelled"].includes(
+        task.status.toLowerCase(),
+      ),
+  );
 
   return (
     <main className="min-h-screen bg-neutral-950 text-white">
@@ -480,43 +517,44 @@ export default async function OrbitPage() {
               <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
                 {orbitData.reviewsError
                   ? "Reviews are unavailable right now."
-                  : "No reviews saved yet."}
+                  : "No recent reviews"}
               </div>
             )}
           </Panel>
 
           <Panel title="Blockers">
-            <ul className="space-y-3 text-sm text-neutral-300">
-              {blockers.map((blocker) => (
-                <li
-                  key={blocker}
-                  className="rounded-xl border border-red-500/20 bg-red-950/20 p-3 text-red-100"
-                >
-                  {blocker}
-                </li>
-              ))}
-            </ul>
+            {activeBlockers.length > 0 ? (
+              <ul className="space-y-3 text-sm text-neutral-300">
+                {activeBlockers.map((blocker) => (
+                  <li
+                    key={blocker}
+                    className="rounded-xl border border-red-500/20 bg-red-950/20 p-3 text-red-100"
+                  >
+                    {blocker}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
+                {orbitData.morningBriefingError
+                  ? "Blockers are unavailable right now."
+                  : "No active blockers"}
+              </div>
+            )}
           </Panel>
         </div>
 
         <div className="space-y-4">
-          <Panel title="This Week's Focus">
-            <ul className="space-y-3 text-sm text-neutral-300">
-              {weeklyFocus.map((item) => (
-                <li
-                  key={item}
-                  className="rounded-xl border border-white/10 bg-neutral-950 p-3"
-                >
-                  {item}
-                </li>
-              ))}
-            </ul>
+          <Panel title="Suggested Next Action">
+            <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-300">
+              {suggestedNextAction ?? "No suggested action yet"}
+            </div>
           </Panel>
 
-          <Panel title="Inbox Tasks">
-            {orbitData.tasks.length > 0 ? (
+          <Panel title="Priority Tasks">
+            {priorityTasks.length > 0 ? (
               <div className="space-y-2">
-                {orbitData.tasks.map((task) => (
+                {priorityTasks.map((task) => (
                   <article
                     key={task.id}
                     className="rounded-xl border border-white/10 bg-neutral-950 p-3"
@@ -539,7 +577,38 @@ export default async function OrbitPage() {
               </div>
             ) : (
               <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
-                No inbox tasks have been added to Orbit yet.
+                No priority tasks
+              </div>
+            )}
+          </Panel>
+
+          <Panel title="Inbox Tasks">
+            {openTasks.length > 0 ? (
+              <div className="space-y-2">
+                {openTasks.map((task) => (
+                  <article
+                    key={task.id}
+                    className="rounded-xl border border-white/10 bg-neutral-950 p-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <h3 className="text-sm font-semibold leading-5 text-neutral-100">
+                        {task.title}
+                      </h3>
+                      <span className="shrink-0 rounded-full border border-blue-500/20 bg-blue-500/15 px-2 py-1 text-xs text-blue-200">
+                        {formatStatus(task.status)}
+                      </span>
+                    </div>
+                    {task.due_date ? (
+                      <p className="mt-2 text-xs text-neutral-400">
+                        Due {formatDate(task.due_date)}
+                      </p>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
+                No priority tasks
               </div>
             )}
           </Panel>

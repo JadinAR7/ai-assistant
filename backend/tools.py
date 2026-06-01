@@ -1623,6 +1623,16 @@ def get_trade_sessions(limit: str | int | None = 10):
         return {"success": False, "error": f"Unable to get trade sessions: {e}"}
 
 
+def generate_morning_briefing():
+    try:
+        return orbit_service.generate_morning_briefing()
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Unable to generate morning briefing: {e}",
+        }
+
+
 def generate_orbit_daily_summary():
     try:
         event = _get_corporate_escape_event()
@@ -1678,7 +1688,7 @@ def generate_orbit_daily_summary():
         open_lines = [
             f"- {task.get('title')}"
             for task in open_tasks[:5]
-        ] or ["- No open tasks"]
+        ] or ["- No priority tasks"]
         milestone_lines = [
             f"- {milestone.get('title')}: {milestone.get('status')} ({milestone.get('progress_percent')}%)"
             for milestone in key_milestones[:5]
@@ -1852,7 +1862,7 @@ def _suggest_orbit_blocker(
     if not active_events:
         return "No active major event is available, so task priority is less anchored."
 
-    return "The main blocker is choosing one execution lane and protecting it from context switching."
+    return "No active blockers"
 
 
 def generate_orbit_focus():
@@ -1940,15 +1950,8 @@ def generate_orbit_focus():
         highest_leverage_priority = (
             _format_orbit_task_action(top_context)
             if top_context
-            else "Create or clarify the next Orbit task tied to the active major event."
+            else "No suggested action yet"
         )
-
-        if not top_actions:
-            top_actions = [
-                "Review active major events",
-                "Create one concrete next task",
-                "Save an Orbit review to refresh planning context",
-            ]
 
         biggest_blocker = _suggest_orbit_blocker(
             active_events,
@@ -1972,16 +1975,17 @@ def generate_orbit_focus():
         suggested_milestone_title = (
             suggested_next_milestone["title"]
             if suggested_next_milestone
-            else "Define the next active milestone in Orbit."
+            else "No suggested action yet"
         )
+        action_lines = [
+            f"{index}. {action}"
+            for index, action in enumerate(top_actions[:3], start=1)
+        ] or ["No priority tasks"]
         message = (
             "## Today’s Orbit Focus\n\n"
             f"**Highest leverage priority:** {highest_leverage_priority}\n\n"
             "**Top 3 actions:**\n"
-            + "\n".join(
-                f"{index}. {action}"
-                for index, action in enumerate(top_actions[:3], start=1)
-            )
+            + "\n".join(action_lines)
             + f"\n\n**Biggest blocker:** {biggest_blocker}\n\n"
             f"**Suggested next milestone:** {suggested_milestone_title}"
         )
@@ -5176,6 +5180,7 @@ TOOLS = {
     "get_corporate_escape_readiness": get_corporate_escape_readiness,
     "update_readiness_category": update_readiness_category,
     "suggest_trading_readiness_update": suggest_trading_readiness_update,
+    "generate_morning_briefing": generate_morning_briefing,
     "generate_orbit_daily_summary": generate_orbit_daily_summary,
     "generate_orbit_focus": generate_orbit_focus,
 

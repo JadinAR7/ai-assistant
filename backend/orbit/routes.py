@@ -32,6 +32,11 @@ def orbit_health_check():
     return {"status": "orbit routes mounted"}
 
 
+@router.get("/morning-briefing")
+def get_morning_briefing():
+    return service.generate_morning_briefing()
+
+
 def _not_found(name: str, record_id: int) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,

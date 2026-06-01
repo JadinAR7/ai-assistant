@@ -370,12 +370,29 @@ Example:
 User: Generate my Orbit daily summary.
 TOOL: generate_orbit_daily_summary
 
+- generate_morning_briefing: creates a compact Orbit-backed morning briefing from active major event, readiness, tasks, milestones, blockers, reviews, and recent trade sessions
+
+Use generate_morning_briefing when Jadin says:
+- good morning
+- morning briefing
+- daily briefing
+- what should I focus on today
+- what is my priority today
+- what should I work on next
+- similar daily planning or morning check-in language
+
+When responding after generate_morning_briefing:
+- Keep the answer short and direct.
+- Prefer the briefing_text from the tool result.
+- Do not dump raw JSON unless Jadin explicitly asks for raw data.
+
+Example:
+User: Good morning.
+TOOL: generate_morning_briefing
+
 - generate_orbit_focus: creates a Helix planning workflow answer from active major events, incomplete tasks, milestones, and latest reviews
 
 Use generate_orbit_focus when Jadin asks:
-- What should I focus on today?
-- What is my priority today?
-- What should I work on next?
 - Generate my Orbit focus
 
 Returns:
