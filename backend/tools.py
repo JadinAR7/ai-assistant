@@ -3544,12 +3544,17 @@ def _csv_stale_warning(csv_freshness: dict) -> str | None:
     )
 
 
+def _is_ltf_csv_stale(csv_freshness: dict) -> bool:
+    return bool((csv_freshness or {}).get("1M", {}).get("is_stale"))
+
+
 def _visual_marking_summary(
     visual: dict,
     current_price=None,
     active_zone=None,
     overhead_zones=None,
     below_zones=None,
+    ltf_csv_stale: bool = False,
 ) -> str:
     if not isinstance(visual, dict):
         return "No usable screenshot markings were detected, so this read is CSV-only."
@@ -3749,6 +3754,12 @@ def _visual_marking_summary(
             return zone_low - price
 
         return price - zone_high
+
+    def _stale_relation_text(distance, relation_text: str) -> str:
+        return (
+            f"Stale CSV relation: last CSV close was {_fmt_price(distance)} points {relation_text}. "
+            "Confirm live price from the screenshot/TradingView before treating this as current."
+        )
 
     parts = []
 
@@ -3979,9 +3990,15 @@ def _visual_marking_summary(
     # -------------------------
     if active_zone and current_price is not None:
         if _zone_contains_price(active_zone, current_price):
-            parts.append(
-                "Current price is inside the active computed zone."
-            )
+            if ltf_csv_stale:
+                parts.append(
+                    "Stale CSV relation: last CSV close was inside the active computed zone. "
+                    "Confirm live price from the screenshot/TradingView before treating this as current."
+                )
+            else:
+                parts.append(
+                    "Current price is inside the active computed zone."
+                )
         else:
             distance = _zone_distance(active_zone, current_price)
             relation = active_zone.get("relation_to_price", "away from price")
@@ -3996,9 +4013,12 @@ def _visual_marking_summary(
                 relation_text = f"from the active computed zone ({relation})"
 
             if distance is not None:
-                parts.append(
-                    f"Current price is {_fmt_price(distance)} points {relation_text}."
-                )
+                if ltf_csv_stale:
+                    parts.append(_stale_relation_text(distance, relation_text))
+                else:
+                    parts.append(
+                        f"Current price is {_fmt_price(distance)} points {relation_text}."
+                    )
 
     # -------------------------
     # Compare current price to nearest CSV zones
@@ -4008,18 +4028,34 @@ def _visual_marking_summary(
         distance = _zone_distance(nearest_overhead, current_price)
 
         if distance is not None:
-            parts.append(
-                f"Nearest overhead CSV zone is {_fmt_price(distance)} points away: {_fmt_zone(nearest_overhead)}."
-            )
+            if ltf_csv_stale:
+                parts.append(
+                    _stale_relation_text(
+                        distance,
+                        f"below the nearest overhead CSV zone: {_fmt_zone(nearest_overhead)}",
+                    )
+                )
+            else:
+                parts.append(
+                    f"Nearest overhead CSV zone is {_fmt_price(distance)} points away: {_fmt_zone(nearest_overhead)}."
+                )
 
     if below_zones and current_price is not None:
         nearest_below = below_zones[0]
         distance = _zone_distance(nearest_below, current_price)
 
         if distance is not None:
-            parts.append(
-                f"Nearest below-market CSV zone is {_fmt_price(distance)} points away: {_fmt_zone(nearest_below)}."
-            )
+            if ltf_csv_stale:
+                parts.append(
+                    _stale_relation_text(
+                        distance,
+                        f"above the nearest below-market CSV zone: {_fmt_zone(nearest_below)}",
+                    )
+                )
+            else:
+                parts.append(
+                    f"Nearest below-market CSV zone is {_fmt_price(distance)} points away: {_fmt_zone(nearest_below)}."
+                )
 
     # -------------------------
     # Add session context
@@ -4056,6 +4092,7 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
     csv_freshness = state.get("csv_freshness", {})
 
     current_price = context.get("current_price")
+    ltf_csv_stale = _is_ltf_csv_stale(csv_freshness)
     stale_warning = _csv_stale_warning(csv_freshness)
     htf_bias = context.get("htf_bias") or "neutral"
     htf_tf = context.get("htf_bias_timeframe") or "HTF"
@@ -4127,6 +4164,7 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
             active_zone=active_zone,
             overhead_zones=overhead_zones,
             below_zones=below_zones,
+            ltf_csv_stale=ltf_csv_stale,
         ),
         "",
         "## Bias",
@@ -4212,9 +4250,9 @@ Your job is to describe:
 - execution context
 
 Use this source priority:
-1. CSV market structure data controls current price, numeric levels, FVGs, targets, and bias.
-2. Chart vision data only confirms visible drawings, labels, boxes, and markings.
-3. If CSV and vision disagree numerically, trust CSV.
+1. CSV controls historical structure/FVG mapping.
+2. Vision controls live visible chart context when CSV is stale.
+3. If LTF CSV is stale, do not describe CSV close or CSV-derived zone distances as live current price.
 
 DO NOT:
 - invent indicators
