@@ -243,6 +243,293 @@ def attach_timeframe_screenshots_section(
 
 
 # -------------------------
+# Opportunity recognition
+# -------------------------
+OPPORTUNITY_TYPE_LABELS = {
+    "no_opportunity": "No Opportunity",
+    "bullish_continuation_watch": "Bullish Continuation Watch",
+    "bearish_continuation_watch": "Bearish Continuation Watch",
+    "reversal_watch": "Reversal Watch",
+    "range_chop_warning": "Range/Chop Warning",
+}
+
+
+def _dedupe_text(items: list[str]) -> list[str]:
+    seen = set()
+    cleaned = []
+
+    for item in items:
+        text = str(item).strip()
+        key = text.lower()
+
+        if not text or key in seen:
+            continue
+
+        seen.add(key)
+        cleaned.append(text)
+
+    return cleaned
+
+
+def _visuals_from_capture(capture: dict | None) -> dict:
+    extraction = (capture or {}).get("visual_extraction") or {}
+    return extraction.get("visuals") or {}
+
+
+def _visual_text_from_visuals(visuals: dict) -> str:
+    parts = []
+
+    for label in visuals.get("visible_labels") or []:
+        parts.append(str(label))
+
+    for key in ["horizontal_lines", "drawn_boxes"]:
+        for item in visuals.get(key) or []:
+            if isinstance(item, dict):
+                parts.extend([
+                    str(item.get("label") or ""),
+                    str(item.get("color") or ""),
+                    str(item.get("location_notes") or ""),
+                ])
+            else:
+                parts.append(str(item))
+
+    for key in ["arrows_or_annotations", "notes_about_user_markings", "uncertainty_flags"]:
+        for item in visuals.get(key) or []:
+            parts.append(str(item))
+
+    return " ".join(part for part in parts if part).lower()
+
+
+def _record_visual_context(record: dict) -> dict:
+    timeframe_captures = record.get("timeframe_captures") or {}
+    capture_15m = timeframe_captures.get("15M") or {}
+    visuals_15m = _visuals_from_capture(capture_15m)
+
+    if not visuals_15m and record.get("timeframe") == "15M":
+        visuals_15m = (record.get("visual_extraction") or {}).get("visuals") or {}
+
+    all_visual_text = [_visual_text_from_visuals(visuals_15m)]
+
+    for capture in timeframe_captures.values():
+        all_visual_text.append(_visual_text_from_visuals(_visuals_from_capture(capture)))
+
+    return {
+        "visuals_15m": visuals_15m,
+        "text_15m": _visual_text_from_visuals(visuals_15m),
+        "text_all": " ".join(text for text in all_visual_text if text),
+    }
+
+
+def _contains_any(text: str, terms: list[str]) -> bool:
+    return any(term in text for term in terms)
+
+
+def _csv_is_stale(record: dict) -> bool:
+    freshness = record.get("csv_freshness") or {}
+
+    if isinstance(freshness, dict):
+        if freshness.get("is_stale"):
+            return True
+
+        for timeframe in ["1M", "15M"]:
+            item = freshness.get(timeframe) or {}
+            if isinstance(item, dict) and item.get("is_stale"):
+                return True
+
+    return False
+
+
+def _news_risk_level(record: dict) -> str:
+    news_risk = record.get("news_risk") or {}
+    return str(news_risk.get("risk") or "Low").strip().lower()
+
+
+def _downgrade_confidence(confidence: str) -> str:
+    if confidence == "high":
+        return "medium"
+    if confidence == "medium":
+        return "low"
+    return "low"
+
+
+def recognize_opportunity(record: dict) -> dict:
+    state = record.get("state") or extract_structured_state(record)
+    htf_bias = state.get("htf_bias", "unknown")
+    execution_bias = state.get("execution_bias", "unknown")
+    price_relation = state.get("price_relation", "unknown")
+
+    visual_context = _record_visual_context(record)
+    visual_text_15m = visual_context.get("text_15m", "")
+    visual_text_all = visual_context.get("text_all", "")
+
+    bullish_terms = [
+        "pdh",
+        "pdnyh",
+        "fvg",
+        "reclaim",
+        "holding above",
+        "hold above",
+        "above level",
+        "above the level",
+        "support",
+        "demand",
+        "bullish",
+    ]
+    bearish_terms = [
+        "rejection",
+        "reject",
+        "failure",
+        "failed",
+        "lost level",
+        "reclaim lost",
+        "below level",
+        "below the level",
+        "resistance",
+        "supply",
+        "bearish",
+    ]
+    range_terms = ["range", "chop", "sideways", "consolidation", "balanced", "inside range"]
+    reversal_terms = ["sweep", "reversal", "raid", "failed breakout", "failed breakdown"]
+
+    bullish_visual = _contains_any(visual_text_15m, bullish_terms) or _contains_any(visual_text_all, bullish_terms)
+    bearish_visual = _contains_any(visual_text_15m, bearish_terms) or _contains_any(visual_text_all, bearish_terms)
+    range_visual = _contains_any(visual_text_all, range_terms)
+    reversal_visual = _contains_any(visual_text_all, reversal_terms)
+    csv_stale = _csv_is_stale(record)
+    news_risk_level = _news_risk_level(record)
+
+    opportunity_type = "no_opportunity"
+    confidence = "low"
+    reasons = []
+    risks = []
+    next_confirmation_needed = []
+
+    if htf_bias == "bullish" and execution_bias == "bearish":
+        if bullish_visual:
+            opportunity_type = "bullish_continuation_watch"
+            confidence = "medium"
+            reasons.append("HTF bias is bullish while execution is temporarily bearish.")
+            reasons.append("15M or multi-timeframe visuals include reclaim, FVG, PDH, or hold-above context.")
+            next_confirmation_needed.append("Execution structure needs to shift back in line with the bullish HTF read.")
+            next_confirmation_needed.append("Price should continue respecting the marked level or zone on fresh chart context.")
+        else:
+            opportunity_type = "range_chop_warning" if range_visual else "no_opportunity"
+            reasons.append("HTF and execution bias conflict without enough supportive visual context.")
+            next_confirmation_needed.append("Wait for clearer visual confirmation around a marked level or zone.")
+    elif htf_bias == "bearish" and execution_bias == "bullish":
+        if bearish_visual:
+            opportunity_type = "bearish_continuation_watch"
+            confidence = "medium"
+            reasons.append("HTF bias is bearish while execution is temporarily bullish.")
+            reasons.append("15M or multi-timeframe visuals include rejection, failure, lost-level, or overhead context.")
+            next_confirmation_needed.append("Execution structure needs to shift back in line with the bearish HTF read.")
+            next_confirmation_needed.append("Price should continue failing or rejecting the marked level or zone on fresh chart context.")
+        else:
+            opportunity_type = "range_chop_warning" if range_visual else "no_opportunity"
+            reasons.append("HTF and execution bias conflict without enough rejection or failure evidence.")
+            next_confirmation_needed.append("Wait for clearer visual confirmation around a marked level or zone.")
+    elif htf_bias == execution_bias and htf_bias in ["bullish", "bearish"]:
+        if htf_bias == "bullish" and bullish_visual:
+            opportunity_type = "bullish_continuation_watch"
+            confidence = "medium"
+            reasons.append("HTF and execution bias are aligned bullish.")
+            reasons.append("Visual context includes bullish level, FVG, PDH, or hold-above evidence.")
+            next_confirmation_needed.append("Fresh lower-timeframe structure should continue to support the aligned bullish read.")
+        elif htf_bias == "bearish" and bearish_visual:
+            opportunity_type = "bearish_continuation_watch"
+            confidence = "medium"
+            reasons.append("HTF and execution bias are aligned bearish.")
+            reasons.append("Visual context includes rejection, failure, supply, or lost-level evidence.")
+            next_confirmation_needed.append("Fresh lower-timeframe structure should continue to support the aligned bearish read.")
+        elif range_visual:
+            opportunity_type = "range_chop_warning"
+            reasons.append("Bias is aligned, but visual context suggests range or chop conditions.")
+            next_confirmation_needed.append("Need cleaner displacement away from the current range.")
+        else:
+            reasons.append("Bias is aligned, but visual context is not specific enough for an opportunity watch.")
+            next_confirmation_needed.append("Need clearer marked-level confirmation before upgrading the watch.")
+    elif reversal_visual and (bullish_visual or bearish_visual):
+        opportunity_type = "reversal_watch"
+        confidence = "low"
+        reasons.append("Visual context includes sweep, raid, reversal, or failed-breakout language.")
+        next_confirmation_needed.append("Need follow-through structure before treating the reversal context as meaningful.")
+    elif range_visual:
+        opportunity_type = "range_chop_warning"
+        reasons.append("Visual context suggests range or chop conditions.")
+        next_confirmation_needed.append("Need cleaner directional structure away from the range.")
+    else:
+        reasons.append("No conservative opportunity context was confirmed from current state and visuals.")
+        next_confirmation_needed.append("Need alignment between HTF, execution, and visible marked-level behavior.")
+
+    if price_relation != "unknown":
+        reasons.append(f"Computed price relation is {price_relation}.")
+
+    if csv_stale:
+        confidence = _downgrade_confidence(confidence)
+        risks.append("CSV freshness is stale, so computed current price should be treated as historical context.")
+
+    if news_risk_level == "high":
+        confidence = _downgrade_confidence(confidence)
+        risks.append("News Risk is High, so market movement may be less reliable.")
+    elif news_risk_level == "medium":
+        risks.append("News Risk is Medium, so confirmation quality matters more.")
+
+    if not record.get("vision_success"):
+        confidence = "low"
+        risks.append("Primary visual extraction did not succeed.")
+
+    if not visual_text_15m:
+        risks.append("15M visual labels were not available or not readable.")
+
+    if not risks:
+        risks.append("No major contextual risk flag was detected.")
+
+    return {
+        "opportunity_type": opportunity_type,
+        "confidence": confidence,
+        "reasons": _dedupe_text(reasons),
+        "risks": _dedupe_text(risks),
+        "next_confirmation_needed": _dedupe_text(next_confirmation_needed),
+    }
+
+
+def format_opportunity_watch_section(opportunity: dict) -> str:
+    opportunity_type = opportunity.get("opportunity_type") or "no_opportunity"
+    label = OPPORTUNITY_TYPE_LABELS.get(opportunity_type, "No Opportunity")
+    confidence = str(opportunity.get("confidence") or "low").capitalize()
+    reasons = opportunity.get("reasons") or ["No conservative opportunity context was confirmed."]
+    risks = opportunity.get("risks") or ["No major contextual risk flag was detected."]
+    confirmations = opportunity.get("next_confirmation_needed") or [
+        "Need clearer alignment between market state and visible chart context."
+    ]
+
+    lines = [
+        "## Opportunity Watch",
+        f"Type: {label}",
+        f"Confidence: {confidence}",
+        "",
+        "Reasons:",
+    ]
+    lines.extend(f"- {item}" for item in reasons)
+    lines.extend(["", "Risks:"])
+    lines.extend(f"- {item}" for item in risks)
+    lines.extend(["", "Next confirmation needed:"])
+    lines.extend(f"- {item}" for item in confirmations)
+
+    return "\n".join(lines)
+
+
+def attach_opportunity_watch(record: dict) -> None:
+    opportunity = recognize_opportunity(record)
+    record["opportunity_watch"] = opportunity
+    record["message"] = (
+        (record.get("message") or "")
+        + "\n\n"
+        + format_opportunity_watch_section(opportunity)
+    ).strip()
+
+
+# -------------------------
 # Runtime scanner status
 # -------------------------
 def _process_is_running(process_id: int | None) -> bool:
@@ -818,6 +1105,8 @@ def run_scan(
             comparison=comparison,
             alert=alert,
         )
+
+        attach_opportunity_watch(record)
 
         save_scan_record(record)
 
