@@ -885,10 +885,10 @@ async def analyze_image(
 # Scan endpoints
 # -------------------------
 @app.post("/scan/force")
-def force_scan():
-    from scheduled_scan import run_scan
+def force_scan(timeframe: str | None = None):
+    from scheduled_scan import SCAN_TIMEFRAME, run_scan
 
-    record = run_scan(force=True)
+    record = run_scan(force=True, timeframe=timeframe or SCAN_TIMEFRAME)
 
     if not record:
         return {
@@ -901,7 +901,7 @@ def force_scan():
 
 @app.get("/scan/latest")
 def latest_scan():
-    from scheduled_scan import SCAN_HISTORY_PATH, SYMBOL
+    from scheduled_scan import SCAN_HISTORY_PATH, load_latest_scan
 
     if not SCAN_HISTORY_PATH.exists():
         return {
@@ -910,19 +910,7 @@ def latest_scan():
             "record": None,
         }
 
-    latest = None
-
-    with SCAN_HISTORY_PATH.open("r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            if record.get("symbol") != SYMBOL:
-                continue
-
-            latest = record
+    latest = load_latest_scan()
 
     if not latest:
         return {
@@ -939,20 +927,9 @@ def latest_scan():
 
 @app.get("/scan/status")
 def scan_status():
-    from datetime import datetime
-    from scheduled_scan import TIMEZONE, get_active_sessions, should_scan_now, SYMBOL
+    from scheduled_scan import get_scanner_runtime_status
 
-    now = datetime.now(TIMEZONE)
-    sessions = get_active_sessions(now)
-
-    return {
-        "success": True,
-        "symbol": SYMBOL,
-        "timestamp": now.isoformat(),
-        "timezone": "America/Denver",
-        "active_sessions": sessions,
-        "should_scan_now": should_scan_now(now),
-    }
+    return get_scanner_runtime_status()
 
 
 # -------------------------

@@ -2019,6 +2019,7 @@ def capture_tradingview(symbol: str = "MNQ", timeframe: str | None = None):
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         symbol = symbol.upper()
+        timeframe = timeframe.upper() if timeframe else None
 
         suffix = f"_{timeframe.upper()}" if timeframe else ""
         screenshot_path = os.path.join(
@@ -2030,7 +2031,7 @@ def capture_tradingview(symbol: str = "MNQ", timeframe: str | None = None):
         tv_symbol = config["tv_symbol"]
         profile_dir = get_tradingview_profile_dir()
 
-        interval = TRADINGVIEW_TIMEFRAMES.get(timeframe.upper()) if timeframe else None
+        interval = TRADINGVIEW_TIMEFRAMES.get(timeframe) if timeframe else None
         chart_url = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
 
         if interval:
@@ -2063,6 +2064,8 @@ def capture_tradingview(symbol: str = "MNQ", timeframe: str | None = None):
     except Exception as e:
         return {
             "success": False,
+            "symbol": symbol,
+            "timeframe": timeframe,
             "error": str(e),
             "message": f"TradingView capture failed: {e}",
         }
@@ -4245,7 +4248,7 @@ def narrate_market_state(
 # Full trading analysis pipeline
 # ---------------------------------------------------------------------
 
-def analyze_tradingview(symbol: str = "MNQ", prompt: str = ""):
+def analyze_tradingview(symbol: str = "MNQ", prompt: str = "", timeframe: str | None = None):
     """
     Full pipeline:
     1. Capture TradingView screenshot.
@@ -4255,14 +4258,16 @@ def analyze_tradingview(symbol: str = "MNQ", prompt: str = ""):
     5. Narrate with text model.
     """
     symbol = symbol.upper()
+    timeframe = timeframe.upper() if timeframe else None
 
     try:
-        capture_result = capture_tradingview(symbol=symbol)
+        capture_result = capture_tradingview(symbol=symbol, timeframe=timeframe)
 
         if not capture_result.get("success"):
             return capture_result
 
         screenshot_path = capture_result["screenshot_path"]
+        captured_timeframe = capture_result.get("timeframe")
 
         visual_result = extract_tradingview_visuals_from_path(
             image_path=screenshot_path,
@@ -4277,6 +4282,7 @@ def analyze_tradingview(symbol: str = "MNQ", prompt: str = ""):
             return {
                 "success": False,
                 "symbol": symbol,
+                "timeframe": captured_timeframe,
                 "screenshot_path": screenshot_path,
                 "visual_extraction": visual_result,
                 "csv_analysis": csv_result,
@@ -4298,6 +4304,7 @@ def analyze_tradingview(symbol: str = "MNQ", prompt: str = ""):
         return {
             "success": True,
             "symbol": symbol,
+            "timeframe": captured_timeframe,
             "models": {
                 "vision": VISION_MODEL,
                 "narrator": "deterministic_formatter",
@@ -4313,6 +4320,7 @@ def analyze_tradingview(symbol: str = "MNQ", prompt: str = ""):
         return {
             "success": False,
             "symbol": symbol,
+            "timeframe": timeframe,
             "error": str(e),
             "message": f"TradingView pipeline failed: {e}",
         }

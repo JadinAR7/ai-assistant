@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import time
 from datetime import datetime, time as dt_time
 from pathlib import Path
@@ -12,11 +13,13 @@ from tools import analyze_tradingview
 # Scan configuration
 # -------------------------
 SYMBOL = "MES"
+SCAN_TIMEFRAME = "15M"
 SCAN_INTERVAL_SECONDS = 5 * 60
 TIMEZONE = ZoneInfo("America/Denver")
 
 BASE_DIR = Path(__file__).resolve().parent
 SCAN_HISTORY_PATH = BASE_DIR / "scan_history.jsonl"
+SCAN_RUNTIME_STATUS_PATH = BASE_DIR / "scan_runtime_status.json"
 
 
 # -------------------------
@@ -80,6 +83,99 @@ def get_active_sessions(now: datetime) -> list[str]:
 
 def should_scan_now(now: datetime) -> bool:
     return len(get_active_sessions(now)) > 0
+
+
+# -------------------------
+# Runtime scanner status
+# -------------------------
+def _process_is_running(process_id: int | None) -> bool:
+    if not process_id:
+        return False
+
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+    return True
+
+
+def write_scanner_runtime_status(
+    *,
+    scanner_enabled: bool,
+    timeframe: str = SCAN_TIMEFRAME,
+    running_scan: bool = False,
+    last_scan_timestamp: str | None = None,
+    latest_scan_success: bool | None = None,
+) -> None:
+    now = datetime.now(TIMEZONE)
+    sessions = get_active_sessions(now)
+
+    status = {
+        "scanner_enabled": scanner_enabled,
+        "process_id": os.getpid(),
+        "process_running": scanner_enabled,
+        "heartbeat_timestamp": now.isoformat(),
+        "timestamp": now.isoformat(),
+        "timezone": "America/Denver",
+        "symbol": SYMBOL,
+        "timeframe": timeframe,
+        "active_sessions": sessions,
+        "should_scan_now": should_scan_now(now),
+        "scan_interval_seconds": SCAN_INTERVAL_SECONDS,
+        "running_scan": running_scan,
+        "last_scan_timestamp": last_scan_timestamp,
+        "latest_scan_success": latest_scan_success,
+    }
+
+    SCAN_RUNTIME_STATUS_PATH.write_text(
+        json.dumps(status, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def get_scanner_runtime_status() -> dict:
+    now = datetime.now(TIMEZONE)
+    sessions = get_active_sessions(now)
+    latest_scan = load_latest_scan()
+
+    runtime_status = {}
+
+    if SCAN_RUNTIME_STATUS_PATH.exists():
+        try:
+            runtime_status = json.loads(SCAN_RUNTIME_STATUS_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            runtime_status = {}
+
+    process_id = runtime_status.get("process_id")
+    process_running = _process_is_running(process_id)
+    scanner_enabled = bool(runtime_status.get("scanner_enabled") and process_running)
+
+    latest_scan_timestamp = latest_scan.get("timestamp") if latest_scan else None
+    latest_scan_success = latest_scan.get("success") if latest_scan else None
+
+    return {
+        "success": True,
+        "symbol": SYMBOL,
+        "timestamp": now.isoformat(),
+        "timezone": "America/Denver",
+        "scanner_enabled": scanner_enabled,
+        "process_running": process_running,
+        "process_id": process_id,
+        "heartbeat_timestamp": runtime_status.get("heartbeat_timestamp"),
+        "runtime_status_path": str(SCAN_RUNTIME_STATUS_PATH),
+        "active_sessions": sessions,
+        "should_scan_now": should_scan_now(now),
+        "scan_interval_seconds": SCAN_INTERVAL_SECONDS,
+        "timeframe": runtime_status.get("timeframe") or SCAN_TIMEFRAME,
+        "running_scan": runtime_status.get("running_scan", False) if process_running else False,
+        "last_scan_timestamp": latest_scan_timestamp,
+        "latest_scan_success": latest_scan_success,
+    }
 
 
 # -------------------------
@@ -344,6 +440,7 @@ def build_scan_record(
         "timestamp": now.isoformat(),
         "timezone": "America/Denver",
         "symbol": SYMBOL,
+        "timeframe": result.get("timeframe"),
         "sessions": sessions,
         "session_label": " + ".join(sessions),
         "success": result.get("success", False),
@@ -373,6 +470,27 @@ def build_scan_record(
 # -------------------------
 # Scan history lookup
 # -------------------------
+def load_latest_scan() -> dict | None:
+    if not SCAN_HISTORY_PATH.exists():
+        return None
+
+    latest = None
+
+    with SCAN_HISTORY_PATH.open("r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if record.get("symbol") != SYMBOL:
+                continue
+
+            latest = record
+
+    return latest
+
+
 def load_last_successful_scan(current_timestamp: str | None = None) -> dict | None:
     if not SCAN_HISTORY_PATH.exists():
         return None
@@ -471,9 +589,14 @@ def compare_scan_messages(previous: dict | None, current: dict) -> list[str]:
 # -------------------------
 # Scan runner
 # -------------------------
-def run_scan(force: bool = False) -> dict | None:
+def run_scan(
+    force: bool = False,
+    update_runtime_status: bool = False,
+    timeframe: str = SCAN_TIMEFRAME,
+) -> dict | None:
     now = datetime.now(TIMEZONE)
     sessions = get_active_sessions(now)
+    timeframe = timeframe.upper()
 
     if not force and not sessions:
         print(f"[{now.isoformat()}] Outside scan window. No scan ran.")
@@ -481,11 +604,19 @@ def run_scan(force: bool = False) -> dict | None:
 
     session_label = " + ".join(sessions) if sessions else "Forced Scan"
 
-    print(f"[{now.isoformat()}] Running {SYMBOL} scan during: {session_label}")
+    print(f"[{now.isoformat()}] Running {SYMBOL} {timeframe} scan during: {session_label}")
 
     try:
+        if update_runtime_status:
+            write_scanner_runtime_status(
+                scanner_enabled=True,
+                timeframe=timeframe,
+                running_scan=True,
+            )
+
         result = analyze_tradingview(
             symbol=SYMBOL,
+            timeframe=timeframe,
             prompt=f"Scheduled {SYMBOL} scan during {session_label}. Analyze with marked levels.",
         )
 
@@ -511,6 +642,15 @@ def run_scan(force: bool = False) -> dict | None:
         )
 
         save_scan_record(record)
+
+        if update_runtime_status:
+            write_scanner_runtime_status(
+                scanner_enabled=True,
+                timeframe=timeframe,
+                running_scan=False,
+                last_scan_timestamp=record.get("timestamp"),
+                latest_scan_success=record.get("success"),
+            )
 
         print("Scan saved.")
         print("Screenshot:", record.get("screenshot_path"))
@@ -554,6 +694,7 @@ def run_scan(force: bool = False) -> dict | None:
             "timestamp": now.isoformat(),
             "timezone": "America/Denver",
             "symbol": SYMBOL,
+            "timeframe": timeframe,
             "sessions": sessions if sessions else ["Forced Scan"],
             "session_label": session_label,
             "success": False,
@@ -562,21 +703,59 @@ def run_scan(force: bool = False) -> dict | None:
 
         save_scan_record(error_record)
 
+        if update_runtime_status:
+            write_scanner_runtime_status(
+                scanner_enabled=True,
+                timeframe=timeframe,
+                running_scan=False,
+                last_scan_timestamp=error_record.get("timestamp"),
+                latest_scan_success=False,
+            )
+
         print("Scan failed:", e)
         return error_record
 
 
-def run_loop() -> None:
+def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
+    timeframe = timeframe.upper()
+
     print("Scheduled scanner started.")
     print(f"Symbol: {SYMBOL}")
+    print(f"Timeframe: {timeframe}")
     print(f"Interval: {SCAN_INTERVAL_SECONDS // 60} minutes")
     print(f"History file: {SCAN_HISTORY_PATH}")
     print("Press CTRL+C to stop.")
     print()
 
-    while True:
-        run_scan(force=False)
-        time.sleep(SCAN_INTERVAL_SECONDS)
+    latest_scan = load_latest_scan()
+    write_scanner_runtime_status(
+        scanner_enabled=True,
+        timeframe=timeframe,
+        last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
+        latest_scan_success=latest_scan.get("success") if latest_scan else None,
+    )
+
+    try:
+        while True:
+            run_scan(force=False, update_runtime_status=True, timeframe=timeframe)
+            latest_scan = load_latest_scan()
+            write_scanner_runtime_status(
+                scanner_enabled=True,
+                timeframe=timeframe,
+                last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
+                latest_scan_success=latest_scan.get("success") if latest_scan else None,
+            )
+            time.sleep(SCAN_INTERVAL_SECONDS)
+    except KeyboardInterrupt:
+        print("Scheduled scanner stopped.")
+    finally:
+        latest_scan = load_latest_scan()
+        write_scanner_runtime_status(
+            scanner_enabled=False,
+            timeframe=timeframe,
+            last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
+            latest_scan_success=latest_scan.get("success") if latest_scan else None,
+        )
 
 
 # -------------------------
@@ -594,12 +773,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Run one scan immediately, even outside session windows.",
     )
+    parser.add_argument(
+        "--timeframe",
+        default=SCAN_TIMEFRAME,
+        help=f"TradingView timeframe to capture. Defaults to {SCAN_TIMEFRAME}.",
+    )
 
     args = parser.parse_args()
 
     if args.force:
-        run_scan(force=True)
+        run_scan(force=True, timeframe=args.timeframe)
     elif args.once:
-        run_scan(force=False)
+        run_scan(force=False, timeframe=args.timeframe)
     else:
-        run_loop()
+        run_loop(timeframe=args.timeframe)
