@@ -78,6 +78,11 @@ TABLE_COLUMNS = {
 }
 
 
+ORBIT_CORPORATE_ESCAPE_TITLE = "Corporate Escape"
+ORBIT_INBOX_MILESTONE_TITLE = "Inbox / General"
+ORBIT_INBOX_GOAL_TITLE = "Inbox"
+
+
 def _serialize_value(value: Any) -> Any:
     if isinstance(value, (date, datetime)):
         return value.isoformat()
@@ -233,6 +238,88 @@ def create_task(payload: TaskCreate) -> dict[str, Any]:
 
 def update_task(record_id: int, payload: TaskUpdate) -> dict[str, Any] | None:
     return _update_record("tasks", record_id, _model_data(payload, exclude_unset=True))
+
+
+def _find_record(table: str, **matches: Any) -> dict[str, Any] | None:
+    for record in list_records(table):
+        if all(record.get(key) == value for key, value in matches.items()):
+            return record
+    return None
+
+
+def _get_corporate_escape_event() -> dict[str, Any] | None:
+    return _find_record("major_events", title=ORBIT_CORPORATE_ESCAPE_TITLE)
+
+
+def get_or_create_inbox_goal() -> dict[str, Any]:
+    event = _get_corporate_escape_event()
+    if event is None:
+        raise RuntimeError("Corporate Escape major event not found.")
+
+    milestone = _find_record(
+        "milestones",
+        major_event_id=event.get("id"),
+        title=ORBIT_INBOX_MILESTONE_TITLE,
+    )
+    if milestone is None:
+        milestone = _create_record(
+            "milestones",
+            {
+                "major_event_id": event.get("id"),
+                "title": ORBIT_INBOX_MILESTONE_TITLE,
+                "description": "Default catch-all milestone for loose Orbit goals and tasks.",
+                "status": "active",
+                "progress_percent": 0,
+                "target_value": None,
+                "current_value": None,
+                "due_date": None,
+            },
+        )
+
+    goal = _find_record(
+        "goals",
+        milestone_id=milestone.get("id"),
+        title=ORBIT_INBOX_GOAL_TITLE,
+    )
+    if goal is not None:
+        return goal
+
+    return _create_record(
+        "goals",
+        {
+            "milestone_id": milestone.get("id"),
+            "title": ORBIT_INBOX_GOAL_TITLE,
+            "description": "Default catch-all goal for loose Orbit tasks.",
+            "status": "active",
+            "priority": 0,
+        },
+    )
+
+
+def list_inbox_tasks() -> list[dict[str, Any]]:
+    inbox_goal = get_or_create_inbox_goal()
+    inbox_goal_id = inbox_goal.get("id")
+    return [
+        task
+        for task in list_records("tasks")
+        if task.get("goal_id") == inbox_goal_id
+    ]
+
+
+def create_inbox_task(payload: Any) -> dict[str, Any]:
+    inbox_goal = get_or_create_inbox_goal()
+    data = _model_data(payload)
+    return _create_record(
+        "tasks",
+        {
+            "goal_id": inbox_goal.get("id"),
+            "title": data.get("title"),
+            "description": data.get("description"),
+            "status": data.get("status") or "queued",
+            "due_date": data.get("due_date"),
+            "completed_at": None,
+        },
+    )
 
 
 def create_review(payload: ReviewCreate) -> dict[str, Any]:

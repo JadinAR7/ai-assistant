@@ -110,6 +110,13 @@ class Task(TaskBase):
     id: int
 
 
+class InboxTaskCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    status: str = "queued"
+    due_date: Optional[date] = None
+
+
 class ReviewBase(BaseModel):
     title: Optional[str] = None
     review_type: str

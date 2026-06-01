@@ -5,6 +5,7 @@ from .models import (
     Goal,
     GoalCreate,
     GoalUpdate,
+    InboxTaskCreate,
     MajorEvent,
     MajorEventCreate,
     MajorEventUpdate,
@@ -143,6 +144,16 @@ def delete_goal(goal_id: int):
 @router.post("/tasks", response_model=Task, status_code=status.HTTP_201_CREATED)
 def create_task(payload: TaskCreate):
     return service.create_task(payload)
+
+
+@router.get("/inbox-tasks", response_model=list[Task])
+def list_inbox_tasks():
+    return service.list_inbox_tasks()
+
+
+@router.post("/inbox-tasks", response_model=Task, status_code=status.HTTP_201_CREATED)
+def create_inbox_task(payload: InboxTaskCreate):
+    return service.create_inbox_task(payload)
 
 
 @router.get("/tasks", response_model=list[Task])

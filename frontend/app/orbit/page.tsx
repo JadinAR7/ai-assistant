@@ -1,79 +1,22 @@
 import Link from "next/link";
+import OrbitBoard, {
+  type MajorEvent,
+  type Milestone,
+  type MorningBriefing,
+  type OrbitReview,
+  type ReadinessCategory,
+} from "./OrbitBoard";
+import { type InboxTask } from "./InboxTaskControls";
 
 export const dynamic = "force-dynamic";
 
 const CORPORATE_ESCAPE_TITLE = "Corporate Escape";
 const MAJOR_EVENTS_URL = "http://127.0.0.1:8000/orbit/major-events";
 const MILESTONES_URL = "http://127.0.0.1:8000/orbit/milestones";
-const TASKS_URL = "http://127.0.0.1:8000/orbit/tasks";
 const REVIEWS_URL = "http://127.0.0.1:8000/orbit/reviews";
 const READINESS_URL = "http://127.0.0.1:8000/orbit/readiness";
 const MORNING_BRIEFING_URL = "http://127.0.0.1:8000/orbit/morning-briefing";
-
-type MajorEvent = {
-  id: number;
-  title: string;
-  description: string | null;
-  target_date: string | null;
-  status: string;
-  progress_percent: number;
-};
-
-type Milestone = {
-  id: number;
-  major_event_id: number;
-  title: string;
-  description: string | null;
-  status: string;
-  progress_percent: number;
-  target_value: number | null;
-  current_value: number | null;
-  due_date: string | null;
-};
-
-type OrbitTask = {
-  id: number;
-  goal_id: number;
-  title: string;
-  description: string | null;
-  status: string;
-  due_date: string | null;
-  completed_at: string | null;
-};
-
-type OrbitReview = {
-  id: number | string;
-  title?: string | null;
-  review_type: string;
-  summary?: string | null;
-  rating?: number | string | null;
-  created_at?: string | null;
-};
-
-type ReadinessCategory = {
-  id: number;
-  major_event_id: number;
-  category_name: string;
-  current_score: number;
-  target_score: number;
-  notes: string | null;
-  last_updated: string;
-};
-
-type MorningBriefingTask = {
-  id: number;
-  title: string;
-  status: string;
-  due_date: string | null;
-  goal_id: number;
-};
-
-type MorningBriefing = {
-  success: boolean;
-  top_tasks: MorningBriefingTask[];
-  current_blockers: string[];
-  suggested_next_action: string;
-};
+const INBOX_TASKS_URL = "http://127.0.0.1:8000/orbit/inbox-tasks";
 
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url, { cache: "no-store" });
@@ -89,14 +32,13 @@ async function getOrbitData() {
   const [
     majorEvents,
     milestones,
-    tasks,
     reviewsResult,
     readinessResult,
     briefingResult,
+    inboxTasksResult,
   ] = await Promise.all([
     fetchJson<MajorEvent[]>(MAJOR_EVENTS_URL),
     fetchJson<Milestone[]>(MILESTONES_URL),
-    fetchJson<OrbitTask[]>(TASKS_URL),
     fetchJson<OrbitReview[]>(REVIEWS_URL)
       .then((reviews) => ({ reviews, error: null }))
       .catch((error: unknown) => ({
@@ -124,6 +66,15 @@ async function getOrbitData() {
             ? error.message
             : "Orbit briefing could not be loaded.",
       })),
+    fetchJson<InboxTask[]>(INBOX_TASKS_URL)
+      .then((inboxTasks) => ({ inboxTasks, error: null }))
+      .catch((error: unknown) => ({
+        inboxTasks: [],
+        error:
+          error instanceof Error
+            ? error.message
+            : "Orbit inbox tasks could not be loaded.",
+      })),
   ]);
 
   const event = majorEvents.find(
@@ -145,7 +96,8 @@ async function getOrbitData() {
     readinessError: readinessResult.error,
     morningBriefing: briefingResult.briefing,
     morningBriefingError: briefingResult.error,
-    tasks,
+    inboxTasks: inboxTasksResult.inboxTasks,
+    inboxTasksError: inboxTasksResult.error,
   };
 }
 
@@ -178,168 +130,6 @@ function getLatestReviews(reviews: OrbitReview[]) {
     .map(({ review }) => review);
 }
 
-function formatDate(value: string | null) {
-  if (!value) {
-    return "No target date set";
-  }
-
-  return new Intl.DateTimeFormat("en-US", {
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(new Date(value));
-}
-
-function formatDateTime(value: string) {
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(date);
-}
-
-function formatStatus(value: string) {
-  return value
-    .split("_")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function getDaysRemaining(targetDate: string | null) {
-  if (!targetDate) {
-    return null;
-  }
-
-  const target = new Date(`${targetDate}T00:00:00Z`).getTime();
-  const now = Date.now();
-  const days = Math.ceil((target - now) / (1000 * 60 * 60 * 24));
-
-  return Math.max(days, 0);
-}
-
-function ProgressBar({ value }: { value: number }) {
-  const clampedValue = Math.min(Math.max(value, 0), 100);
-
-  return (
-    <div className="h-3 overflow-hidden rounded-full bg-neutral-800">
-      <div
-        className="h-full rounded-full bg-blue-500"
-        style={{ width: `${clampedValue}%` }}
-      />
-    </div>
-  );
-}
-
-function getOverallReadiness(readiness: ReadinessCategory[]) {
-  if (readiness.length === 0) {
-    return null;
-  }
-
-  const total = readiness.reduce(
-    (sum, category) => sum + category.current_score,
-    0,
-  );
-
-  return Math.round(total / readiness.length);
-}
-
-function Panel({
-  title,
-  children,
-}: Readonly<{
-  title: string;
-  children: React.ReactNode;
-}>) {
-  return (
-    <section className="rounded-2xl border border-white/10 bg-neutral-900 p-5">
-      <h2 className="mb-4 text-sm font-semibold text-neutral-100">{title}</h2>
-      {children}
-    </section>
-  );
-}
-
-function ReadinessPanel({
-  readiness,
-  error,
-}: Readonly<{
-  readiness: ReadinessCategory[];
-  error: string | null;
-}>) {
-  const overallReadiness = getOverallReadiness(readiness);
-
-  return (
-    <Panel title="Readiness">
-      <div className="mb-4 rounded-2xl border border-white/10 bg-neutral-950 p-4">
-        <div className="mb-3 flex items-center justify-between text-sm">
-          <span className="text-neutral-400">Overall readiness</span>
-          <span className="font-semibold text-blue-200">
-            {overallReadiness === null ? "--" : `${overallReadiness}%`}
-          </span>
-        </div>
-        <ProgressBar value={overallReadiness ?? 0} />
-      </div>
-
-      {error ? (
-        <div className="rounded-xl border border-red-500/20 bg-red-950/20 p-4 text-sm text-red-100">
-          Readiness is unavailable right now.
-        </div>
-      ) : readiness.length > 0 ? (
-        <div className="grid gap-3 md:grid-cols-2">
-          {readiness.map((category) => (
-            <article
-              key={category.id}
-              className="rounded-xl border border-white/10 bg-neutral-950 p-4"
-            >
-              <div className="mb-3 flex items-start justify-between gap-3">
-                <h3 className="text-sm font-semibold text-neutral-100">
-                  {category.category_name}
-                </h3>
-                <span className="shrink-0 rounded-full border border-blue-500/20 bg-blue-500/15 px-2 py-1 text-xs text-blue-200">
-                  {category.current_score}% / {category.target_score}%
-                </span>
-              </div>
-
-              <ProgressBar value={category.current_score} />
-
-              {category.notes ? (
-                <p className="mt-3 text-sm text-neutral-400">
-                  {category.notes}
-                </p>
-              ) : null}
-            </article>
-          ))}
-        </div>
-      ) : (
-        <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
-          No readiness categories have been added to Orbit yet.
-        </div>
-      )}
-    </Panel>
-  );
-}
-
-function OrbitError({ message }: { message: string }) {
-  return (
-    <section className="rounded-2xl border border-red-500/30 bg-red-950/20 p-6">
-      <p className="mb-2 text-sm text-red-200/80">Orbit API unavailable</p>
-      <h2 className="text-xl font-semibold text-white">
-        Unable to load Corporate Escape data.
-      </h2>
-      <p className="mt-2 text-sm text-red-100/80">{message}</p>
-    </section>
-  );
-}
-
 export default async function OrbitPage() {
   let orbitData: Awaited<ReturnType<typeof getOrbitData>>;
   let errorMessage: string | null = null;
@@ -356,7 +146,8 @@ export default async function OrbitPage() {
       readinessError: null,
       morningBriefing: null,
       morningBriefingError: null,
-      tasks: [],
+      inboxTasks: [],
+      inboxTasksError: null,
     };
     errorMessage =
       error instanceof Error
@@ -364,33 +155,15 @@ export default async function OrbitPage() {
         : "Orbit data could not be loaded.";
   }
 
-  const event = orbitData.event;
-  const daysRemaining = getDaysRemaining(event?.target_date ?? null);
-  const progressPercentage = event?.progress_percent ?? 0;
-  const morningBriefing = orbitData.morningBriefing;
-  const priorityTasks = morningBriefing?.top_tasks.slice(0, 3) ?? [];
-  const activeBlockers = morningBriefing?.current_blockers ?? [];
-  const suggestedNextAction =
-    morningBriefing?.suggested_next_action &&
-    morningBriefing.suggested_next_action !== "No suggested action yet"
-      ? morningBriefing.suggested_next_action
-      : null;
-  const openTasks = orbitData.tasks.filter(
-    (task) =>
-      !["complete", "completed", "done", "cancelled"].includes(
-        task.status.toLowerCase(),
-      ),
-  );
-
   return (
     <main className="min-h-screen bg-neutral-950 text-white">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-neutral-950/80 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-blue-300">
+            <p className="text-xs font-semibold uppercase tracking-wide text-cyan-300">
               Orbit
             </p>
-            <h1 className="text-lg font-semibold">Planning Dashboard</h1>
+            <h1 className="text-lg font-semibold">Operating Board</h1>
           </div>
 
           <div className="flex items-center gap-2">
@@ -418,233 +191,20 @@ export default async function OrbitPage() {
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-7xl grid-cols-1 items-start gap-4 px-4 py-4 lg:grid-cols-[1.35fr_0.65fr]">
-        <div className="space-y-4">
-          {errorMessage ? (
-            <OrbitError message={errorMessage} />
-          ) : (
-            <section className="rounded-2xl border border-blue-500/30 bg-blue-950/20 p-6">
-              <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <p className="mb-2 text-sm text-blue-200/70">
-                    Major Event Countdown
-                  </p>
-                  <h2 className="text-3xl font-semibold tracking-tight text-white">
-                    {event?.title ?? CORPORATE_ESCAPE_TITLE}
-                  </h2>
-                  <p className="mt-2 text-sm text-neutral-400">
-                    {event
-                      ? `Target date: ${formatDate(event.target_date)}`
-                      : "Corporate Escape has not been added to Orbit yet."}
-                  </p>
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-neutral-950/70 px-5 py-4 text-right">
-                  <p className="text-xs text-neutral-500">Days remaining</p>
-                  <p className="mt-1 text-4xl font-semibold text-white">
-                    {daysRemaining ?? "--"}
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-[1fr_220px]">
-                <div className="rounded-2xl border border-white/10 bg-neutral-950 p-4">
-                  <div className="mb-3 flex items-center justify-between text-sm">
-                    <span className="text-neutral-400">Progress</span>
-                    <span className="font-semibold text-blue-200">
-                      {progressPercentage}%
-                    </span>
-                  </div>
-                  <ProgressBar value={progressPercentage} />
-                </div>
-
-                <div className="rounded-2xl border border-white/10 bg-neutral-950 p-4">
-                  <p className="text-xs text-neutral-500">Current status</p>
-                  <p className="mt-2 text-sm font-semibold text-neutral-100">
-                    {event ? formatStatus(event.status) : "Not connected"}
-                  </p>
-                  <p className="mt-1 text-xs text-neutral-400">
-                    {event?.description ?? "Waiting for Orbit event data."}
-                  </p>
-                </div>
-              </div>
-            </section>
-          )}
-
-          <ReadinessPanel
-            readiness={orbitData.readiness}
-            error={orbitData.readinessError}
-          />
-
-          <Panel title="Reviews">
-            {orbitData.reviews.length > 0 ? (
-              <div className="grid items-start gap-3 md:grid-cols-2">
-                {orbitData.reviews.map((review) => (
-                  <article
-                    key={review.id}
-                    className="rounded-xl border border-white/10 bg-neutral-950 p-4"
-                  >
-                    <div className="mb-3 flex items-start justify-between gap-3">
-                      <h3 className="text-sm font-semibold text-neutral-100">
-                        {review.title ?? formatStatus(review.review_type)}
-                      </h3>
-                      <span className="shrink-0 rounded-full border border-blue-500/20 bg-blue-500/15 px-2 py-1 text-xs text-blue-200">
-                        {formatStatus(review.review_type)}
-                      </span>
-                    </div>
-                    {review.summary ? (
-                      <p className="text-sm text-neutral-400">
-                        {review.summary}
-                      </p>
-                    ) : null}
-                    {(review.rating !== null &&
-                      review.rating !== undefined) ||
-                    review.created_at ? (
-                      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-neutral-500">
-                        {review.rating !== null &&
-                        review.rating !== undefined ? (
-                          <span>Rating {review.rating}</span>
-                        ) : null}
-                        {review.created_at ? (
-                          <span>{formatDateTime(review.created_at)}</span>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
-                {orbitData.reviewsError
-                  ? "Reviews are unavailable right now."
-                  : "No recent reviews"}
-              </div>
-            )}
-          </Panel>
-
-          <Panel title="Blockers">
-            {activeBlockers.length > 0 ? (
-              <ul className="space-y-3 text-sm text-neutral-300">
-                {activeBlockers.map((blocker) => (
-                  <li
-                    key={blocker}
-                    className="rounded-xl border border-red-500/20 bg-red-950/20 p-3 text-red-100"
-                  >
-                    {blocker}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
-                {orbitData.morningBriefingError
-                  ? "Blockers are unavailable right now."
-                  : "No active blockers"}
-              </div>
-            )}
-          </Panel>
-        </div>
-
-        <div className="space-y-4">
-          <Panel title="Suggested Next Action">
-            <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-300">
-              {suggestedNextAction ?? "No suggested action yet"}
-            </div>
-          </Panel>
-
-          <Panel title="Priority Tasks">
-            {priorityTasks.length > 0 ? (
-              <div className="space-y-2">
-                {priorityTasks.map((task) => (
-                  <article
-                    key={task.id}
-                    className="rounded-xl border border-white/10 bg-neutral-950 p-3"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <h3 className="text-sm font-semibold leading-5 text-neutral-100">
-                        {task.title}
-                      </h3>
-                      <span className="shrink-0 rounded-full border border-blue-500/20 bg-blue-500/15 px-2 py-1 text-xs text-blue-200">
-                        {formatStatus(task.status)}
-                      </span>
-                    </div>
-                    {task.due_date ? (
-                      <p className="mt-2 text-xs text-neutral-400">
-                        Due {formatDate(task.due_date)}
-                      </p>
-                    ) : null}
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
-                No priority tasks
-              </div>
-            )}
-          </Panel>
-
-          <Panel title="Inbox Tasks">
-            {openTasks.length > 0 ? (
-              <div className="space-y-2">
-                {openTasks.map((task) => (
-                  <article
-                    key={task.id}
-                    className="rounded-xl border border-white/10 bg-neutral-950 p-3"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <h3 className="text-sm font-semibold leading-5 text-neutral-100">
-                        {task.title}
-                      </h3>
-                      <span className="shrink-0 rounded-full border border-blue-500/20 bg-blue-500/15 px-2 py-1 text-xs text-blue-200">
-                        {formatStatus(task.status)}
-                      </span>
-                    </div>
-                    {task.due_date ? (
-                      <p className="mt-2 text-xs text-neutral-400">
-                        Due {formatDate(task.due_date)}
-                      </p>
-                    ) : null}
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
-                No priority tasks
-              </div>
-            )}
-          </Panel>
-
-          <Panel title="Milestones">
-            {orbitData.milestones.length > 0 ? (
-              <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-1">
-                {orbitData.milestones.map((milestone) => (
-                  <article
-                    key={milestone.id}
-                    className="rounded-xl border border-white/10 bg-neutral-950 p-4"
-                  >
-                    <div className="mb-3 flex items-start justify-between gap-3">
-                      <h3 className="text-sm font-semibold text-neutral-100">
-                        {milestone.title}
-                      </h3>
-                      <span className="shrink-0 rounded-full border border-blue-500/20 bg-blue-500/15 px-2 py-1 text-xs text-blue-200">
-                        {formatStatus(milestone.status)}
-                      </span>
-                    </div>
-                    <p className="text-sm text-neutral-400">
-                      {milestone.description ??
-                        "No milestone detail added yet."}
-                    </p>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
-                {event
-                  ? "No milestones are linked to Corporate Escape yet."
-                  : "Milestones will appear once the Corporate Escape event is available."}
-              </div>
-            )}
-          </Panel>
-        </div>
+      <div className="mx-auto max-w-6xl px-4 py-4">
+        <OrbitBoard
+          event={orbitData.event}
+          milestones={orbitData.milestones}
+          reviews={orbitData.reviews}
+          reviewsError={orbitData.reviewsError}
+          readiness={orbitData.readiness}
+          readinessError={orbitData.readinessError}
+          morningBriefing={orbitData.morningBriefing}
+          morningBriefingError={orbitData.morningBriefingError}
+          inboxTasks={orbitData.inboxTasks}
+          inboxTasksError={orbitData.inboxTasksError}
+          errorMessage={errorMessage}
+        />
       </div>
     </main>
   );

@@ -161,12 +161,14 @@ Inputs:
 - due_date optional
 
 Rules:
+- Use create_orbit_task when Jadin says "add task", "create task", "save task", "capture task", or "add to Orbit inbox".
 - Use underscores instead of spaces in title and description values.
 - If the task belongs to an existing goal, include goal_id.
 - If no goal is named, omit goal_id and the task will go to the Orbit Inbox goal.
 
 Example:
-TOOL: create_orbit_task title=Review_my_trading_journal_tonight
+User: Add task: review Orbit inbox tonight.
+TOOL: create_orbit_task title=review_Orbit_inbox_tonight
 
 - complete_orbit_task: marks an Orbit task completed by task ID or title
 
@@ -175,6 +177,7 @@ Inputs:
 - title optional
 
 Rules:
+- Use complete_orbit_task when Jadin says "complete task", "mark task done", or "finish task".
 - If the user names a task without an ID, use title.
 - Use underscores instead of spaces in title values.
 - If multiple tasks match a title, the tool will list matches; ask Jadin which task ID to complete.
