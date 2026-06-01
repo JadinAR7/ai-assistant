@@ -1,8 +1,9 @@
 import argparse
+import csv
 import json
 import os
 import time
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -239,6 +240,861 @@ def attach_timeframe_screenshots_section(
         (result.get("message") or "")
         + "\n\n"
         + format_timeframe_screenshots_section(timeframe_captures)
+    ).strip()
+
+
+# -------------------------
+# Liquidity draw engine
+# -------------------------
+LIQUIDITY_REFERENCE_LABELS = {
+    "pdh": "PDH",
+    "pdl": "PDL",
+    "pdnyh": "PDNYH",
+    "pdnyl": "PDNYL",
+    "asia_high": "Asia High",
+    "asia_low": "Asia Low",
+    "london_high": "London High",
+    "london_low": "London Low",
+    "previous_week_high": "Previous Week High",
+    "previous_week_low": "Previous Week Low",
+}
+
+LIQUIDITY_IMPORTANCE = {
+    "previous_week_high": 15,
+    "previous_week_low": 15,
+    "pdh": 12,
+    "pdl": 12,
+    "pdnyh": 10,
+    "pdnyl": 10,
+    "asia_high": 8,
+    "asia_low": 8,
+    "london_high": 8,
+    "london_low": 8,
+}
+
+
+def _safe_float(value) -> float | None:
+    if value is None:
+        return None
+
+    try:
+        return float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_csv_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+
+    text = str(value).strip()
+
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _fmt_draw_price(value) -> str:
+    number = _safe_float(value)
+
+    if number is None:
+        return "unknown"
+
+    return f"{number:.2f}".rstrip("0").rstrip(".")
+
+
+def _load_csv_rows_from_file(filename: str | None) -> list[dict]:
+    if not filename:
+        return []
+
+    path = Path(filename)
+
+    if not path.is_absolute():
+        path = BASE_DIR / "csv_data" / filename
+
+    if not path.exists():
+        return []
+
+    rows = []
+
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            parsed_time = _parse_csv_time(row.get("time"))
+
+            if not parsed_time:
+                continue
+
+            high = _safe_float(row.get("high"))
+            low = _safe_float(row.get("low"))
+            close = _safe_float(row.get("close"))
+
+            if high is None or low is None:
+                continue
+
+            rows.append({
+                "time": parsed_time,
+                "high": high,
+                "low": low,
+                "close": close,
+            })
+
+    return rows
+
+
+def _csv_files_used(record: dict) -> dict:
+    csv_analysis = record.get("csv_analysis") or {}
+    analysis = csv_analysis.get("analysis") or {}
+    return analysis.get("files_used") or {}
+
+
+def _latest_completed_daily_reference(daily_rows: list[dict], current_price: float | None) -> list[dict]:
+    if not daily_rows:
+        return []
+
+    latest = daily_rows[-1]
+    ref_time = latest.get("time")
+
+    return [
+        {
+            "key": "pdh",
+            "label": LIQUIDITY_REFERENCE_LABELS["pdh"],
+            "side": "above",
+            "price": latest.get("high"),
+            "reference_time": ref_time.isoformat() if ref_time else None,
+            "untouched": bool(current_price is not None and current_price < latest.get("high")),
+        },
+        {
+            "key": "pdl",
+            "label": LIQUIDITY_REFERENCE_LABELS["pdl"],
+            "side": "below",
+            "price": latest.get("low"),
+            "reference_time": ref_time.isoformat() if ref_time else None,
+            "untouched": bool(current_price is not None and current_price > latest.get("low")),
+        },
+    ]
+
+
+def _previous_week_references(daily_rows: list[dict], current_price: float | None) -> list[dict]:
+    if not daily_rows:
+        return []
+
+    latest_time = daily_rows[-1].get("time")
+
+    if not latest_time:
+        return []
+
+    current_week_start = latest_time.date() - timedelta(days=latest_time.weekday())
+    previous_week_start = current_week_start - timedelta(days=7)
+    previous_week_end = current_week_start
+
+    week_rows = [
+        row for row in daily_rows
+        if previous_week_start <= row["time"].date() < previous_week_end
+    ]
+
+    if not week_rows:
+        return []
+
+    week_high = max(row["high"] for row in week_rows)
+    week_low = min(row["low"] for row in week_rows)
+    week_end_time = week_rows[-1]["time"]
+    rows_after = [row for row in daily_rows if row["time"].date() >= current_week_start]
+    high_touched = any(row["high"] >= week_high for row in rows_after)
+    low_touched = any(row["low"] <= week_low for row in rows_after)
+
+    return [
+        {
+            "key": "previous_week_high",
+            "label": LIQUIDITY_REFERENCE_LABELS["previous_week_high"],
+            "side": "above",
+            "price": week_high,
+            "reference_time": week_end_time.isoformat(),
+            "untouched": bool(not high_touched and current_price is not None and current_price < week_high),
+        },
+        {
+            "key": "previous_week_low",
+            "label": LIQUIDITY_REFERENCE_LABELS["previous_week_low"],
+            "side": "below",
+            "price": week_low,
+            "reference_time": week_end_time.isoformat(),
+            "untouched": bool(not low_touched and current_price is not None and current_price > week_low),
+        },
+    ]
+
+
+def _session_window_for_row(row_time: datetime, start: dt_time, end: dt_time) -> tuple[datetime, datetime]:
+    start_dt = datetime.combine(row_time.date(), start, tzinfo=row_time.tzinfo)
+    end_dt = datetime.combine(row_time.date(), end, tzinfo=row_time.tzinfo)
+
+    if end_dt <= start_dt:
+        end_dt += timedelta(days=1)
+
+    if row_time < start_dt:
+        start_dt -= timedelta(days=1)
+        end_dt -= timedelta(days=1)
+
+    return start_dt, end_dt
+
+
+def _latest_session_references(
+    rows: list[dict],
+    *,
+    high_key: str,
+    low_key: str,
+    start: dt_time,
+    end: dt_time,
+    current_price: float | None,
+) -> list[dict]:
+    if not rows:
+        return []
+
+    latest_time = rows[-1]["time"]
+    start_dt, end_dt = _session_window_for_row(latest_time, start, end)
+
+    if latest_time < end_dt:
+        start_dt -= timedelta(days=1)
+        end_dt -= timedelta(days=1)
+
+    session_rows = [
+        row for row in rows
+        if start_dt <= row["time"] <= end_dt
+    ]
+
+    if not session_rows:
+        return []
+
+    high = max(row["high"] for row in session_rows)
+    low = min(row["low"] for row in session_rows)
+    rows_after = [row for row in rows if row["time"] > end_dt]
+    high_touched = any(row["high"] >= high for row in rows_after)
+    low_touched = any(row["low"] <= low for row in rows_after)
+
+    return [
+        {
+            "key": high_key,
+            "label": LIQUIDITY_REFERENCE_LABELS[high_key],
+            "side": "above",
+            "price": high,
+            "reference_time": end_dt.isoformat(),
+            "untouched": bool(not high_touched and current_price is not None and current_price < high),
+        },
+        {
+            "key": low_key,
+            "label": LIQUIDITY_REFERENCE_LABELS[low_key],
+            "side": "below",
+            "price": low,
+            "reference_time": end_dt.isoformat(),
+            "untouched": bool(not low_touched and current_price is not None and current_price > low),
+        },
+    ]
+
+
+def _visible_liquidity_labels(record: dict) -> set[str]:
+    visual_context = _record_visual_context(record)
+    text = visual_context.get("text_all") or ""
+    visible = set()
+
+    checks = {
+        "pdh": ["pdh"],
+        "pdl": ["pdl"],
+        "pdnyh": ["pdnyh"],
+        "pdnyl": ["pdnyl"],
+        "asia_high": ["asia high", "tokyo high"],
+        "asia_low": ["asia low", "tokyo low"],
+        "london_high": ["london high"],
+        "london_low": ["london low"],
+        "previous_week_high": ["previous week high", "pwh"],
+        "previous_week_low": ["previous week low", "pwl"],
+    }
+
+    for key, terms in checks.items():
+        if any(term in text for term in terms):
+            visible.add(key)
+
+    return visible
+
+
+def _liquidity_direction_aligned(side: str, htf_bias: str) -> bool:
+    return (
+        (htf_bias == "bullish" and side == "above")
+        or (htf_bias == "bearish" and side == "below")
+    )
+
+
+def _score_liquidity_reference(reference: dict, current_price: float | None, htf_bias: str) -> dict:
+    price = _safe_float(reference.get("price"))
+    side = reference.get("side")
+    score = 0
+    reasons = []
+
+    if price is None or current_price is None:
+        return {**reference, "distance": None, "score": 0, "scoring_reasons": ["Missing price context."]}
+
+    distance = abs(current_price - price)
+    reference["distance"] = round(distance, 2)
+
+    if reference.get("untouched"):
+        score += 50
+        reasons.append("Untouched relative to available CSV context.")
+    else:
+        score -= 20
+        reasons.append("Already swept or not cleanly beyond current price.")
+
+    if _liquidity_direction_aligned(side, htf_bias):
+        score += 30
+        reasons.append(f"Aligned with {htf_bias} HTF bias.")
+    elif htf_bias in ["bullish", "bearish"]:
+        score -= 10
+        reasons.append(f"Counter to {htf_bias} HTF bias.")
+    else:
+        reasons.append("HTF bias is neutral or unknown.")
+
+    if distance <= 10:
+        score += 25
+        reasons.append("Nearest meaningful liquidity.")
+    elif distance <= 30:
+        score += 18
+        reasons.append("Nearby liquidity.")
+    elif distance <= 75:
+        score += 10
+        reasons.append("Within reasonable reach.")
+    else:
+        score -= 5
+        reasons.append("Farther from current price.")
+
+    score += LIQUIDITY_IMPORTANCE.get(reference.get("key"), 0)
+
+    if reference.get("visible"):
+        score += 8
+        reasons.append("Also visible on chart markings.")
+
+    reference["score"] = round(score, 2)
+    reference["scoring_reasons"] = _dedupe_text(reasons)
+
+    return reference
+
+
+def determine_liquidity_draw(record: dict) -> dict:
+    csv_analysis = record.get("csv_analysis") or {}
+    analysis = csv_analysis.get("analysis") or {}
+    context = analysis.get("context") or {}
+    state = record.get("state") or extract_structured_state(record)
+    files_used = _csv_files_used(record)
+
+    current_price = _safe_float(context.get("current_price"))
+    htf_bias = context.get("bias") or state.get("htf_bias") or "unknown"
+    execution_bias = context.get("execution_bias") or state.get("execution_bias") or "unknown"
+    csv_stale = _csv_is_stale(record)
+    visible_keys = _visible_liquidity_labels(record)
+
+    references = []
+    daily_rows = _load_csv_rows_from_file(files_used.get("daily"))
+    one_minute_rows = _load_csv_rows_from_file(files_used.get("ltf"))
+
+    references.extend(_latest_completed_daily_reference(daily_rows, current_price))
+    references.extend(_previous_week_references(daily_rows, current_price))
+    references.extend(_latest_session_references(
+        one_minute_rows,
+        high_key="pdnyh",
+        low_key="pdnyl",
+        start=dt_time(7, 30),
+        end=dt_time(14, 0),
+        current_price=current_price,
+    ))
+    references.extend(_latest_session_references(
+        one_minute_rows,
+        high_key="asia_high",
+        low_key="asia_low",
+        start=dt_time(18, 0),
+        end=dt_time(23, 59),
+        current_price=current_price,
+    ))
+    references.extend(_latest_session_references(
+        one_minute_rows,
+        high_key="london_high",
+        low_key="london_low",
+        start=dt_time(1, 30),
+        end=dt_time(9, 29),
+        current_price=current_price,
+    ))
+
+    scored = []
+
+    for reference in references:
+        if reference.get("price") is None:
+            continue
+
+        reference["visible"] = reference.get("key") in visible_keys
+        scored.append(_score_liquidity_reference(reference, current_price, htf_bias))
+
+    ranked = sorted(scored, key=lambda item: item.get("score", 0), reverse=True)
+    primary = ranked[0] if ranked else None
+    secondary = ranked[1] if len(ranked) > 1 else None
+
+    reasons = []
+
+    if primary:
+        reasons.append(
+            f"{primary['label']} ranks highest because it is "
+            f"{'untouched' if primary.get('untouched') else 'already contested'}, "
+            f"{'aligned' if _liquidity_direction_aligned(primary.get('side'), htf_bias) else 'not aligned'} "
+            f"with HTF bias, and {primary.get('distance')} points from current CSV price."
+        )
+    else:
+        reasons.append("No usable liquidity references were available from CSV or visual context.")
+
+    if secondary:
+        reasons.append(f"{secondary['label']} is the next strongest reference after the primary draw.")
+
+    if htf_bias in ["bullish", "bearish"]:
+        reasons.append(f"HTF bias is {htf_bias}; liquidity in that direction receives priority.")
+    else:
+        reasons.append("HTF bias is neutral or unknown, so distance and untouched status carry more weight.")
+
+    if execution_bias != htf_bias and execution_bias in ["bullish", "bearish"]:
+        reasons.append(f"Execution is {execution_bias}, so the draw is descriptive until structure resolves.")
+
+    if csv_stale:
+        reasons.append("CSV is stale; levels remain structural references, but live price relation needs visual confirmation.")
+
+    confidence = "low"
+
+    if primary:
+        primary_aligned = _liquidity_direction_aligned(primary.get("side"), htf_bias)
+        primary_near = (primary.get("distance") or 9999) <= 75
+
+        if primary.get("untouched") and primary_aligned and primary_near:
+            confidence = "high"
+        elif primary.get("untouched") or primary_aligned or primary_near:
+            confidence = "medium"
+
+    if csv_stale:
+        confidence = _downgrade_confidence(confidence)
+
+    return {
+        "primary_draw": primary,
+        "secondary_draw": secondary,
+        "confidence": confidence,
+        "reasons": _dedupe_text(reasons),
+        "candidates": ranked,
+        "does_not_generate_trade_signals": True,
+    }
+
+
+def _format_draw_item(item: dict | None) -> str:
+    if not item:
+        return "None identified"
+
+    status = "untouched" if item.get("untouched") else "already swept/contested"
+    distance = item.get("distance")
+    distance_text = f", {distance} points away" if distance is not None else ""
+    visible_text = ", visible on chart" if item.get("visible") else ""
+
+    return (
+        f"{item.get('label')} at {_fmt_draw_price(item.get('price'))} "
+        f"({status}{distance_text}{visible_text})"
+    )
+
+
+def format_liquidity_draw_section(liquidity_draw: dict) -> str:
+    confidence = str(liquidity_draw.get("confidence") or "low").capitalize()
+    reasons = liquidity_draw.get("reasons") or ["No liquidity draw decision was available."]
+
+    lines = [
+        "## Liquidity Draw",
+        f"Primary Draw: {_format_draw_item(liquidity_draw.get('primary_draw'))}",
+        "",
+        f"Secondary Draw: {_format_draw_item(liquidity_draw.get('secondary_draw'))}",
+        "",
+        f"Confidence: {confidence}",
+        "",
+        "Reasons:",
+    ]
+    lines.extend(f"- {item}" for item in reasons)
+
+    return "\n".join(lines)
+
+
+def attach_liquidity_draw(record: dict) -> None:
+    liquidity_draw = determine_liquidity_draw(record)
+    record["liquidity_draw"] = liquidity_draw
+    record["message"] = (
+        (record.get("message") or "")
+        + "\n\n"
+        + format_liquidity_draw_section(liquidity_draw)
+    ).strip()
+
+
+# -------------------------
+# Behavior classification
+# -------------------------
+BEHAVIOR_CLASSIFICATIONS = {
+    "acceptance",
+    "rejection",
+    "reclaim",
+    "sweep",
+    "displacement",
+    "consolidation",
+    "unknown",
+}
+
+
+def _visuals_for_timeframe(record: dict, timeframe: str) -> dict:
+    timeframe_captures = record.get("timeframe_captures") or {}
+    capture = timeframe_captures.get(timeframe) or {}
+    visuals = _visuals_from_capture(capture)
+
+    if visuals:
+        return visuals
+
+    if record.get("timeframe") == timeframe:
+        return (record.get("visual_extraction") or {}).get("visuals") or {}
+
+    return {}
+
+
+def _behavior_visual_text_from_visuals(visuals: dict) -> str:
+    parts = []
+
+    for label in visuals.get("visible_labels") or []:
+        parts.append(str(label))
+
+    for key in ["horizontal_lines", "drawn_boxes"]:
+        for item in visuals.get(key) or []:
+            if isinstance(item, dict):
+                parts.extend([
+                    str(item.get("label") or ""),
+                    str(item.get("location_notes") or ""),
+                ])
+            else:
+                parts.append(str(item))
+
+    for key in ["arrows_or_annotations", "notes_about_user_markings"]:
+        for item in visuals.get(key) or []:
+            parts.append(str(item))
+
+    return " ".join(part for part in parts if part).lower()
+
+
+def _behavior_text_by_timeframe(record: dict) -> dict[str, str]:
+    return {
+        timeframe: _behavior_visual_text_from_visuals(_visuals_for_timeframe(record, timeframe))
+        for timeframe in ["15M", "1H", "4H"]
+    }
+
+
+def _count_terms(text: str, terms: list[str]) -> int:
+    return sum(1 for term in terms if term in text)
+
+
+def _append_term_evidence(evidence: list[str], label: str, text: str, terms: list[str]) -> int:
+    matches = [term for term in terms if term in text]
+
+    if matches:
+        evidence.append(f"{label} visual text includes: {', '.join(matches[:4])}.")
+
+    return len(matches)
+
+
+def _get_csv_refresh_limitation() -> str | None:
+    try:
+        from csv_refresh import get_csv_refresh_status
+
+        status = get_csv_refresh_status()
+    except Exception as e:
+        return f"CSV refresh status unavailable: {e}"
+
+    if not isinstance(status, dict):
+        return "CSV refresh status is unavailable or malformed."
+
+    if not status.get("last_success"):
+        last_error = status.get("last_error")
+
+        if last_error:
+            return f"CSV refresh has no successful run yet; latest status: {last_error}"
+
+        return "CSV refresh has no successful run yet."
+
+    if status.get("last_error"):
+        return f"CSV refresh latest error: {status.get('last_error')}"
+
+    return None
+
+
+def _cap_confidence_for_context(
+    confidence: str,
+    *,
+    htf_bias: str,
+    execution_bias: str,
+    csv_stale: bool,
+    live_visual_clear: bool,
+    news_risk_level: str,
+) -> str:
+    capped = confidence
+
+    if htf_bias != execution_bias and htf_bias in ["bullish", "bearish"] and execution_bias in ["bullish", "bearish"]:
+        if capped == "high":
+            capped = "medium"
+
+    if csv_stale and not live_visual_clear:
+        capped = "low"
+
+    if news_risk_level == "high":
+        capped = _downgrade_confidence(capped)
+
+    return capped
+
+
+def classify_behavior(record: dict) -> dict:
+    state = record.get("state") or extract_structured_state(record)
+    htf_bias = state.get("htf_bias", "unknown")
+    execution_bias = state.get("execution_bias", "unknown")
+    liquidity_draw = record.get("liquidity_draw") or {}
+    primary_draw = liquidity_draw.get("primary_draw") or {}
+    csv_stale = _csv_is_stale(record)
+    news_risk_level = _news_risk_level(record)
+
+    text_by_timeframe = _behavior_text_by_timeframe(record)
+    visual_text_15m = text_by_timeframe.get("15M", "")
+    visual_text_htf = " ".join(
+        text for timeframe, text in text_by_timeframe.items()
+        if timeframe in ["1H", "4H"] and text
+    )
+    visual_text_all = " ".join(text for text in text_by_timeframe.values() if text)
+
+    evidence = []
+    missing_confirmation = []
+    data_limitations = []
+
+    behavior_terms = {
+        "acceptance": [
+            "acceptance",
+            "accepted",
+            "holding above",
+            "hold above",
+            "holds above",
+            "holding below",
+            "hold below",
+            "holds below",
+            "respect",
+            "respected",
+            "support",
+            "defended",
+        ],
+        "rejection": [
+            "rejection",
+            "reject",
+            "rejected",
+            "failure",
+            "failed",
+            "unable to hold",
+            "lost level",
+            "below level",
+            "resistance",
+            "supply",
+            "movement away",
+            "away from",
+        ],
+        "reclaim": [
+            "reclaim",
+            "reclaimed",
+            "recovered",
+            "regained",
+            "back above",
+            "back below",
+            "taken and recovered",
+            "swept and reclaimed",
+        ],
+        "sweep": [
+            "sweep",
+            "swept",
+            "raid",
+            "liquidity taken",
+            "took liquidity",
+            "stop run",
+            "ran stops",
+            "taken but not recovered",
+        ],
+        "displacement": [
+            "displacement",
+            "impulse",
+            "impulsive",
+            "strong move",
+            "expansion",
+            "breakaway",
+            "large candle",
+            "aggressive move",
+        ],
+        "consolidation": [
+            "range",
+            "chop",
+            "sideways",
+            "balanced",
+            "consolidation",
+            "inside range",
+            "avg:",
+            "range:",
+        ],
+    }
+
+    weighted_scores = {classification: 0 for classification in BEHAVIOR_CLASSIFICATIONS}
+
+    for classification, terms in behavior_terms.items():
+        score_15m = _count_terms(visual_text_15m, terms)
+        score_htf = _count_terms(visual_text_htf, terms)
+        weighted_scores[classification] = (score_15m * 2) + score_htf
+
+        if score_15m:
+            _append_term_evidence(evidence, "15M", visual_text_15m, terms)
+        if score_htf:
+            _append_term_evidence(evidence, "1H/4H", visual_text_htf, terms)
+
+    has_reaction_zone = _contains_any(
+        visual_text_all,
+        ["fvg", "pd h", "pdh", "pdl", "pdnyh", "pdnyl", "previous week", "asia", "london"],
+    )
+    has_directional_behavior = any(
+        weighted_scores[item] > 0
+        for item in ["acceptance", "rejection", "reclaim", "sweep", "displacement"]
+    )
+
+    if primary_draw:
+        evidence.append(
+            f"Primary liquidity draw is {primary_draw.get('label')} at {_fmt_draw_price(primary_draw.get('price'))}."
+        )
+
+    if htf_bias != "unknown" or execution_bias != "unknown":
+        evidence.append(f"Bias context: HTF {htf_bias}, execution {execution_bias}.")
+
+    if has_reaction_zone and not has_directional_behavior:
+        if weighted_scores["consolidation"] > 0:
+            classification = "consolidation"
+            confidence = "low"
+            evidence.append("Visuals show marked levels/zones and range context, but no clear directional behavior.")
+        else:
+            classification = "unknown"
+            confidence = "low"
+            evidence.append("Visuals show marked levels/zones, but no clear hold, fail, reclaim, sweep, or displacement behavior.")
+    else:
+        priority = ["reclaim", "sweep", "displacement", "rejection", "acceptance", "consolidation"]
+        classification = max(priority, key=lambda item: (weighted_scores[item], -priority.index(item)))
+
+        if weighted_scores[classification] <= 0:
+            classification = "unknown"
+            confidence = "low"
+            evidence.append("No behavior-specific visual evidence was detected.")
+        elif weighted_scores[classification] >= 4:
+            confidence = "high"
+        elif weighted_scores[classification] >= 2:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
+    if classification not in BEHAVIOR_CLASSIFICATIONS:
+        classification = "unknown"
+        confidence = "low"
+
+    if classification == "acceptance":
+        missing_confirmation.append("Need repeated live candles holding beyond the level or zone.")
+    elif classification == "rejection":
+        missing_confirmation.append("Need visible failure to hold plus movement away from the level or zone.")
+    elif classification == "reclaim":
+        missing_confirmation.append("Need visible evidence that the level was taken and then recovered.")
+    elif classification == "sweep":
+        missing_confirmation.append("Need visible evidence that liquidity was taken and not reclaimed.")
+    elif classification == "displacement":
+        missing_confirmation.append("Need visible strong directional movement away from the reaction zone.")
+    elif classification == "consolidation":
+        missing_confirmation.append("Need cleaner directional behavior around the marked level or FVG.")
+    else:
+        missing_confirmation.append("Need clearer live visual behavior around the marked level or zone.")
+
+    if htf_bias != execution_bias and htf_bias in ["bullish", "bearish"] and execution_bias in ["bullish", "bearish"]:
+        missing_confirmation.append("HTF and execution bias conflict; confidence is capped until structure resolves.")
+
+    if not record.get("vision_success"):
+        data_limitations.append("Primary visual extraction did not succeed.")
+
+    missing_visual_tfs = [
+        timeframe for timeframe in ["15M", "1H", "4H"]
+        if not text_by_timeframe.get(timeframe)
+    ]
+
+    if missing_visual_tfs:
+        data_limitations.append(f"Missing readable visual context for: {', '.join(missing_visual_tfs)}.")
+
+    if csv_stale:
+        data_limitations.append("CSV is stale; live acceptance/rejection is not classified from CSV close.")
+
+    if news_risk_level == "high":
+        data_limitations.append("News Risk is High; behavior quality may be less reliable.")
+    elif news_risk_level == "medium":
+        data_limitations.append("News Risk is Medium; confirmation quality matters more.")
+
+    csv_refresh_limitation = _get_csv_refresh_limitation()
+    if csv_refresh_limitation:
+        data_limitations.append(csv_refresh_limitation)
+
+    live_visual_clear = has_directional_behavior and bool(visual_text_15m)
+    confidence = _cap_confidence_for_context(
+        confidence,
+        htf_bias=htf_bias,
+        execution_bias=execution_bias,
+        csv_stale=csv_stale,
+        live_visual_clear=live_visual_clear,
+        news_risk_level=news_risk_level,
+    )
+
+    if not evidence:
+        evidence.append("No usable behavior evidence was detected.")
+
+    if not data_limitations:
+        data_limitations.append("No major behavior-classification data limitation detected.")
+
+    return {
+        "classification": classification,
+        "confidence": confidence,
+        "evidence": _dedupe_text(evidence),
+        "missing_confirmation": _dedupe_text(missing_confirmation),
+        "data_limitations": _dedupe_text(data_limitations),
+        "does_not_generate_trade_signals": True,
+    }
+
+
+def format_behavior_classification_section(behavior: dict) -> str:
+    classification = str(behavior.get("classification") or "unknown").capitalize()
+    confidence = str(behavior.get("confidence") or "low").capitalize()
+    evidence = behavior.get("evidence") or ["No behavior evidence was available."]
+    missing = behavior.get("missing_confirmation") or ["Need clearer live confirmation."]
+    limitations = behavior.get("data_limitations") or ["No major data limitation detected."]
+
+    lines = [
+        "## Behavior Classification",
+        f"Classification: {classification}",
+        f"Confidence: {confidence}",
+        "",
+        "Evidence:",
+    ]
+    lines.extend(f"- {item}" for item in evidence)
+    lines.extend(["", "Missing confirmation:"])
+    lines.extend(f"- {item}" for item in missing)
+    lines.extend(["", "Data limitations:"])
+    lines.extend(f"- {item}" for item in limitations)
+
+    return "\n".join(lines)
+
+
+def attach_behavior_classification(record: dict) -> None:
+    behavior = classify_behavior(record)
+    record["behavior_classification"] = behavior
+    record["message"] = (
+        (record.get("message") or "")
+        + "\n\n"
+        + format_behavior_classification_section(behavior)
     ).strip()
 
 
@@ -893,6 +1749,7 @@ def build_scan_record(
         "vision_success": visual_extraction.get("success", False),
         "vision_error": visual_extraction.get("error"),
         "csv_success": csv_analysis.get("success", False),
+        "csv_analysis": csv_analysis,
         "csv_freshness": csv_analysis.get("csv_freshness")
         or csv_analysis.get("analysis", {}).get("csv_freshness"),
         "news_risk": result.get("news_risk"),
@@ -1106,6 +1963,8 @@ def run_scan(
             alert=alert,
         )
 
+        attach_liquidity_draw(record)
+        attach_behavior_classification(record)
         attach_opportunity_watch(record)
 
         save_scan_record(record)
