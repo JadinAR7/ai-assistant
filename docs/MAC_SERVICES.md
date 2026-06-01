@@ -93,6 +93,67 @@ Expected response:
 {"status":"backend running"}
 ```
 
+## Manual TTS Test
+
+This endpoint is for manual notification voice testing only. It does not run scanner alert eligibility and does not send iMessages.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/notify/test-tts"
+```
+
+Optional custom message:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/notify/test-tts?message=Helix%20voice%20test%20online"
+```
+
+## Manual iMessage Test
+
+This endpoint is for manual notification iMessage testing only. It does not run scanner alert eligibility and does not trigger TTS.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/notify/test-imessage"
+```
+
+Optional custom message:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/notify/test-imessage?message=Helix%20iMessage%20test%20online"
+```
+
+Optional recipient:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/notify/test-imessage?recipient=YOUR_RECIPIENT&message=Helix%20iMessage%20test%20online"
+```
+
+## Notification Config
+
+This returns notification channel config and a masked default recipient.
+
+```bash
+curl http://127.0.0.1:8000/notify/config
+```
+
+Example response:
+
+```json
+{
+  "imessage_enabled": true,
+  "default_recipient_configured": true,
+  "recipient_source": "env",
+  "default_recipient": "***1234"
+}
+```
+
+## Manual All-Channel Test
+
+This endpoint is for manual notification testing only. It sends a test iMessage and speaks a test TTS message without running scanner alert eligibility.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/notify/test-all"
+```
+
 ## Verify Scanner
 
 ```bash

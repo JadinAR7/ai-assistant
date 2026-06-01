@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from tools import TOOLS, analyze_uploaded_chart_image
 from database import get_connection, log_tool
 from database import init_db, save_message, get_recent_messages, clear_messages
+from notification_config import get_default_imessage_recipient, get_notification_config
 from orbit.database import init_orbit_db
 from orbit.routes import router as orbit_router
 
@@ -1010,40 +1011,147 @@ def get_tool_logs():
     }
 
 # -------------------------
-# TTS endpoint
+# TTS endpoints
 # -------------------------
 class TTSRequest(BaseModel):
     text: str
 
 
-@app.post("/tts/say")
-def tts_say(request: TTSRequest):
+def _speak_text(text: str) -> str:
     import subprocess
 
-    text = request.text.strip()
+    spoken_text = text.strip()
 
-    if not text:
-        return {
-            "success": False,
-            "message": "No text provided.",
-        }
+    if not spoken_text:
+        raise ValueError("No text provided.")
 
     # Keep it reasonable so the Mac doesn't start reading a dissertation.
-    if len(text) > 500:
-        text = text[:500] + "..."
+    if len(spoken_text) > 500:
+        spoken_text = spoken_text[:500] + "..."
 
+    subprocess.Popen(
+        ["say", spoken_text],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    return spoken_text
+
+
+@app.post("/tts/say")
+def tts_say(request: TTSRequest):
     try:
-        subprocess.Popen(
-            ["say", text],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
+        spoken_text = _speak_text(request.text)
+    except ValueError as e:
+        return {
+            "success": False,
+            "message": str(e),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"TTS failed: {e}")
+    else:
         return {
             "success": True,
             "message": "TTS started.",
-            "spoken_text": text,
+            "spoken_text": spoken_text,
         }
 
+
+@app.post("/notify/test-tts")
+def notify_test_tts(message: str | None = None):
+    """Manual-only TTS notification test; bypasses scan alert eligibility."""
+    text = (message or "Helix TTS test is online.").strip()
+
+    try:
+        spoken_text = _speak_text(text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"TTS failed: {e}")
+        return {
+            "success": False,
+            "error": f"TTS failed: {e}",
+        }
+
+    return {
+        "success": True,
+        "message": "Manual TTS notification test started.",
+        "spoken_text": spoken_text,
+    }
+
+
+@app.post("/notify/test-imessage")
+def notify_test_imessage(message: str | None = None, recipient: str | None = None):
+    """Manual-only iMessage notification test; bypasses scan alert eligibility."""
+    from imessage_bridge import send_imessage
+
+    text = (message or "Helix iMessage test is online.").strip()
+    recipient_config = get_default_imessage_recipient(recipient)
+    recipient_used = recipient_config["recipient"]
+
+    if not text:
+        text = "Helix iMessage test is online."
+
+    if not recipient_used:
+        return {
+            "success": False,
+            "error": "No iMessage recipient provided or configured.",
+        }
+
+    try:
+        send_imessage(recipient_used, text)
+    except Exception as e:
+        return {
+            "success": False,
+            "recipient": recipient_config["masked_recipient"],
+            "recipient_source": recipient_config["source"],
+            "error": f"iMessage test failed: {type(e).__name__}",
+        }
+
+    return {
+        "success": True,
+        "message": "Manual iMessage notification test sent.",
+        "recipient": recipient_config["masked_recipient"],
+        "recipient_source": recipient_config["source"],
+    }
+
+
+@app.get("/notify/config")
+def get_notify_config():
+    return get_notification_config()
+
+
+@app.post("/notify/test-all")
+def notify_test_all(message: str | None = None, recipient: str | None = None):
+    """Manual-only notification test; sends iMessage and TTS without scan eligibility."""
+    from imessage_bridge import send_imessage
+
+    text = (message or "Helix notification test is online.").strip()
+    if not text:
+        text = "Helix notification test is online."
+
+    recipient_config = get_default_imessage_recipient(recipient)
+    imessage_sent = False
+    tts_spoken = False
+    errors = []
+
+    if recipient_config["recipient"]:
+        try:
+            send_imessage(recipient_config["recipient"], text)
+            imessage_sent = True
+        except Exception as e:
+            errors.append(f"iMessage test failed: {type(e).__name__}")
+    else:
+        errors.append("No iMessage recipient provided or configured.")
+
+    try:
+        _speak_text(text)
+        tts_spoken = True
+    except Exception as e:
+        errors.append(f"TTS failed: {e}")
+
+    return {
+        "success": imessage_sent and tts_spoken,
+        "imessage_sent": imessage_sent,
+        "tts_spoken": tts_spoken,
+        "recipient": recipient_config["masked_recipient"],
+        "recipient_source": recipient_config["source"],
+        "errors": errors,
+    }

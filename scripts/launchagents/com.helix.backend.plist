@@ -19,13 +19,13 @@
     <key>PYTHONUNBUFFERED</key>
     <string>1</string>
     <key>SCAN_NOTIFY_ENABLED</key>
-    <string>false</string>
+    <string>true</string>
     <key>SCAN_NOTIFY_IMESSAGE_ENABLED</key>
-    <string>false</string>
+    <string>true</string>
     <key>SCAN_NOTIFY_TTS_ENABLED</key>
     <string>false</string>
     <key>SCAN_NOTIFY_IMESSAGE_RECIPIENT</key>
-    <string></string>
+    <string>+17198213384</string>
   </dict>
 
   <key>RunAtLoad</key>

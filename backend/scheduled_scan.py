@@ -9,6 +9,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from news_risk import build_news_risk_summary, format_news_risk_section
+from notification_config import get_default_imessage_recipient
 from tools import (
     analyze_tradingview,
     capture_tradingview,
@@ -29,7 +30,6 @@ TIMEZONE = ZoneInfo("America/Denver")
 SCAN_NOTIFY_ENABLED = os.getenv("SCAN_NOTIFY_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 SCAN_NOTIFY_IMESSAGE_ENABLED = os.getenv("SCAN_NOTIFY_IMESSAGE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 SCAN_NOTIFY_TTS_ENABLED = os.getenv("SCAN_NOTIFY_TTS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-SCAN_NOTIFY_IMESSAGE_RECIPIENT = os.getenv("SCAN_NOTIFY_IMESSAGE_RECIPIENT", "jadinrobinson05@hotmail.com")
 
 BASE_DIR = Path(__file__).resolve().parent
 SCAN_HISTORY_PATH = BASE_DIR / "scan_history.jsonl"
@@ -2913,7 +2913,16 @@ def format_scan_notification_message(payload: dict) -> str:
 def _send_scan_imessage(text: str) -> None:
     from imessage_bridge import send_imessage
 
-    send_imessage(SCAN_NOTIFY_IMESSAGE_RECIPIENT, text)
+    recipient_config = get_default_imessage_recipient()
+    recipient = recipient_config["recipient"]
+
+    if not recipient:
+        raise ValueError("No iMessage recipient provided or configured.")
+
+    try:
+        send_imessage(recipient, text)
+    except Exception as e:
+        raise RuntimeError(f"iMessage send failed: {type(e).__name__}") from e
 
 
 def _speak_scan_notification(text: str) -> None:
