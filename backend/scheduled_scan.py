@@ -2,6 +2,7 @@ import argparse
 import csv
 import json
 import os
+import subprocess
 import time
 from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
@@ -23,6 +24,11 @@ SCAN_TIMEFRAME = "15M"
 SCHEDULED_SCAN_TIMEFRAMES = ["4H", "1H", "15M", "5M"]
 SCAN_INTERVAL_SECONDS = 5 * 60
 TIMEZONE = ZoneInfo("America/Denver")
+
+SCAN_NOTIFY_ENABLED = os.getenv("SCAN_NOTIFY_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+SCAN_NOTIFY_IMESSAGE_ENABLED = os.getenv("SCAN_NOTIFY_IMESSAGE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+SCAN_NOTIFY_TTS_ENABLED = os.getenv("SCAN_NOTIFY_TTS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+SCAN_NOTIFY_IMESSAGE_RECIPIENT = os.getenv("SCAN_NOTIFY_IMESSAGE_RECIPIENT", "jadinrobinson05@hotmail.com")
 
 BASE_DIR = Path(__file__).resolve().parent
 SCAN_HISTORY_PATH = BASE_DIR / "scan_history.jsonl"
@@ -739,7 +745,43 @@ BEHAVIOR_CLASSIFICATIONS = {
     "sweep",
     "displacement",
     "consolidation",
+    "bullish_continuation_compression",
+    "bullish_continuation_expansion",
     "unknown",
+}
+
+GOLDEN_PATTERN_NAME = "HTF FVG sweep -> 1H reclaim/retest -> 5M continuation breakout"
+
+GOLDEN_PATTERN_STEPS = {
+    "sweep_into_htf_fvg": "Price swept/filled into the 4H/1H FVG reaction zone.",
+    "reclaim_of_reaction_zone": "Price reclaimed the reaction zone after the FVG interaction.",
+    "retest_of_1h_fvg": "Price retested or respected the 1H FVG.",
+    "five_min_continuation_fvg": "A 5M FVG is visible as continuation structure.",
+    "continuation_breakout": "Price broke away from the 5M continuation FVG.",
+}
+
+CONTINUATION_PATTERN_NAME = "Bullish Continuation Compression"
+
+CONTINUATION_PATTERN_STEPS = {
+    "htf_bias_bullish": "HTF bias is bullish.",
+    "upside_liquidity_draw": "Primary liquidity draw remains above price.",
+    "draw_is_pdh_or_prior_high": "Upside draw is PDH or a prior high.",
+    "holding_above_key_level": "Price is holding above or around PDH/prior high/key level.",
+    "visible_15m_or_5m_fvg": "15M or 5M FVG is visible as continuation structure.",
+    "compression_not_rejection": "Behavior is compression/consolidation without clear rejection.",
+    "no_clear_5m_breakdown": "5M does not clearly break down.",
+}
+
+EXPANSION_PATTERN_NAME = "Bullish Continuation Expansion"
+
+EXPANSION_PATTERN_STEPS = {
+    "htf_bias_bullish": "HTF bias is bullish.",
+    "upside_liquidity_draw": "Primary liquidity draw remains above price.",
+    "compression_context": "Prior or current behavior is bullish continuation compression.",
+    "five_min_breakout_or_displacement": "5M shows breakout/displacement away from compression.",
+    "holding_above_key_level_or_fvg": "Price is holding above PDH/prior high or continuation FVG.",
+    "no_clear_5m_breakdown": "5M does not clearly break down.",
+    "news_risk_not_high": "News Risk is not High.",
 }
 
 
@@ -826,6 +868,7 @@ def _visual_fvg_timeframe_from_text(text: str) -> str | None:
         ("4H", ["4h fvg", "4hr fvg", "4 hour fvg", "4-hour fvg"]),
         ("1H", ["1h fvg", "1hr fvg", "1 hour fvg", "1-hour fvg"]),
         ("15M", ["15m fvg", "15min fvg", "15 minute fvg", "15-minute fvg"]),
+        ("5M", ["5m fvg", "5min fvg", "5 min fvg", "5 minute fvg", "5-minute fvg"]),
     ]
 
     for timeframe, terms in checks:
@@ -1134,6 +1177,482 @@ def _structure_confirmation(visual_text_5m: str) -> tuple[str, bool, list[str]]:
     return "5M unclear", False, ["5M visual context is present but does not confirm MSS/BOS, reclaim, rejection, or hold."]
 
 
+def _has_visual_fvg_for_timeframe(text: str, timeframe: str) -> bool:
+    terms_by_timeframe = {
+        "4H": ["4h fvg", "4hr fvg", "4 hour fvg", "4-hour fvg"],
+        "1H": ["1h fvg", "1hr fvg", "1 hour fvg", "1-hour fvg"],
+        "15M": ["15m fvg", "15min fvg", "15 min fvg", "15 minute fvg", "15-minute fvg"],
+        "5M": ["5m fvg", "5min fvg", "5 min fvg", "5 minute fvg", "5-minute fvg"],
+    }
+
+    return _contains_any(text, terms_by_timeframe.get(timeframe, []))
+
+
+def _csv_has_fvg_timeframe(record: dict, timeframe: str) -> bool:
+    analysis = (record.get("csv_analysis") or {}).get("analysis") or {}
+    zone_ranking = analysis.get("zone_ranking") or {}
+    zones = []
+    zones.extend(zone_ranking.get("all_ranked_zones") or [])
+
+    active_zone = zone_ranking.get("active_zone")
+    if active_zone:
+        zones.append(active_zone)
+
+    for zone in zones:
+        if str(zone.get("timeframe") or "").upper() == timeframe and zone.get("low") is not None and zone.get("high") is not None:
+            return True
+
+    return False
+
+
+def _detect_golden_pattern_match(
+    record: dict,
+    text_by_timeframe: dict[str, str],
+    *,
+    liquidity_draw_status: str,
+    has_5m_confirmation: bool,
+) -> dict:
+    visual_text_4h = text_by_timeframe.get("4H", "")
+    visual_text_1h = text_by_timeframe.get("1H", "")
+    visual_text_15m = text_by_timeframe.get("15M", "")
+    visual_text_5m = text_by_timeframe.get("5M", "")
+    visual_text_htf = " ".join(text for text in [visual_text_4h, visual_text_1h] if text)
+    visual_text_ltf = " ".join(text for text in [visual_text_15m, visual_text_5m] if text)
+    visual_text_all = " ".join(text for text in text_by_timeframe.values() if text)
+    state = record.get("state") or extract_structured_state(record)
+    price_relation = str(state.get("price_relation") or "")
+
+    has_4h_fvg = _has_visual_fvg_for_timeframe(visual_text_all, "4H") or _csv_has_fvg_timeframe(record, "4H")
+    has_1h_fvg = _has_visual_fvg_for_timeframe(visual_text_all, "1H") or _csv_has_fvg_timeframe(record, "1H")
+    has_5m_fvg = _has_visual_fvg_for_timeframe(visual_text_5m, "5M") or _has_visual_fvg_for_timeframe(visual_text_all, "5M")
+
+    fvg_interaction_terms = [
+        "sweep",
+        "swept",
+        "fill",
+        "filled",
+        "mitigation",
+        "mitigated",
+        "tap",
+        "tapped",
+        "inside",
+        "into",
+        "through",
+        "reaction",
+    ]
+    reclaim_terms = [
+        "reclaim",
+        "reclaimed",
+        "recover",
+        "recovered",
+        "regained",
+        "back above",
+        "back below",
+        "holding above",
+        "hold above",
+        "holds above",
+        "holding below",
+        "hold below",
+        "holds below",
+        "accepted",
+        "acceptance",
+        "swept and reclaimed",
+    ]
+    retest_terms = [
+        "retest",
+        "retested",
+        "test",
+        "tested",
+        "tap",
+        "tapped",
+        "respect",
+        "respected",
+        "defended",
+        "holding above",
+        "holding below",
+        "support",
+        "reaction",
+    ]
+    continuation_fvg_terms = [
+        "continuation",
+        "continue",
+        "5m fvg",
+        "5min fvg",
+        "5 min fvg",
+        "5 minute fvg",
+        "5-minute fvg",
+    ]
+    breakout_terms = [
+        "breakout",
+        "broke out",
+        "break out",
+        "break from",
+        "break above",
+        "break below",
+        "bos",
+        "mss",
+        "break of structure",
+        "market structure shift",
+        "displacement",
+        "expansion",
+        "impulse",
+        "impulsive",
+        "continuation breakout",
+    ]
+
+    htf_fvg_interaction = (
+        has_4h_fvg
+        and has_1h_fvg
+        and (
+            _contains_any(visual_text_htf or visual_text_all, fvg_interaction_terms)
+            or price_relation in ["inside_active_zone", "above_active_zone", "below_active_zone"]
+            or liquidity_draw_status == "fulfilled"
+        )
+    )
+    reclaim_of_reaction_zone = (
+        (has_4h_fvg or has_1h_fvg)
+        and _contains_any(visual_text_all, reclaim_terms)
+    )
+    retest_of_1h_fvg = (
+        has_1h_fvg
+        and (
+            _contains_any(visual_text_1h or visual_text_all, retest_terms)
+            or reclaim_of_reaction_zone
+        )
+    )
+    five_min_continuation_fvg = (
+        has_5m_fvg
+        and (
+            _contains_any(visual_text_ltf or visual_text_all, continuation_fvg_terms)
+            or has_5m_confirmation
+        )
+    )
+    continuation_breakout = (
+        has_5m_fvg
+        and (
+            _contains_any(visual_text_ltf or visual_text_all, breakout_terms)
+            or (has_5m_confirmation and _contains_any(visual_text_ltf, ["break", "bos", "mss", "displacement", "expansion"]))
+        )
+    )
+
+    matched_step_keys = [
+        step
+        for step, matched in [
+            ("sweep_into_htf_fvg", htf_fvg_interaction),
+            ("reclaim_of_reaction_zone", reclaim_of_reaction_zone),
+            ("retest_of_1h_fvg", retest_of_1h_fvg),
+            ("five_min_continuation_fvg", five_min_continuation_fvg),
+            ("continuation_breakout", continuation_breakout),
+        ]
+        if matched
+    ]
+    missing_step_keys = [
+        step for step in GOLDEN_PATTERN_STEPS
+        if step not in matched_step_keys
+    ]
+
+    if len(matched_step_keys) == len(GOLDEN_PATTERN_STEPS):
+        confidence = "high"
+    elif len(matched_step_keys) >= 3 and (
+        five_min_continuation_fvg
+        or continuation_breakout
+        or reclaim_of_reaction_zone
+        or retest_of_1h_fvg
+    ):
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return {
+        "matched": len(missing_step_keys) == 0,
+        "pattern_name": GOLDEN_PATTERN_NAME,
+        "matched_steps": matched_step_keys,
+        "missing_steps": missing_step_keys,
+        "confidence": confidence,
+    }
+
+
+def _primary_draw_is_prior_high(primary_draw: dict) -> bool:
+    key = str(primary_draw.get("key") or "").lower()
+    label = str(primary_draw.get("label") or "").lower()
+    high_terms = ["pdh", "high", "previous week high", "pdnyh", "asia high", "london high"]
+
+    return any(term in key or term in label for term in high_terms)
+
+
+def _detect_continuation_pattern_match(
+    record: dict,
+    text_by_timeframe: dict[str, str],
+    *,
+    weighted_scores: dict[str, int],
+    explicit_consolidation: bool,
+    explicit_rejection: bool,
+    has_5m_confirmation: bool,
+) -> dict:
+    state = record.get("state") or extract_structured_state(record)
+    liquidity_draw = record.get("liquidity_draw") or {}
+    primary_draw = liquidity_draw.get("primary_draw") or {}
+    htf_bias = str(state.get("htf_bias") or "unknown").lower()
+    price_relation = str(state.get("price_relation") or "")
+    visual_text_15m = text_by_timeframe.get("15M", "")
+    visual_text_5m = text_by_timeframe.get("5M", "")
+    visual_text_all = " ".join(text for text in text_by_timeframe.values() if text)
+
+    htf_bias_bullish = htf_bias == "bullish"
+    upside_liquidity_draw = primary_draw.get("side") == "above" and primary_draw.get("untouched") is not False
+    draw_is_pdh_or_prior_high = upside_liquidity_draw and _primary_draw_is_prior_high(primary_draw)
+    visible_15m_or_5m_fvg = (
+        _has_visual_fvg_for_timeframe(visual_text_15m, "15M")
+        or _has_visual_fvg_for_timeframe(visual_text_5m, "5M")
+        or _has_visual_fvg_for_timeframe(visual_text_all, "15M")
+        or _has_visual_fvg_for_timeframe(visual_text_all, "5M")
+    )
+    holding_terms = [
+        "holding above",
+        "hold above",
+        "holds above",
+        "above pdh",
+        "above high",
+        "above previous high",
+        "above prior high",
+        "support",
+        "defended",
+        "accepted",
+        "acceptance",
+    ]
+    key_level_terms = ["pdh", "previous high", "prior high", "pdnyh", "asia high", "london high"]
+    holding_above_key_level = (
+        price_relation in ["above_active_zone", "inside_active_zone"]
+        or _contains_any(visual_text_all, holding_terms)
+        or (_contains_any(visual_text_all, key_level_terms) and primary_draw.get("side") == "above")
+    )
+    compression_terms = [
+        "range",
+        "chop",
+        "sideways",
+        "balanced",
+        "consolidation",
+        "compress",
+        "compression",
+        "inside range",
+        "avg:",
+        "range:",
+    ]
+    compression_not_rejection = (
+        (explicit_consolidation or weighted_scores.get("consolidation", 0) > 0 or _contains_any(visual_text_all, compression_terms))
+        and not explicit_rejection
+        and weighted_scores.get("rejection", 0) == 0
+    )
+    breakdown_terms = [
+        "breakdown",
+        "broke down",
+        "break down",
+        "lost support",
+        "lost level",
+        "failed support",
+        "below pdh",
+        "below prior high",
+        "below previous high",
+        "reject",
+        "rejected",
+        "rejection",
+    ]
+    no_clear_5m_breakdown = not _contains_any(visual_text_5m, breakdown_terms)
+
+    matched_step_keys = [
+        step
+        for step, matched in [
+            ("htf_bias_bullish", htf_bias_bullish),
+            ("upside_liquidity_draw", upside_liquidity_draw),
+            ("draw_is_pdh_or_prior_high", draw_is_pdh_or_prior_high),
+            ("holding_above_key_level", holding_above_key_level),
+            ("visible_15m_or_5m_fvg", visible_15m_or_5m_fvg),
+            ("compression_not_rejection", compression_not_rejection),
+            ("no_clear_5m_breakdown", no_clear_5m_breakdown),
+        ]
+        if matched
+    ]
+    missing_step_keys = [
+        step for step in CONTINUATION_PATTERN_STEPS
+        if step not in matched_step_keys
+    ]
+    matched = bool(
+        htf_bias_bullish
+        and visible_15m_or_5m_fvg
+        and compression_not_rejection
+        and no_clear_5m_breakdown
+        and (upside_liquidity_draw or holding_above_key_level)
+    )
+
+    if has_5m_confirmation and matched and holding_above_key_level and upside_liquidity_draw:
+        confidence = "high"
+    elif matched and upside_liquidity_draw and holding_above_key_level:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return {
+        "matched": matched,
+        "pattern_name": CONTINUATION_PATTERN_NAME,
+        "matched_steps": matched_step_keys,
+        "missing_steps": missing_step_keys,
+        "confidence": confidence,
+    }
+
+
+def _csv_fresh_or_recent(record: dict) -> bool:
+    freshness = record.get("csv_freshness") or {}
+
+    if not isinstance(freshness, dict):
+        return False
+
+    for timeframe in ["15M", "1M"]:
+        item = freshness.get(timeframe) or {}
+
+        if not isinstance(item, dict):
+            continue
+
+        age_minutes = _safe_float(item.get("age_minutes"))
+        threshold_minutes = _safe_float(item.get("threshold_minutes"))
+
+        if item.get("is_stale") is False:
+            return True
+
+        if age_minutes is not None and threshold_minutes is not None and age_minutes <= threshold_minutes * 2:
+            return True
+
+    return False
+
+
+def _detect_expansion_pattern_match(
+    record: dict,
+    text_by_timeframe: dict[str, str],
+    *,
+    continuation_pattern_match: dict,
+    has_5m_confirmation: bool,
+    news_risk_level: str,
+) -> dict:
+    state = record.get("state") or extract_structured_state(record)
+    liquidity_draw = record.get("liquidity_draw") or {}
+    primary_draw = liquidity_draw.get("primary_draw") or {}
+    prior_behavior = record.get("behavior_classification") or {}
+    prior_classification = str(prior_behavior.get("classification") or "").lower()
+    htf_bias = str(state.get("htf_bias") or "unknown").lower()
+    price_relation = str(state.get("price_relation") or "")
+    visual_text_15m = text_by_timeframe.get("15M", "")
+    visual_text_5m = text_by_timeframe.get("5M", "")
+    visual_text_all = " ".join(text for text in text_by_timeframe.values() if text)
+
+    htf_bias_bullish = htf_bias == "bullish"
+    upside_liquidity_draw = primary_draw.get("side") == "above" and primary_draw.get("untouched") is not False
+    compression_context = (
+        prior_classification == "bullish_continuation_compression"
+        or bool(continuation_pattern_match.get("matched"))
+    )
+    breakout_terms = [
+        "breakout",
+        "broke out",
+        "break out",
+        "break above",
+        "bos",
+        "mss",
+        "break of structure",
+        "market structure shift",
+        "displacement",
+        "expansion",
+        "impulse",
+        "impulsive",
+        "strong move",
+        "breakaway",
+    ]
+    five_min_breakout_or_displacement = _contains_any(visual_text_5m, breakout_terms) or (
+        has_5m_confirmation
+        and _contains_any(visual_text_5m, ["break", "bos", "mss", "displacement", "expansion"])
+    )
+    holding_terms = [
+        "holding above",
+        "hold above",
+        "holds above",
+        "above pdh",
+        "above high",
+        "above previous high",
+        "above prior high",
+        "support",
+        "defended",
+        "accepted",
+        "acceptance",
+        "reclaimed",
+        "5m fvg",
+        "5min fvg",
+        "15m fvg",
+        "15min fvg",
+    ]
+    holding_above_key_level_or_fvg = (
+        price_relation in ["above_active_zone", "inside_active_zone"]
+        or _contains_any(visual_text_all, holding_terms)
+        or _has_visual_fvg_for_timeframe(visual_text_15m, "15M")
+        or _has_visual_fvg_for_timeframe(visual_text_5m, "5M")
+    )
+    breakdown_terms = [
+        "breakdown",
+        "broke down",
+        "break down",
+        "lost support",
+        "lost level",
+        "failed support",
+        "below pdh",
+        "below prior high",
+        "below previous high",
+        "reject",
+        "rejected",
+        "rejection",
+    ]
+    no_clear_5m_breakdown = not _contains_any(visual_text_5m, breakdown_terms)
+    news_risk_not_high = news_risk_level != "high"
+
+    matched_step_keys = [
+        step
+        for step, matched in [
+            ("htf_bias_bullish", htf_bias_bullish),
+            ("upside_liquidity_draw", upside_liquidity_draw),
+            ("compression_context", compression_context),
+            ("five_min_breakout_or_displacement", five_min_breakout_or_displacement),
+            ("holding_above_key_level_or_fvg", holding_above_key_level_or_fvg),
+            ("no_clear_5m_breakdown", no_clear_5m_breakdown),
+            ("news_risk_not_high", news_risk_not_high),
+        ]
+        if matched
+    ]
+    missing_step_keys = [
+        step for step in EXPANSION_PATTERN_STEPS
+        if step not in matched_step_keys
+    ]
+    matched = bool(
+        htf_bias_bullish
+        and upside_liquidity_draw
+        and compression_context
+        and five_min_breakout_or_displacement
+        and holding_above_key_level_or_fvg
+        and no_clear_5m_breakdown
+        and news_risk_not_high
+    )
+
+    if matched and has_5m_confirmation and _csv_fresh_or_recent(record):
+        confidence = "high"
+    elif matched:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return {
+        "matched": matched,
+        "pattern_name": EXPANSION_PATTERN_NAME,
+        "matched_steps": matched_step_keys,
+        "missing_steps": missing_step_keys,
+        "confidence": confidence,
+    }
+
+
 def _get_csv_refresh_limitation() -> str | None:
     try:
         from csv_refresh import get_csv_refresh_status
@@ -1219,6 +1738,12 @@ def classify_behavior(record: dict) -> dict:
     behavior_location = _behavior_location(record, active_zone, visual_text_all)
     liquidity_draw_status, draw_status_evidence = _liquidity_draw_status(record, visual_text_all)
     structure_confirmation, has_5m_confirmation, structure_missing = _structure_confirmation(visual_text_5m)
+    golden_pattern_match = _detect_golden_pattern_match(
+        record,
+        text_by_timeframe,
+        liquidity_draw_status=liquidity_draw_status,
+        has_5m_confirmation=has_5m_confirmation,
+    )
 
     behavior_terms = {
         "acceptance": [
@@ -1373,8 +1898,55 @@ def classify_behavior(record: dict) -> dict:
     explicit_consolidation = weighted_scores["consolidation"] > 0 and (
         has_reaction_zone or not has_directional_behavior
     )
+    continuation_pattern_match = _detect_continuation_pattern_match(
+        record,
+        text_by_timeframe,
+        weighted_scores=weighted_scores,
+        explicit_consolidation=explicit_consolidation,
+        explicit_rejection=explicit_rejection,
+        has_5m_confirmation=has_5m_confirmation,
+    )
+    expansion_pattern_match = _detect_expansion_pattern_match(
+        record,
+        text_by_timeframe,
+        continuation_pattern_match=continuation_pattern_match,
+        has_5m_confirmation=has_5m_confirmation,
+        news_risk_level=news_risk_level,
+    )
+    golden_steps = set(golden_pattern_match.get("matched_steps") or [])
+    golden_reclaim_or_retest = bool(
+        "sweep_into_htf_fvg" in golden_steps
+        and (
+            "reclaim_of_reaction_zone" in golden_steps
+            or "retest_of_1h_fvg" in golden_steps
+        )
+    )
+    golden_continuation_breakout = bool(
+        "five_min_continuation_fvg" in golden_steps
+        and "continuation_breakout" in golden_steps
+    )
 
-    if explicit_reclaim:
+    if golden_reclaim_or_retest and not explicit_reclaim:
+        explicit_reclaim = True
+        evidence.append("Golden pattern logic: HTF/1H FVG interaction plus reclaim/retest evidence upgrades behavior toward reclaim.")
+
+    if golden_continuation_breakout and not explicit_displacement:
+        explicit_displacement = True
+        evidence.append("Golden pattern logic: 5M continuation FVG plus breakout evidence upgrades behavior toward displacement.")
+
+    if continuation_pattern_match.get("matched") and explicit_consolidation:
+        evidence.append("Continuation pattern logic: compression is aligned with bullish HTF bias, upside liquidity, and visible 15M/5M FVG context.")
+
+    if expansion_pattern_match.get("matched"):
+        evidence.append("Expansion pattern logic: bullish compression context has 5M breakout/displacement evidence without a clear breakdown.")
+
+    if expansion_pattern_match.get("matched"):
+        classification = "bullish_continuation_expansion"
+        evidence.append("Behavior logic: bullish continuation compression is expanding away from the 5M structure.")
+    elif explicit_displacement and golden_continuation_breakout:
+        classification = "displacement"
+        evidence.append("Behavior logic: the golden-pattern continuation leg shows breakout/displacement from the 5M FVG.")
+    elif explicit_reclaim:
         classification = "reclaim"
         evidence.append("Behavior logic: liquidity was swept/lost and then regained in the available visual context.")
     elif explicit_rejection:
@@ -1389,6 +1961,9 @@ def classify_behavior(record: dict) -> dict:
     elif explicit_displacement:
         classification = "displacement"
         evidence.append("Behavior logic: visual context describes a strong directional move away from the zone/level.")
+    elif continuation_pattern_match.get("matched") and explicit_consolidation:
+        classification = "bullish_continuation_compression"
+        evidence.append("Behavior logic: price is compressing in bullish continuation context rather than neutral consolidation.")
     elif explicit_consolidation:
         classification = "consolidation"
         evidence.append("Behavior logic: price appears to be ranging or compressing around the marked zone/level.")
@@ -1405,6 +1980,10 @@ def classify_behavior(record: dict) -> dict:
     classification_score = weighted_scores.get(classification, 0)
     if classification == "unknown":
         confidence = "low"
+    elif classification == "bullish_continuation_expansion":
+        confidence = str(expansion_pattern_match.get("confidence") or "medium")
+    elif classification == "bullish_continuation_compression":
+        confidence = str(continuation_pattern_match.get("confidence") or "low")
     elif classification_score >= 7 and has_15m_directional_behavior and (has_5m_confirmation or has_htf_context):
         confidence = "high"
     elif classification_score >= 3 or has_15m_directional_behavior:
@@ -1422,6 +2001,10 @@ def classify_behavior(record: dict) -> dict:
         missing_confirmation.append("Need visible evidence that liquidity was taken and not reclaimed.")
     elif classification == "displacement":
         missing_confirmation.append("Need visible strong directional movement away from the reaction zone.")
+    elif classification == "bullish_continuation_compression":
+        missing_confirmation.append("Need 5M continuation confirmation to upgrade compression from watch context to cleaner behavior.")
+    elif classification == "bullish_continuation_expansion":
+        missing_confirmation.append("Need sustained 5M hold above the expansion structure for higher confidence.")
     elif classification == "consolidation":
         missing_confirmation.append("Need cleaner directional behavior around the marked level or FVG.")
     else:
@@ -1461,8 +2044,18 @@ def classify_behavior(record: dict) -> dict:
     if csv_refresh_limitation:
         data_limitations.append(csv_refresh_limitation)
 
-    live_visual_clear = has_directional_behavior and bool(visual_text_15m)
-    strong_visual_evidence = bool(has_15m_directional_behavior and (has_5m_confirmation or has_htf_context))
+    continuation_pattern_detected = bool(continuation_pattern_match.get("matched"))
+    expansion_pattern_detected = bool(expansion_pattern_match.get("matched"))
+    live_visual_clear = (has_directional_behavior and bool(visual_text_15m)) or continuation_pattern_detected or expansion_pattern_detected
+    strong_visual_evidence = bool(
+        has_15m_directional_behavior and (has_5m_confirmation or has_htf_context)
+    ) or bool(
+        classification == "bullish_continuation_compression"
+        and continuation_pattern_match.get("confidence") in ["medium", "high"]
+    ) or bool(
+        classification == "bullish_continuation_expansion"
+        and expansion_pattern_match.get("confidence") in ["medium", "high"]
+    )
     confidence = _cap_confidence_for_context(
         confidence,
         htf_bias=htf_bias,
@@ -1481,12 +2074,16 @@ def classify_behavior(record: dict) -> dict:
         data_limitations.append("No major behavior-classification data limitation detected.")
 
     return {
+        "behavior_classification_version": "v3",
         "classification": classification,
         "liquidity_draw_status": liquidity_draw_status,
         "reaction_zone": reaction_zone,
         "behavior_location": behavior_location,
         "structure_confirmation": structure_confirmation,
         "confidence": confidence,
+        "golden_pattern_match": golden_pattern_match,
+        "continuation_pattern_match": continuation_pattern_match,
+        "expansion_pattern_match": expansion_pattern_match,
         "evidence": _dedupe_text(evidence),
         "missing_confirmation": _dedupe_text(missing_confirmation),
         "data_limitations": _dedupe_text(data_limitations),
@@ -1494,8 +2091,109 @@ def classify_behavior(record: dict) -> dict:
     }
 
 
+def _format_golden_pattern_match_state(golden_pattern_match: dict) -> str:
+    if golden_pattern_match.get("matched"):
+        return "Yes"
+
+    if golden_pattern_match.get("matched_steps"):
+        return "Partial"
+
+    return "No"
+
+
+def _format_behavior_label(classification: str) -> str:
+    return classification.replace("_", " ").title()
+
+
+def format_golden_pattern_check_section(golden_pattern_match: dict) -> str:
+    matched_steps = golden_pattern_match.get("matched_steps") or []
+    missing_steps = golden_pattern_match.get("missing_steps")
+    if missing_steps is None:
+        missing_steps = list(GOLDEN_PATTERN_STEPS.keys())
+
+    lines = [
+        "## Golden Pattern Check",
+        f"Pattern: {golden_pattern_match.get('pattern_name') or GOLDEN_PATTERN_NAME}",
+        f"Matched: {_format_golden_pattern_match_state(golden_pattern_match)}",
+        "",
+        "Matched steps:",
+    ]
+
+    if matched_steps:
+        lines.extend(f"- {GOLDEN_PATTERN_STEPS.get(step, step)}" for step in matched_steps)
+    else:
+        lines.append("- None detected.")
+
+    lines.extend(["", "Missing steps:"])
+
+    if missing_steps:
+        lines.extend(f"- {GOLDEN_PATTERN_STEPS.get(step, step)}" for step in missing_steps)
+    else:
+        lines.append("- None.")
+
+    return "\n".join(lines)
+
+
+def format_continuation_pattern_check_section(continuation_pattern_match: dict) -> str:
+    matched_steps = continuation_pattern_match.get("matched_steps") or []
+    missing_steps = continuation_pattern_match.get("missing_steps")
+    if missing_steps is None:
+        missing_steps = list(CONTINUATION_PATTERN_STEPS.keys())
+
+    lines = [
+        "## Continuation Pattern Check",
+        f"Pattern: {continuation_pattern_match.get('pattern_name') or CONTINUATION_PATTERN_NAME}",
+        f"Matched: {_format_golden_pattern_match_state(continuation_pattern_match)}",
+        "",
+        "Matched steps:",
+    ]
+
+    if matched_steps:
+        lines.extend(f"- {CONTINUATION_PATTERN_STEPS.get(step, step)}" for step in matched_steps)
+    else:
+        lines.append("- None detected.")
+
+    lines.extend(["", "Missing steps:"])
+
+    if missing_steps:
+        lines.extend(f"- {CONTINUATION_PATTERN_STEPS.get(step, step)}" for step in missing_steps)
+    else:
+        lines.append("- None.")
+
+    return "\n".join(lines)
+
+
+def format_expansion_pattern_check_section(expansion_pattern_match: dict) -> str:
+    matched_steps = expansion_pattern_match.get("matched_steps") or []
+    missing_steps = expansion_pattern_match.get("missing_steps")
+    if missing_steps is None:
+        missing_steps = list(EXPANSION_PATTERN_STEPS.keys())
+
+    lines = [
+        "## Expansion Pattern Check",
+        f"Pattern: {expansion_pattern_match.get('pattern_name') or EXPANSION_PATTERN_NAME}",
+        f"Matched: {_format_golden_pattern_match_state(expansion_pattern_match)}",
+        "",
+        "Matched steps:",
+    ]
+
+    if matched_steps:
+        lines.extend(f"- {EXPANSION_PATTERN_STEPS.get(step, step)}" for step in matched_steps)
+    else:
+        lines.append("- None detected.")
+
+    lines.extend(["", "Missing steps:"])
+
+    if missing_steps:
+        lines.extend(f"- {EXPANSION_PATTERN_STEPS.get(step, step)}" for step in missing_steps)
+    else:
+        lines.append("- None.")
+
+    return "\n".join(lines)
+
+
 def format_behavior_classification_section(behavior: dict) -> str:
-    classification = str(behavior.get("classification") or "unknown").capitalize()
+    classification = _format_behavior_label(str(behavior.get("classification") or "unknown"))
     liquidity_draw_status = str(behavior.get("liquidity_draw_status") or "unclear").capitalize()
     reaction_zone = behavior.get("reaction_zone") or "Unclear"
     behavior_location = behavior.get("behavior_location") or "Unclear"
@@ -1504,6 +2202,27 @@ def format_behavior_classification_section(behavior: dict) -> str:
     evidence = behavior.get("evidence") or ["No behavior evidence was available."]
     missing = behavior.get("missing_confirmation") or ["Need clearer live confirmation."]
     limitations = behavior.get("data_limitations") or ["No major data limitation detected."]
+    golden_pattern_match = behavior.get("golden_pattern_match") or {
+        "matched": False,
+        "pattern_name": GOLDEN_PATTERN_NAME,
+        "matched_steps": [],
+        "missing_steps": list(GOLDEN_PATTERN_STEPS.keys()),
+        "confidence": "low",
+    }
+    continuation_pattern_match = behavior.get("continuation_pattern_match") or {
+        "matched": False,
+        "pattern_name": CONTINUATION_PATTERN_NAME,
+        "matched_steps": [],
+        "missing_steps": list(CONTINUATION_PATTERN_STEPS.keys()),
+        "confidence": "low",
+    }
+    expansion_pattern_match = behavior.get("expansion_pattern_match") or {
+        "matched": False,
+        "pattern_name": EXPANSION_PATTERN_NAME,
+        "matched_steps": [],
+        "missing_steps": list(EXPANSION_PATTERN_STEPS.keys()),
+        "confidence": "low",
+    }
 
     lines = [
         "## Behavior Classification",
@@ -1522,6 +2241,9 @@ def format_behavior_classification_section(behavior: dict) -> str:
     lines.extend(f"- {item}" for item in missing)
     lines.extend(["", "Data limitations:"])
     lines.extend(f"- {item}" for item in limitations)
+    lines.extend(["", format_golden_pattern_check_section(golden_pattern_match)])
+    lines.extend(["", format_continuation_pattern_check_section(continuation_pattern_match)])
+    lines.extend(["", format_expansion_pattern_check_section(expansion_pattern_match)])
 
     return "\n".join(lines)
 
@@ -1824,6 +2546,374 @@ def attach_opportunity_watch(record: dict) -> None:
         + "\n\n"
         + format_opportunity_watch_section(opportunity)
     ).strip()
+
+
+# -------------------------
+# Alert eligibility v1
+# -------------------------
+ALERT_ELIGIBILITY_LEVELS = ["none", "low", "medium", "high"]
+
+
+def _level_rank(level: str) -> int:
+    try:
+        return ALERT_ELIGIBILITY_LEVELS.index(level)
+    except ValueError:
+        return 0
+
+
+def _min_level(level: str, cap: str) -> str:
+    return level if _level_rank(level) <= _level_rank(cap) else cap
+
+
+def _major_state_change(comparison: dict | None) -> tuple[bool, list[str]]:
+    comparison = comparison or {}
+    market_changes = comparison.get("market_changes") or []
+
+    changes = [
+        str(item).strip()
+        for item in market_changes
+        if item
+        and "No major market structure change detected" not in str(item)
+        and "No previous successful scan found for comparison" not in str(item)
+    ]
+
+    return bool(changes), changes
+
+
+def _strong_visual_evidence(record: dict) -> bool:
+    behavior = record.get("behavior_classification") or {}
+    classification = str(behavior.get("classification") or "unknown").lower()
+    confidence = str(behavior.get("confidence") or "low").lower()
+    structure_confirmation = str(behavior.get("structure_confirmation") or "").lower()
+    expansion_match = behavior.get("expansion_pattern_match") or {}
+
+    directional_confirmation = (
+        classification in [
+            "acceptance",
+            "rejection",
+            "reclaim",
+            "sweep",
+            "displacement",
+            "bullish_continuation_compression",
+            "bullish_continuation_expansion",
+        ]
+        and confidence in ["medium", "high"]
+        and "5m confirms" in structure_confirmation
+    )
+    expansion_confirmation = (
+        classification == "bullish_continuation_expansion"
+        and confidence in ["medium", "high"]
+        and bool(expansion_match.get("matched"))
+    )
+
+    return directional_confirmation or expansion_confirmation
+
+
+def evaluate_chart_alert_eligibility(record: dict) -> dict:
+    """
+    Classifies whether Jadin should be notified to look at the chart.
+
+    This is notification triage only. It does not create trade signals, entries,
+    stop losses, targets, or any outbound message.
+    """
+    opportunity = record.get("opportunity_watch") or {}
+    behavior = record.get("behavior_classification") or {}
+    liquidity_draw = record.get("liquidity_draw") or {}
+    state = record.get("state") or extract_structured_state(record)
+    comparison = record.get("comparison") or {}
+
+    opportunity_type = str(opportunity.get("opportunity_type") or "no_opportunity")
+    opportunity_confidence = str(opportunity.get("confidence") or "low").lower()
+    behavior_classification = str(behavior.get("classification") or "unknown").lower()
+    behavior_confidence = str(behavior.get("confidence") or "low").lower()
+    structure_confirmation = str(behavior.get("structure_confirmation") or "5M unclear")
+    has_5m_confirmation = "5m confirms" in structure_confirmation.lower()
+    htf_bias = state.get("htf_bias") or "unknown"
+    execution_bias = state.get("execution_bias") or "unknown"
+    news_risk_level = _news_risk_level(record)
+    csv_stale = _csv_is_stale(record)
+    strong_visual = _strong_visual_evidence(record)
+    major_change, major_change_reasons = _major_state_change(comparison)
+
+    clean_behavior = behavior_classification in [
+        "acceptance",
+        "rejection",
+        "reclaim",
+        "sweep",
+        "displacement",
+        "bullish_continuation_compression",
+        "bullish_continuation_expansion",
+    ]
+
+    reasons = []
+    blockers = []
+    what_to_watch_next = []
+
+    if opportunity_type == "no_opportunity":
+        level = "none"
+        blockers.append("Opportunity Watch is No Opportunity.")
+        what_to_watch_next.extend(opportunity.get("next_confirmation_needed") or [])
+    elif opportunity_confidence == "low":
+        level = "medium" if major_change else "low"
+        reasons.append(f"Opportunity Watch is {OPPORTUNITY_TYPE_LABELS.get(opportunity_type, opportunity_type)} with low confidence.")
+        if major_change:
+            reasons.extend(major_change_reasons)
+        else:
+            blockers.append("Low-confidence opportunity keeps notification eligibility low without a major state change.")
+    elif opportunity_confidence == "medium" and clean_behavior:
+        level = "medium"
+        reasons.append(f"Opportunity Watch is {OPPORTUNITY_TYPE_LABELS.get(opportunity_type, opportunity_type)} with medium confidence.")
+        reasons.append(f"Behavior is clean enough to review: {behavior_classification}.")
+    elif opportunity_confidence == "high" and clean_behavior and news_risk_level == "low":
+        level = "high"
+        reasons.append(f"Opportunity Watch is {OPPORTUNITY_TYPE_LABELS.get(opportunity_type, opportunity_type)} with high confidence.")
+        reasons.append(f"Behavior is clean enough to review: {behavior_classification}.")
+        reasons.append("News Risk is Low.")
+    elif clean_behavior:
+        level = "low"
+        reasons.append(f"Opportunity Watch is {OPPORTUNITY_TYPE_LABELS.get(opportunity_type, opportunity_type)}.")
+        blockers.append(f"Opportunity confidence is {opportunity_confidence}, below the threshold for medium eligibility.")
+    else:
+        level = "low"
+        reasons.append(f"Opportunity Watch is {OPPORTUNITY_TYPE_LABELS.get(opportunity_type, opportunity_type)}.")
+        blockers.append(f"Behavior classification is {behavior_classification}, not clean directional behavior.")
+
+    if behavior_classification in ["consolidation", "unknown"]:
+        level = _min_level(level, "low")
+        blockers.append(f"Behavior classification is {behavior_classification}, which caps eligibility at Low.")
+
+    if behavior_classification == "bullish_continuation_compression" and not major_change:
+        level = _min_level(level, "low")
+        blockers.append("Bullish continuation compression is watch context only until expansion or a major state change appears.")
+
+    if news_risk_level == "high":
+        level = _min_level(level, "medium")
+        blockers.append("News Risk is High, which caps eligibility at Medium.")
+    elif news_risk_level == "medium":
+        blockers.append("News Risk is Medium; notification requires cleaner confirmation.")
+
+    if csv_stale:
+        if strong_visual:
+            reasons.append("CSV is stale, but visual evidence is strong enough to avoid the Low cap.")
+        else:
+            level = _min_level(level, "low")
+            blockers.append("CSV is stale and visual evidence is not strong enough to exceed Low eligibility.")
+
+    if behavior_classification == "bullish_continuation_expansion":
+        expansion_can_notify = (
+            opportunity_type != "no_opportunity"
+            and news_risk_level in ["low", "medium"]
+            and (_csv_fresh_or_recent(record) or strong_visual)
+        )
+
+        if expansion_can_notify and _level_rank(level) < _level_rank("medium"):
+            level = "medium"
+            reasons.append("Bullish continuation expansion is matched with sufficient freshness or strong visual evidence.")
+            blockers = [
+                blocker for blocker in blockers
+                if "keeps notification eligibility low" not in blocker
+            ]
+        elif not expansion_can_notify:
+            level = _min_level(level, "low")
+            blockers.append("Bullish continuation expansion needs Low/Medium news risk plus fresh/recent CSV or strong visuals before notification.")
+
+    if not has_5m_confirmation:
+        if level == "high":
+            level = "medium"
+        elif level == "medium" and behavior_confidence == "low":
+            level = "low"
+        blockers.append("5M structure confirmation is unclear, so eligibility is capped at Low/Medium.")
+    else:
+        reasons.append(structure_confirmation)
+
+    primary_draw = (liquidity_draw.get("primary_draw") or {}).get("label")
+    liquidity_confidence = liquidity_draw.get("confidence")
+    if primary_draw:
+        reasons.append(f"Liquidity Draw points to {primary_draw} with {liquidity_confidence or 'unknown'} confidence.")
+
+    if htf_bias != "unknown" or execution_bias != "unknown":
+        reasons.append(f"Bias context: HTF {htf_bias}, execution {execution_bias}.")
+
+    if (
+        behavior_classification != "bullish_continuation_expansion"
+        and htf_bias != execution_bias
+        and htf_bias in ["bullish", "bearish"]
+        and execution_bias in ["bullish", "bearish"]
+    ):
+        blockers.append("HTF bias and execution bias conflict; chart review needs structure resolution.")
+
+    what_to_watch_next.extend(opportunity.get("next_confirmation_needed") or [])
+    what_to_watch_next.extend(behavior.get("missing_confirmation") or [])
+
+    if primary_draw:
+        what_to_watch_next.append(f"Watch whether price continues toward, sweeps, rejects, or reclaims {primary_draw}.")
+
+    if not what_to_watch_next:
+        what_to_watch_next.append("Wait for clearer opportunity, behavior, and 5M structure confirmation.")
+
+    if not reasons and level == "none":
+        reasons.append("No notification-worthy chart-review context is active.")
+
+    blockers = _dedupe_text(blockers)
+    reasons = _dedupe_text(reasons)
+    what_to_watch_next = _dedupe_text(what_to_watch_next)
+    should_notify = level in ["medium", "high"]
+
+    return {
+        "level": level,
+        "should_notify": should_notify,
+        "reasons": reasons,
+        "blockers": blockers,
+        "what_to_watch_next": what_to_watch_next,
+        "does_not_generate_trade_signals": True,
+    }
+
+
+def format_alert_eligibility_section(alert_eligibility: dict) -> str:
+    level = str(alert_eligibility.get("level") or "none").capitalize()
+    notify = "Yes" if alert_eligibility.get("should_notify") else "No"
+    reasons = alert_eligibility.get("reasons") or ["No notification-worthy chart-review context is active."]
+    blockers = alert_eligibility.get("blockers") or ["No blocker recorded."]
+    what_to_watch_next = alert_eligibility.get("what_to_watch_next") or [
+        "Wait for clearer opportunity, behavior, and 5M structure confirmation."
+    ]
+
+    lines = [
+        "## Alert Eligibility",
+        f"Level: {level}",
+        f"Notify: {notify}",
+        "",
+        "Reasons:",
+    ]
+    lines.extend(f"- {item}" for item in reasons)
+    lines.extend(["", "Blockers:"])
+    lines.extend(f"- {item}" for item in blockers)
+    lines.extend(["", "What to watch next:"])
+    lines.extend(f"- {item}" for item in what_to_watch_next)
+
+    return "\n".join(lines)
+
+
+def attach_alert_eligibility(record: dict) -> None:
+    alert_eligibility = evaluate_chart_alert_eligibility(record)
+    record["alert_eligibility"] = alert_eligibility
+    record["message"] = (
+        (record.get("message") or "")
+        + "\n\n"
+        + format_alert_eligibility_section(alert_eligibility)
+    ).strip()
+
+
+# -------------------------
+# Smart scan notifications
+# -------------------------
+def _default_notification_status(record: dict | None = None) -> dict:
+    alert_eligibility = (record or {}).get("alert_eligibility") or {}
+
+    return {
+        "enabled": bool(SCAN_NOTIFY_ENABLED),
+        "should_notify": bool(alert_eligibility.get("should_notify")),
+        "imessage_sent": False,
+        "tts_spoken": False,
+        "errors": [],
+    }
+
+
+def _format_notification_behavior_label(classification: str) -> str:
+    return classification.replace("_", " ").title()
+
+
+def _format_notification_draw(liquidity_draw: dict) -> str:
+    primary_draw = liquidity_draw.get("primary_draw") or {}
+    label = primary_draw.get("label") or "Unclear"
+    price = primary_draw.get("price")
+
+    if price is None:
+        return str(label)
+
+    return f"{label} {_fmt_draw_price(price)}"
+
+
+def build_scan_notification_payload(record: dict) -> dict:
+    alert_eligibility = record.get("alert_eligibility") or {}
+    behavior = record.get("behavior_classification") or {}
+    liquidity_draw = record.get("liquidity_draw") or {}
+
+    return {
+        "symbol": record.get("symbol") or SYMBOL,
+        "timestamp": record.get("timestamp"),
+        "level": str(alert_eligibility.get("level") or "none").capitalize(),
+        "behavior_classification": str(behavior.get("classification") or "unknown"),
+        "liquidity_draw": _format_notification_draw(liquidity_draw),
+        "what_to_watch_next": alert_eligibility.get("what_to_watch_next") or [],
+        "screenshot_path": record.get("screenshot_path"),
+    }
+
+
+def format_scan_notification_message(payload: dict) -> str:
+    behavior = _format_notification_behavior_label(str(payload.get("behavior_classification") or "unknown"))
+    watch_items = payload.get("what_to_watch_next") or []
+    watch = str(watch_items[0]) if watch_items else "Watch for 5M continuation and key-level hold."
+
+    if len(watch) > 90:
+        watch = watch[:87].rstrip() + "..."
+
+    lines = [
+        f"{payload.get('symbol') or SYMBOL} Alert: {behavior}",
+        f"Level: {payload.get('level') or 'None'}",
+        f"Draw: {payload.get('liquidity_draw') or 'Unclear'}",
+        f"Watch: {watch}",
+    ]
+
+    if payload.get("screenshot_path"):
+        lines.append(f"Screenshot: {payload.get('screenshot_path')}")
+
+    return "\n".join(lines)
+
+
+def _send_scan_imessage(text: str) -> None:
+    from imessage_bridge import send_imessage
+
+    send_imessage(SCAN_NOTIFY_IMESSAGE_RECIPIENT, text)
+
+
+def _speak_scan_notification(text: str) -> None:
+    subprocess.Popen(
+        ["say", text[:500]],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def deliver_scan_notification(record: dict) -> dict:
+    status = _default_notification_status(record)
+
+    if not status["enabled"] or not status["should_notify"]:
+        record["notification_status"] = status
+        return status
+
+    payload = build_scan_notification_payload(record)
+    message = format_scan_notification_message(payload)
+
+    if SCAN_NOTIFY_IMESSAGE_ENABLED:
+        try:
+            _send_scan_imessage(message)
+            status["imessage_sent"] = True
+        except Exception as e:
+            status["errors"].append(f"iMessage notification failed: {e}")
+
+    if SCAN_NOTIFY_TTS_ENABLED:
+        try:
+            _speak_scan_notification(message)
+            status["tts_spoken"] = True
+        except Exception as e:
+            status["errors"].append(f"TTS notification failed: {e}")
+
+    if not SCAN_NOTIFY_IMESSAGE_ENABLED and not SCAN_NOTIFY_TTS_ENABLED:
+        status["errors"].append("Notifications enabled, but no delivery channel is enabled.")
+
+    record["notification_status"] = status
+    return status
 
 
 # -------------------------
@@ -2206,6 +3296,21 @@ def build_scan_record(
             "severity": "none",
             "reasons": [],
         },
+        "alert_eligibility": {
+            "level": "none",
+            "should_notify": False,
+            "reasons": [],
+            "blockers": [],
+            "what_to_watch_next": [],
+            "does_not_generate_trade_signals": True,
+        },
+        "notification_status": {
+            "enabled": bool(SCAN_NOTIFY_ENABLED),
+            "should_notify": False,
+            "imessage_sent": False,
+            "tts_spoken": False,
+            "errors": [],
+        },
     }
 
     record["state"] = extract_structured_state(record)
@@ -2407,6 +3512,8 @@ def run_scan(
         attach_liquidity_draw(record)
         attach_behavior_classification(record)
         attach_opportunity_watch(record)
+        attach_alert_eligibility(record)
+        deliver_scan_notification(record)
 
         save_scan_record(record)
 
@@ -2454,6 +3561,18 @@ def run_scan(
         for item in alert.get("reasons", []):
             print("-", item)
 
+        print()
+        print("Alert eligibility:")
+        alert_eligibility = record.get("alert_eligibility", {})
+        print("Level:", alert_eligibility.get("level"))
+        print("Notify:", alert_eligibility.get("should_notify"))
+        print("Reasons:")
+        for item in alert_eligibility.get("reasons", []):
+            print("-", item)
+        print("Blockers:")
+        for item in alert_eligibility.get("blockers", []):
+            print("-", item)
+
         return record
 
     except Exception as e:
@@ -2467,6 +3586,21 @@ def run_scan(
             "session_label": session_label,
             "success": False,
             "error": str(e),
+            "alert_eligibility": {
+                "level": "none",
+                "should_notify": False,
+                "reasons": ["Scan failed before alert eligibility could be evaluated."],
+                "blockers": [str(e)],
+                "what_to_watch_next": ["Fix the scan failure, then rerun MES chart review."],
+                "does_not_generate_trade_signals": True,
+            },
+            "notification_status": {
+                "enabled": bool(SCAN_NOTIFY_ENABLED),
+                "should_notify": False,
+                "imessage_sent": False,
+                "tts_spoken": False,
+                "errors": [],
+            },
         }
 
         save_scan_record(error_record)
