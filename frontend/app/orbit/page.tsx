@@ -80,12 +80,14 @@ async function getOrbitData() {
   const event = majorEvents.find(
     (majorEvent) => majorEvent.title === CORPORATE_ESCAPE_TITLE,
   );
+  const eventMilestones = event
+    ? milestones.filter((milestone) => milestone.major_event_id === event.id)
+    : [];
+  const milestoneTasksById = await getMilestoneTasksById(eventMilestones);
 
   return {
     event,
-    milestones: event
-      ? milestones.filter((milestone) => milestone.major_event_id === event.id)
-      : [],
+    milestones: eventMilestones,
     reviews: getLatestReviews(reviewsResult.reviews),
     reviewsError: reviewsResult.error,
     readiness: event
@@ -98,7 +100,25 @@ async function getOrbitData() {
     morningBriefingError: briefingResult.error,
     inboxTasks: inboxTasksResult.inboxTasks,
     inboxTasksError: inboxTasksResult.error,
+    milestoneTasksById,
   };
+}
+
+async function getMilestoneTasksById(milestones: Milestone[]) {
+  const entries = await Promise.all(
+    milestones.map(async (milestone) => {
+      try {
+        const tasks = await fetchJson<InboxTask[]>(
+          `${MILESTONES_URL}/${milestone.id}/tasks`,
+        );
+        return [milestone.id, tasks] as const;
+      } catch {
+        return [milestone.id, []] as const;
+      }
+    }),
+  );
+
+  return Object.fromEntries(entries) as Record<number, InboxTask[]>;
 }
 
 function getLatestReviews(reviews: OrbitReview[]) {
@@ -148,6 +168,7 @@ export default async function OrbitPage() {
       morningBriefingError: null,
       inboxTasks: [],
       inboxTasksError: null,
+      milestoneTasksById: {},
     };
     errorMessage =
       error instanceof Error
@@ -203,6 +224,7 @@ export default async function OrbitPage() {
           morningBriefingError={orbitData.morningBriefingError}
           inboxTasks={orbitData.inboxTasks}
           inboxTasksError={orbitData.inboxTasksError}
+          milestoneTasksById={orbitData.milestoneTasksById}
           errorMessage={errorMessage}
         />
       </div>

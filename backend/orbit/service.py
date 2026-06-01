@@ -240,6 +240,116 @@ def update_task(record_id: int, payload: TaskUpdate) -> dict[str, Any] | None:
     return _update_record("tasks", record_id, _model_data(payload, exclude_unset=True))
 
 
+def link_task_to_milestone(task_id: int, milestone_id: int) -> dict[str, Any] | None:
+    init_orbit_db()
+
+    if get_record("tasks", task_id) is None or get_record("milestones", milestone_id) is None:
+        return None
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO task_milestone_links (task_id, milestone_id)
+        VALUES (?, ?)
+        """,
+        (task_id, milestone_id),
+    )
+    conn.commit()
+    cursor.execute(
+        """
+        SELECT *
+        FROM task_milestone_links
+        WHERE task_id = ? AND milestone_id = ?
+        """,
+        (task_id, milestone_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    return _row_to_dict(row)
+
+
+def unlink_task_from_milestone(task_id: int, milestone_id: int) -> bool:
+    init_orbit_db()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        DELETE FROM task_milestone_links
+        WHERE task_id = ? AND milestone_id = ?
+        """,
+        (task_id, milestone_id),
+    )
+    conn.commit()
+    deleted = cursor.rowcount > 0
+    conn.close()
+
+    return deleted
+
+
+def list_milestones_linked_to_task(task_id: int) -> list[dict[str, Any]]:
+    init_orbit_db()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT milestones.*
+        FROM task_milestone_links
+        JOIN milestones ON milestones.id = task_milestone_links.milestone_id
+        WHERE task_milestone_links.task_id = ?
+        ORDER BY milestones.id
+        """,
+        (task_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def list_tasks_linked_to_milestone(milestone_id: int) -> list[dict[str, Any]]:
+    init_orbit_db()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT tasks.*
+        FROM task_milestone_links
+        JOIN tasks ON tasks.id = task_milestone_links.task_id
+        WHERE task_milestone_links.milestone_id = ?
+        ORDER BY tasks.id
+        """,
+        (milestone_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [_with_linked_milestones(dict(row)) for row in rows]
+
+
+def _summarize_linked_milestone(milestone: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": milestone.get("id"),
+        "title": milestone.get("title"),
+        "status": milestone.get("status"),
+        "progress_percent": milestone.get("progress_percent"),
+    }
+
+
+def _with_linked_milestones(task: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **task,
+        "milestones": [
+            _summarize_linked_milestone(milestone)
+            for milestone in list_milestones_linked_to_task(int(task.get("id")))
+        ],
+    }
+
+
 def _find_record(table: str, **matches: Any) -> dict[str, Any] | None:
     for record in list_records(table):
         if all(record.get(key) == value for key, value in matches.items()):
@@ -300,7 +410,7 @@ def list_inbox_tasks() -> list[dict[str, Any]]:
     inbox_goal = get_or_create_inbox_goal()
     inbox_goal_id = inbox_goal.get("id")
     return [
-        task
+        _with_linked_milestones(task)
         for task in list_records("tasks")
         if task.get("goal_id") == inbox_goal_id
     ]
@@ -309,7 +419,7 @@ def list_inbox_tasks() -> list[dict[str, Any]]:
 def create_inbox_task(payload: Any) -> dict[str, Any]:
     inbox_goal = get_or_create_inbox_goal()
     data = _model_data(payload)
-    return _create_record(
+    task = _create_record(
         "tasks",
         {
             "goal_id": inbox_goal.get("id"),
@@ -320,6 +430,10 @@ def create_inbox_task(payload: Any) -> dict[str, Any]:
             "completed_at": None,
         },
     )
+    for milestone_id in data.get("milestone_ids") or []:
+        link_task_to_milestone(int(task["id"]), int(milestone_id))
+
+    return _with_linked_milestones(task)
 
 
 def create_review(payload: ReviewCreate) -> dict[str, Any]:
@@ -459,6 +573,7 @@ def _format_briefing_text(
 
     task_lines = [
         f"{index}. {task.get('title')}"
+        + (f" ({task.get('milestone_title')})" if task.get("milestone_title") else "")
         for index, task in enumerate(top_tasks[:3], start=1)
     ] or ["No priority tasks"]
     blocker_lines = current_blockers[:3] or ["No active blockers"]
@@ -559,6 +674,16 @@ def generate_morning_briefing() -> dict[str, Any]:
 
     goals_by_id = {goal.get("id"): goal for goal in goals}
     milestones_by_id = {milestone.get("id"): milestone for milestone in milestones}
+    linked_milestones_by_task_id = {
+        task.get("id"): list_milestones_linked_to_task(int(task.get("id")))
+        for task in tasks
+    }
+    active_link_milestone_ids = {
+        milestone.get("id")
+        for milestone in milestones
+        if str(milestone.get("status") or "").casefold() in {"active", "in_progress"}
+        and _is_open(milestone)
+    }
     inbox_goal_ids = {
         goal.get("id")
         for goal in goals
@@ -566,11 +691,16 @@ def generate_morning_briefing() -> dict[str, Any]:
     }
     open_tasks = [task for task in tasks if _is_open(task)]
 
-    def task_sort_key(task: dict[str, Any]) -> tuple[int, int, date, int, int]:
+    def task_sort_key(task: dict[str, Any]) -> tuple[int, int, int, date, int, int]:
         due_date = _parse_date(task.get("due_date"))
         goal = goals_by_id.get(task.get("goal_id"))
         milestone = milestones_by_id.get(goal.get("milestone_id")) if goal else None
         is_inbox = task.get("goal_id") in inbox_goal_ids
+        linked_milestones = linked_milestones_by_task_id.get(task.get("id"), [])
+        has_active_milestone_link = any(
+            linked_milestone.get("id") in active_link_milestone_ids
+            for linked_milestone in linked_milestones
+        )
         is_event_task = (
             active_event_id is not None
             and milestone is not None
@@ -578,6 +708,7 @@ def generate_morning_briefing() -> dict[str, Any]:
         )
         is_urgent = due_date is not None and due_date <= today
         return (
+            0 if has_active_milestone_link else 1,
             0 if is_inbox else 1,
             0 if is_urgent else 1,
             due_date or date.max,
@@ -585,8 +716,20 @@ def generate_morning_briefing() -> dict[str, Any]:
             int(task.get("id") or 0),
         )
 
+    def _task_with_briefing_milestones(task: dict[str, Any]) -> dict[str, Any]:
+        linked_milestones = [
+            _summarize_linked_milestone(milestone)
+            for milestone in linked_milestones_by_task_id.get(task.get("id"), [])
+        ]
+        summary = _summary(task, ["id", "title", "status", "due_date", "goal_id"])
+        summary["milestones"] = linked_milestones
+        summary["milestone_title"] = (
+            linked_milestones[0].get("title") if linked_milestones else None
+        )
+        return summary
+
     top_tasks = [
-        _summary(task, ["id", "title", "status", "due_date", "goal_id"])
+        _task_with_briefing_milestones(task)
         for task in sorted(open_tasks, key=task_sort_key)[:5]
     ]
 

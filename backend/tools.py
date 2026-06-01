@@ -641,6 +641,8 @@ def create_orbit_task(
     description: str | None = None,
     goal_id: str | int | None = None,
     due_date: str | None = None,
+    milestone_id: str | int | None = None,
+    milestone_title: str | None = None,
 ):
     if not title:
         return {"success": False, "error": "Missing required field: title."}
@@ -648,8 +650,32 @@ def create_orbit_task(
     parsed_goal_id, error = _parse_optional_int(goal_id, "goal_id")
     if error:
         return {"success": False, "error": error}
+    parsed_milestone_id, error = _parse_optional_int(milestone_id, "milestone_id")
+    if error:
+        return {"success": False, "error": error}
 
     try:
+        matched_milestone = None
+        search_milestone_title = _orbit_text(milestone_title)
+        if parsed_milestone_id is not None:
+            matched_milestone = orbit_service.get_record("milestones", parsed_milestone_id)
+            if matched_milestone is None:
+                return {
+                    "success": False,
+                    "error": f"No Orbit milestone found with id {parsed_milestone_id}.",
+                }
+        elif search_milestone_title:
+            normalized_milestone_title = search_milestone_title.casefold()
+            milestone_matches = [
+                milestone
+                for milestone in orbit_service.list_records("milestones")
+                if normalized_milestone_title
+                in str(milestone.get("title") or "").casefold()
+            ]
+            if len(milestone_matches) == 1:
+                matched_milestone = milestone_matches[0]
+                parsed_milestone_id = int(matched_milestone["id"])
+
         if parsed_goal_id is None:
             inbox_goal, error = _get_or_create_inbox_goal()
             if error:
@@ -671,6 +697,10 @@ def create_orbit_task(
             "completed_at": None,
         }
         task = orbit_service.create_task(payload)
+        linked_milestones = []
+        if parsed_milestone_id is not None:
+            orbit_service.link_task_to_milestone(int(task["id"]), parsed_milestone_id)
+            linked_milestones = orbit_service.list_milestones_linked_to_task(int(task["id"]))
 
         return {
             "success": True,
@@ -678,6 +708,10 @@ def create_orbit_task(
             "title": task.get("title"),
             "due_date": task.get("due_date"),
             "goal_id": task.get("goal_id"),
+            "linked_milestones": [
+                _orbit_summary(milestone, ["id", "title", "status", "progress_percent"])
+                for milestone in linked_milestones
+            ],
         }
     except Exception as e:
         return {"success": False, "error": f"Unable to create Orbit task: {e}"}
