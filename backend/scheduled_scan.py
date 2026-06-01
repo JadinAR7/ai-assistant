@@ -800,6 +800,340 @@ def _append_term_evidence(evidence: list[str], label: str, text: str, terms: lis
     return len(matches)
 
 
+def _behavior_term_matches(text: str, terms: list[str]) -> list[str]:
+    return [term for term in terms if term in text]
+
+
+def _format_reaction_zone(zone: dict | None) -> str:
+    if not zone:
+        return "Unclear"
+
+    timeframe = str(zone.get("timeframe") or "HTF")
+    zone_type = str(zone.get("type") or "").strip()
+    low = _fmt_draw_price(zone.get("low"))
+    high = _fmt_draw_price(zone.get("high"))
+
+    label = f"{timeframe} {zone_type} FVG".strip()
+
+    if low != "unknown" and high != "unknown":
+        return f"{label} {low}-{high}"
+
+    return label
+
+
+def _visual_fvg_timeframe_from_text(text: str) -> str | None:
+    checks = [
+        ("4H", ["4h fvg", "4hr fvg", "4 hour fvg", "4-hour fvg"]),
+        ("1H", ["1h fvg", "1hr fvg", "1 hour fvg", "1-hour fvg"]),
+        ("15M", ["15m fvg", "15min fvg", "15 minute fvg", "15-minute fvg"]),
+    ]
+
+    for timeframe, terms in checks:
+        if any(term in text for term in terms):
+            return timeframe
+
+    if "fvg" in text:
+        return "Visual"
+
+    return None
+
+
+def _visual_item_prices(item: dict) -> list[float]:
+    prices = []
+
+    for key in ["approx_low", "approx_high", "approx_price", "low", "high", "price"]:
+        value = _safe_float(item.get(key))
+
+        if value is not None:
+            prices.append(value)
+
+    return prices
+
+
+def _range_prices_near_fvg(visuals: dict, fvg_prices: list[float]) -> list[float]:
+    nearby = []
+
+    if not fvg_prices:
+        return nearby
+
+    for key in ["horizontal_lines", "drawn_boxes"]:
+        for item in visuals.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+
+            label = str(item.get("label") or "").lower()
+            notes = str(item.get("location_notes") or "").lower()
+
+            if "range" not in f"{label} {notes}":
+                continue
+
+            for price in _visual_item_prices(item):
+                if any(abs(price - fvg_price) <= 6 for fvg_price in fvg_prices):
+                    nearby.append(price)
+
+    return nearby
+
+
+def _format_visual_zone_bounds(prices: list[float]) -> str:
+    if not prices:
+        return ""
+
+    low = min(prices)
+    high = max(prices)
+
+    if low == high:
+        low -= 2
+        high += 2
+    elif high - low < 4:
+        low -= 2
+
+    return f" around {_fmt_draw_price(low)}-{_fmt_draw_price(high)}"
+
+
+def _visual_reaction_zone(record: dict) -> dict | None:
+    candidates = []
+    priority = {"4H": 0, "1H": 1, "15M": 2, "Visual": 3}
+
+    for capture_timeframe in ["4H", "1H", "15M", "5M"]:
+        visuals = _visuals_for_timeframe(record, capture_timeframe)
+
+        if not visuals:
+            continue
+
+        for key in ["drawn_boxes", "horizontal_lines"]:
+            for item in visuals.get(key) or []:
+                if not isinstance(item, dict):
+                    continue
+
+                text = " ".join([
+                    str(item.get("label") or ""),
+                    str(item.get("location_notes") or ""),
+                    str(item.get("color") or ""),
+                ]).lower()
+                timeframe = _visual_fvg_timeframe_from_text(text)
+
+                if not timeframe:
+                    continue
+
+                fvg_prices = _visual_item_prices(item)
+                prices = fvg_prices + _range_prices_near_fvg(visuals, fvg_prices)
+                candidates.append({
+                    "timeframe": timeframe,
+                    "capture_timeframe": capture_timeframe,
+                    "prices": prices,
+                    "label": str(item.get("label") or f"{timeframe} FVG"),
+                })
+
+        visual_text = _behavior_visual_text_from_visuals(visuals)
+        text_timeframe = _visual_fvg_timeframe_from_text(visual_text)
+
+        if text_timeframe and not any(
+            item.get("timeframe") == text_timeframe and item.get("capture_timeframe") == capture_timeframe
+            for item in candidates
+        ):
+            candidates.append({
+                "timeframe": text_timeframe,
+                "capture_timeframe": capture_timeframe,
+                "prices": _range_prices_near_fvg(visuals, []),
+                "label": f"{text_timeframe} FVG",
+            })
+
+    if not candidates:
+        return None
+
+    capture_priority = ["4H", "1H", "15M", "5M"]
+    candidates.sort(
+        key=lambda item: (
+            priority.get(item.get("timeframe"), 9),
+            capture_priority.index(item.get("capture_timeframe")),
+        )
+    )
+    best_priority = priority.get(candidates[0].get("timeframe"), 9)
+    best = [
+        item for item in candidates
+        if priority.get(item.get("timeframe"), 9) == best_priority
+    ]
+    timeframes = _dedupe_text([str(item.get("timeframe")) for item in best if item.get("timeframe")])
+    all_prices = []
+
+    for item in best:
+        all_prices.extend(item.get("prices") or [])
+
+    timeframe_label = "/".join(timeframes) if timeframes else "Visual"
+
+    return {
+        "source": "visual",
+        "label": f"Visual {timeframe_label} FVG{_format_visual_zone_bounds(all_prices)}",
+        "timeframes": timeframes,
+        "prices": all_prices,
+    }
+
+
+def _active_reaction_zone(record: dict, visual_text_all: str) -> tuple[str, dict | None, str]:
+    csv_stale = _csv_is_stale(record)
+    visual_zone = _visual_reaction_zone(record)
+
+    if csv_stale and visual_zone:
+        return visual_zone.get("label") or "Visual FVG", visual_zone, "visual"
+
+    csv_analysis = record.get("csv_analysis") or {}
+    analysis = csv_analysis.get("analysis") or {}
+    zone_ranking = analysis.get("zone_ranking") or {}
+    active_zone = zone_ranking.get("active_zone") or {}
+
+    if active_zone:
+        return _format_reaction_zone(active_zone), active_zone, "csv"
+
+    visual_candidates = []
+    for timeframe in ["4H", "1H", "15M"]:
+        timeframe_label = timeframe.lower()
+        alternate_label = timeframe_label.replace("h", "hr")
+
+        if f"{timeframe_label} fvg" in visual_text_all or f"{alternate_label} fvg" in visual_text_all:
+            visual_candidates.append(f"{timeframe} FVG")
+
+    if visual_candidates:
+        return " / ".join(visual_candidates), None, "visual"
+
+    if "fvg" in visual_text_all:
+        return "Visible FVG", None, "visual"
+
+    return "Unclear", None, "unclear"
+
+
+def _behavior_location(record: dict, active_zone: dict | None, visual_text_all: str) -> str:
+    parts = []
+    state = record.get("state") or extract_structured_state(record)
+    price_relation = state.get("price_relation")
+    primary_draw = (record.get("liquidity_draw") or {}).get("primary_draw") or {}
+
+    relation_labels = {
+        "inside_active_zone": "inside active FVG",
+        "above_active_zone": "above active FVG",
+        "below_active_zone": "below active FVG",
+    }
+
+    if active_zone and active_zone.get("source") == "visual":
+        timeframes = "/".join(active_zone.get("timeframes") or []) or "visual"
+        parts.append(f"around Visual {timeframes} FVG")
+    elif price_relation in relation_labels:
+        parts.append(relation_labels[price_relation])
+    elif active_zone and active_zone.get("relation_to_price"):
+        relation = str(active_zone.get("relation_to_price")).replace("_", " ")
+        parts.append(f"{relation} relative to active FVG")
+
+    draw_label = primary_draw.get("label")
+    if draw_label:
+        if primary_draw.get("untouched") is False:
+            parts.append(f"through/taken {draw_label}")
+        elif primary_draw.get("side") == "above":
+            parts.append(f"below {draw_label}")
+        elif primary_draw.get("side") == "below":
+            parts.append(f"above {draw_label}")
+
+    for key, label in [
+        ("pdh", "PDH"),
+        ("pdl", "PDL"),
+        ("pdnyh", "PDNYH"),
+        ("pdnyl", "PDNYL"),
+        ("asia high", "Asia High"),
+        ("asia low", "Asia Low"),
+        ("london high", "London High"),
+        ("london low", "London Low"),
+    ]:
+        if key in visual_text_all and label not in " / ".join(parts):
+            parts.append(f"around {label}")
+
+    if not parts:
+        return "Unclear"
+
+    return " / ".join(_dedupe_text(parts[:3]))
+
+
+def _liquidity_draw_status(record: dict, visual_text_all: str) -> tuple[str, list[str]]:
+    liquidity_draw = record.get("liquidity_draw") or {}
+    primary = liquidity_draw.get("primary_draw") or {}
+    candidates = liquidity_draw.get("candidates") or []
+    evidence = []
+
+    taken_terms = [
+        "sweep",
+        "swept",
+        "raid",
+        "liquidity taken",
+        "took liquidity",
+        "ran stops",
+        "stop run",
+        "taken",
+    ]
+
+    if not primary:
+        return "unclear", ["No primary liquidity draw was available."]
+
+    label = primary.get("label") or "Primary draw"
+    primary_taken_visually = (
+        str(primary.get("key") or "").replace("_", " ") in visual_text_all
+        and _contains_any(visual_text_all, taken_terms)
+    )
+
+    if primary.get("untouched") is False or primary_taken_visually:
+        evidence.append(f"{label} appears swept/contested, so the draw may be fulfilled.")
+        return "fulfilled", evidence
+
+    if primary.get("untouched") is True:
+        evidence.append(f"{label} remains the active draw in available context.")
+
+    taken_candidates = [
+        item for item in candidates
+        if item.get("untouched") is False
+        and item.get("key") in {
+            "pdh",
+            "pdl",
+            "pdnyh",
+            "pdnyl",
+            "asia_high",
+            "asia_low",
+            "london_high",
+            "london_low",
+        }
+    ]
+
+    for item in taken_candidates[:2]:
+        evidence.append(f"{item.get('label')} has already been swept/contested in available liquidity context.")
+
+    return "active", evidence
+
+
+def _structure_confirmation(visual_text_5m: str) -> tuple[str, bool, list[str]]:
+    if not visual_text_5m:
+        return "5M unavailable", False, ["5M structure confirmation is missing."]
+
+    confirmation_terms = [
+        "mss",
+        "bos",
+        "market structure shift",
+        "break of structure",
+        "displacement",
+        "reclaim",
+        "reclaimed",
+        "holding above",
+        "holding below",
+        "reject",
+        "rejected",
+    ]
+    unclear_terms = ["range", "chop", "sideways", "unclear", "balanced", "consolidation"]
+
+    matches = _behavior_term_matches(visual_text_5m, confirmation_terms)
+
+    if matches:
+        return f"5M confirms: {', '.join(matches[:3])}", True, []
+
+    if _contains_any(visual_text_5m, unclear_terms):
+        return "5M unclear", False, ["5M shows range/unclear structure rather than confirmation."]
+
+    return "5M unclear", False, ["5M visual context is present but does not confirm MSS/BOS, reclaim, rejection, or hold."]
+
+
 def _get_csv_refresh_limitation() -> str | None:
     try:
         from csv_refresh import get_csv_refresh_status
@@ -832,6 +1166,8 @@ def _cap_confidence_for_context(
     execution_bias: str,
     csv_stale: bool,
     live_visual_clear: bool,
+    strong_visual_evidence: bool,
+    has_5m_confirmation: bool,
     news_risk_level: str,
 ) -> str:
     capped = confidence
@@ -840,8 +1176,17 @@ def _cap_confidence_for_context(
         if capped == "high":
             capped = "medium"
 
-    if csv_stale and not live_visual_clear:
-        capped = "low"
+    if csv_stale:
+        if strong_visual_evidence:
+            if capped == "high":
+                capped = "medium"
+        elif not live_visual_clear:
+            capped = "low"
+        else:
+            capped = _downgrade_confidence(capped)
+
+    if not has_5m_confirmation and capped == "high":
+        capped = "medium"
 
     if news_risk_level == "high":
         capped = _downgrade_confidence(capped)
@@ -870,6 +1215,10 @@ def classify_behavior(record: dict) -> dict:
     evidence = []
     missing_confirmation = []
     data_limitations = []
+    reaction_zone, active_zone, reaction_zone_source = _active_reaction_zone(record, visual_text_all)
+    behavior_location = _behavior_location(record, active_zone, visual_text_all)
+    liquidity_draw_status, draw_status_evidence = _liquidity_draw_status(record, visual_text_all)
+    structure_confirmation, has_5m_confirmation, structure_missing = _structure_confirmation(visual_text_5m)
 
     behavior_terms = {
         "acceptance": [
@@ -942,26 +1291,37 @@ def classify_behavior(record: dict) -> dict:
             "sideways",
             "balanced",
             "consolidation",
+            "compress",
+            "compression",
             "inside range",
             "avg:",
             "range:",
         ],
     }
 
+    timeframe_weights = {
+        "15M": 3,
+        "5M": 2,
+        "1H/4H": 1,
+    }
     weighted_scores = {classification: 0 for classification in BEHAVIOR_CLASSIFICATIONS}
 
     for classification, terms in behavior_terms.items():
-        score_15m = _count_terms(visual_text_15m, terms)
-        score_5m = _count_terms(visual_text_5m, terms)
-        score_htf = _count_terms(visual_text_htf, terms)
-        weighted_scores[classification] = (score_15m * 2) + min(score_5m, 2) + score_htf
+        matches_15m = _behavior_term_matches(visual_text_15m, terms)
+        matches_5m = _behavior_term_matches(visual_text_5m, terms)
+        matches_htf = _behavior_term_matches(visual_text_htf, terms)
+        weighted_scores[classification] = (
+            len(matches_15m) * timeframe_weights["15M"]
+            + min(len(matches_5m), 2) * timeframe_weights["5M"]
+            + len(matches_htf) * timeframe_weights["1H/4H"]
+        )
 
-        if score_15m:
-            _append_term_evidence(evidence, "15M", visual_text_15m, terms)
-        if score_5m:
-            _append_term_evidence(evidence, "5M structure confirmation", visual_text_5m, terms)
-        if score_htf:
-            _append_term_evidence(evidence, "1H/4H", visual_text_htf, terms)
+        if matches_15m:
+            evidence.append(f"15M behavior evidence for {classification}: {', '.join(matches_15m[:4])}.")
+        if matches_5m:
+            evidence.append(f"5M structure evidence for {classification}: {', '.join(matches_5m[:4])}.")
+        if matches_htf:
+            evidence.append(f"1H/4H context evidence for {classification}: {', '.join(matches_htf[:4])}.")
 
     has_reaction_zone = _contains_any(
         visual_text_all,
@@ -971,6 +1331,19 @@ def classify_behavior(record: dict) -> dict:
         weighted_scores[item] > 0
         for item in ["acceptance", "rejection", "reclaim", "sweep", "displacement"]
     )
+    has_15m_directional_behavior = any(
+        _behavior_term_matches(visual_text_15m, behavior_terms[item])
+        for item in ["acceptance", "rejection", "reclaim", "sweep", "displacement"]
+    )
+    has_htf_context = bool(visual_text_htf)
+
+    evidence.append(f"Framework hierarchy: liquidity draw -> HTF reaction zone -> behavior -> 15M context -> 5M structure.")
+    evidence.append(f"Reaction zone is treated as decision context, not an entry signal: {reaction_zone}.")
+
+    if reaction_zone_source == "visual":
+        evidence.append("CSV is stale and visual FVG markings are available, so behavior classification anchors to the visual reaction zone.")
+
+    evidence.extend(draw_status_evidence)
 
     if primary_draw:
         evidence.append(
@@ -980,32 +1353,63 @@ def classify_behavior(record: dict) -> dict:
     if htf_bias != "unknown" or execution_bias != "unknown":
         evidence.append(f"Bias context: HTF {htf_bias}, execution {execution_bias}.")
 
-    if has_reaction_zone and not has_directional_behavior:
-        if weighted_scores["consolidation"] > 0:
-            classification = "consolidation"
-            confidence = "low"
-            evidence.append("Visuals show marked levels/zones and range context, but no clear directional behavior.")
-        else:
-            classification = "unknown"
-            confidence = "low"
-            evidence.append("Visuals show marked levels/zones, but no clear hold, fail, reclaim, sweep, or displacement behavior.")
-    else:
-        priority = ["reclaim", "sweep", "displacement", "rejection", "acceptance", "consolidation"]
-        classification = max(priority, key=lambda item: (weighted_scores[item], -priority.index(item)))
+    if structure_missing:
+        missing_confirmation.extend(structure_missing)
 
-        if weighted_scores[classification] <= 0:
-            classification = "unknown"
-            confidence = "low"
-            evidence.append("No behavior-specific visual evidence was detected.")
-        elif weighted_scores[classification] >= 4:
-            confidence = "high"
-        elif weighted_scores[classification] >= 2:
-            confidence = "medium"
-        else:
-            confidence = "low"
+    explicit_reclaim = weighted_scores["reclaim"] > 0 and (
+        weighted_scores["sweep"] > 0
+        or _contains_any(visual_text_all, ["lost", "swept", "taken", "raid"])
+        or liquidity_draw_status == "fulfilled"
+    )
+    explicit_sweep = weighted_scores["sweep"] > 0 or (
+        liquidity_draw_status == "fulfilled"
+        and not _contains_any(visual_text_all, ["reclaim", "reclaimed", "regained", "recovered", "back above", "back below"])
+    )
+    explicit_acceptance = weighted_scores["acceptance"] > 0 and has_reaction_zone
+    explicit_rejection = weighted_scores["rejection"] > 0 and has_reaction_zone
+    explicit_displacement = weighted_scores["displacement"] > 0 and (
+        has_reaction_zone or _contains_any(visual_text_all, ["away from", "breakaway", "expansion"])
+    )
+    explicit_consolidation = weighted_scores["consolidation"] > 0 and (
+        has_reaction_zone or not has_directional_behavior
+    )
+
+    if explicit_reclaim:
+        classification = "reclaim"
+        evidence.append("Behavior logic: liquidity was swept/lost and then regained in the available visual context.")
+    elif explicit_rejection:
+        classification = "rejection"
+        evidence.append("Behavior logic: price failed to hold the marked zone/level and moved or is described away from it.")
+    elif explicit_acceptance:
+        classification = "acceptance"
+        evidence.append("Behavior logic: price appears to hold beyond or respect a key level/FVG after interaction.")
+    elif explicit_sweep:
+        classification = "sweep"
+        evidence.append("Behavior logic: liquidity appears taken, but no clear reclaim is visible yet.")
+    elif explicit_displacement:
+        classification = "displacement"
+        evidence.append("Behavior logic: visual context describes a strong directional move away from the zone/level.")
+    elif explicit_consolidation:
+        classification = "consolidation"
+        evidence.append("Behavior logic: price appears to be ranging or compressing around the marked zone/level.")
+    elif has_reaction_zone:
+        classification = "unknown"
+        evidence.append("Visuals show marked levels/zones, but no clear hold, fail, reclaim, sweep, displacement, or consolidation behavior.")
+    else:
+        classification = "unknown"
+        evidence.append("No reaction zone or behavior-specific visual evidence was clear enough to classify.")
 
     if classification not in BEHAVIOR_CLASSIFICATIONS:
         classification = "unknown"
+
+    classification_score = weighted_scores.get(classification, 0)
+    if classification == "unknown":
+        confidence = "low"
+    elif classification_score >= 7 and has_15m_directional_behavior and (has_5m_confirmation or has_htf_context):
+        confidence = "high"
+    elif classification_score >= 3 or has_15m_directional_behavior:
+        confidence = "medium"
+    else:
         confidence = "low"
 
     if classification == "acceptance":
@@ -1026,6 +1430,9 @@ def classify_behavior(record: dict) -> dict:
     if htf_bias != execution_bias and htf_bias in ["bullish", "bearish"] and execution_bias in ["bullish", "bearish"]:
         missing_confirmation.append("HTF and execution bias conflict; confidence is capped until structure resolves.")
 
+    if not has_5m_confirmation:
+        missing_confirmation.append("Missing 5M confirmation caps confidence at Medium.")
+
     if not record.get("vision_success"):
         data_limitations.append("Primary visual extraction did not succeed.")
 
@@ -1040,6 +1447,11 @@ def classify_behavior(record: dict) -> dict:
     if csv_stale:
         data_limitations.append("CSV is stale; live acceptance/rejection is not classified from CSV close.")
 
+        if reaction_zone_source == "visual":
+            data_limitations.append("Reaction zone is visual/manual and approximate; exact bounds should be confirmed on chart.")
+        elif reaction_zone_source == "csv":
+            data_limitations.append("No visual FVG was detected, so the stale CSV FVG is used only as a fallback reaction-zone reference.")
+
     if news_risk_level == "high":
         data_limitations.append("News Risk is High; behavior quality may be less reliable.")
     elif news_risk_level == "medium":
@@ -1050,12 +1462,15 @@ def classify_behavior(record: dict) -> dict:
         data_limitations.append(csv_refresh_limitation)
 
     live_visual_clear = has_directional_behavior and bool(visual_text_15m)
+    strong_visual_evidence = bool(has_15m_directional_behavior and (has_5m_confirmation or has_htf_context))
     confidence = _cap_confidence_for_context(
         confidence,
         htf_bias=htf_bias,
         execution_bias=execution_bias,
         csv_stale=csv_stale,
         live_visual_clear=live_visual_clear,
+        strong_visual_evidence=strong_visual_evidence,
+        has_5m_confirmation=has_5m_confirmation,
         news_risk_level=news_risk_level,
     )
 
@@ -1067,6 +1482,10 @@ def classify_behavior(record: dict) -> dict:
 
     return {
         "classification": classification,
+        "liquidity_draw_status": liquidity_draw_status,
+        "reaction_zone": reaction_zone,
+        "behavior_location": behavior_location,
+        "structure_confirmation": structure_confirmation,
         "confidence": confidence,
         "evidence": _dedupe_text(evidence),
         "missing_confirmation": _dedupe_text(missing_confirmation),
@@ -1077,6 +1496,10 @@ def classify_behavior(record: dict) -> dict:
 
 def format_behavior_classification_section(behavior: dict) -> str:
     classification = str(behavior.get("classification") or "unknown").capitalize()
+    liquidity_draw_status = str(behavior.get("liquidity_draw_status") or "unclear").capitalize()
+    reaction_zone = behavior.get("reaction_zone") or "Unclear"
+    behavior_location = behavior.get("behavior_location") or "Unclear"
+    structure_confirmation = behavior.get("structure_confirmation") or "5M unclear"
     confidence = str(behavior.get("confidence") or "low").capitalize()
     evidence = behavior.get("evidence") or ["No behavior evidence was available."]
     missing = behavior.get("missing_confirmation") or ["Need clearer live confirmation."]
@@ -1085,6 +1508,11 @@ def format_behavior_classification_section(behavior: dict) -> str:
     lines = [
         "## Behavior Classification",
         f"Classification: {classification}",
+        f"Liquidity Draw Status: {liquidity_draw_status}",
+        f"Reaction Zone: {reaction_zone}",
+        f"Behavior Location: {behavior_location}",
+        f"Structure Confirmation: {structure_confirmation}",
+        "",
         f"Confidence: {confidence}",
         "",
         "Evidence:",
