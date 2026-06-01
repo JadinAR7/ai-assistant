@@ -35,6 +35,10 @@ backend/playwright_tradingview_profile/
 # TradingView screenshots
 backend/pictures/tradingview_screenshots/
 
+# Runtime downloads
+backend/downloads/debug_exports/
+backend/downloads/csv_refresh_tmp/
+
 # macOS junk
 .DS_Store
 random.txt

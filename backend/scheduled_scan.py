@@ -25,6 +25,7 @@ SCHEDULED_SCAN_TIMEFRAMES = ["4H", "1H", "15M", "5M"]
 SCAN_INTERVAL_SECONDS = 5 * 60
 TIMEZONE = ZoneInfo("America/Denver")
 
+
 SCAN_NOTIFY_ENABLED = os.getenv("SCAN_NOTIFY_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 SCAN_NOTIFY_IMESSAGE_ENABLED = os.getenv("SCAN_NOTIFY_IMESSAGE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 SCAN_NOTIFY_TTS_ENABLED = os.getenv("SCAN_NOTIFY_TTS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -33,6 +34,7 @@ SCAN_NOTIFY_IMESSAGE_RECIPIENT = os.getenv("SCAN_NOTIFY_IMESSAGE_RECIPIENT", "ja
 BASE_DIR = Path(__file__).resolve().parent
 SCAN_HISTORY_PATH = BASE_DIR / "scan_history.jsonl"
 SCAN_RUNTIME_STATUS_PATH = BASE_DIR / "scan_runtime_status.json"
+SCAN_SCREENSHOTS_DIR = BASE_DIR / "pictures" / "tradingview_screenshots"
 
 
 # -------------------------
@@ -127,6 +129,43 @@ def attach_news_risk(result: dict, now: datetime) -> None:
         + "\n\n"
         + format_news_risk_section(news_risk)
     ).strip()
+
+
+# -------------------------
+# Screenshot cleanup
+# -------------------------
+def _default_screenshot_cleanup_result() -> dict:
+    return {
+        "enabled": True,
+        "mode": "replace_on_new_scan",
+        "deleted_count": 0,
+        "errors": [],
+    }
+
+
+def cleanup_scan_screenshots() -> dict:
+    result = _default_screenshot_cleanup_result()
+
+    try:
+        if not SCAN_SCREENSHOTS_DIR.exists():
+            return result
+
+        screenshot_files = [
+            path
+            for path in SCAN_SCREENSHOTS_DIR.glob(f"{SYMBOL}_*.png")
+            if path.is_file()
+        ]
+
+        for path in screenshot_files:
+            try:
+                path.unlink()
+                result["deleted_count"] += 1
+            except OSError as e:
+                result["errors"].append(f"Could not delete {path}: {e}")
+    except Exception as e:
+        result["errors"].append(str(e))
+
+    return result
 
 
 # -------------------------
@@ -3311,6 +3350,7 @@ def build_scan_record(
             "tts_spoken": False,
             "errors": [],
         },
+        "screenshot_cleanup": _default_screenshot_cleanup_result(),
     }
 
     record["state"] = extract_structured_state(record)
@@ -3457,6 +3497,7 @@ def run_scan(
         return None
 
     session_label = " + ".join(sessions) if sessions else "Forced Scan"
+    screenshot_cleanup = _default_screenshot_cleanup_result()
 
     print(f"[{now.isoformat()}] Running {SYMBOL} {status_timeframe} scan during: {session_label}")
 
@@ -3467,6 +3508,12 @@ def run_scan(
                 timeframe=status_timeframe,
                 running_scan=True,
             )
+
+        screenshot_cleanup = cleanup_scan_screenshots()
+        print("Screenshot cleanup mode:", screenshot_cleanup.get("mode"))
+        print("Screenshot cleanup deleted:", screenshot_cleanup.get("deleted_count", 0))
+        for error in screenshot_cleanup.get("errors", []):
+            print("Screenshot cleanup error:", error)
 
         result = analyze_tradingview(
             symbol=SYMBOL,
@@ -3514,6 +3561,7 @@ def run_scan(
         attach_opportunity_watch(record)
         attach_alert_eligibility(record)
         deliver_scan_notification(record)
+        record["screenshot_cleanup"] = screenshot_cleanup
 
         save_scan_record(record)
 
@@ -3601,6 +3649,7 @@ def run_scan(
                 "tts_spoken": False,
                 "errors": [],
             },
+            "screenshot_cleanup": screenshot_cleanup,
         }
 
         save_scan_record(error_record)

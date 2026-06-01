@@ -558,6 +558,13 @@ ${record.message || "No scan message returned."}`;
       : scannerTone === "warning"
       ? "Warning"
       : "Inactive";
+  const scannerSubtitle = scanStatus?.running_scan
+    ? "Scanning now..."
+    : scanStatus?.process_running && scanStatus?.should_scan_now
+    ? "Watching scan window"
+    : scanStatus?.process_running
+    ? "Idle"
+    : "Not running";
 
   const htfBias = latestScan?.state?.htf_bias || "unknown";
   const executionBias = latestScan?.state?.execution_bias || "unknown";
@@ -700,11 +707,7 @@ ${record.message || "No scan message returned."}`;
                 <h2 className="text-sm font-semibold text-blue-100">
                   MES Scanner
                 </h2>
-                <p className="text-xs text-blue-200/70">
-                  {scanStatus?.running_scan
-                    ? "Scanning now..."
-                    : `Session: ${activeSessions}`}
-                </p>
+                <p className="text-xs text-blue-200/70">{scannerSubtitle}</p>
               </div>
 
               <span
