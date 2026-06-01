@@ -42,18 +42,35 @@ Instead:
 
 ### Trading
 
-CSV market data is the source of truth.
+#### CSV Responsibilities
 
-Vision analysis is used only to identify:
+CSV data is responsible for:
 
+* Historical structure
+* FVG mapping
+* Liquidity mapping
+* Market structure analysis
+* Historical context
+
+#### Vision Responsibilities
+
+Vision analysis is responsible for:
+
+* Live visible chart context
+* Current displayed price
 * User markings
-* Drawn zones
 * Labels
-* Visual chart context
+* Session context
+* Visual confirmation
 
-If CSV and vision disagree:
+#### Freshness Rules
 
-CSV wins.
+* Fresh CSVs may be used for structure and price context.
+* Stale CSVs may only be used for structure and FVG mapping.
+* When CSV is stale, vision becomes the primary live-context source.
+* Helix must never present stale CSV prices as confirmed live market prices.
+
+---
 
 ### Orbit
 
@@ -62,9 +79,13 @@ Orbit is the source of truth for:
 * Tasks
 * Goals
 * Milestones
-* Events
 * Reviews
+* Trade sessions
+* Readiness tracking
+* Major events
 * Progress tracking
+
+---
 
 ### User
 
@@ -91,6 +112,8 @@ Responsibilities:
 * Scan scheduling
 * TTS
 * Memory/history
+* Orbit APIs
+* Trade Journal APIs
 * API integrations
 
 ---
@@ -104,26 +127,216 @@ Technology:
 Responsibilities:
 
 * Dashboard
+* Command Center
+* Orbit
+* Trade Journal
 * Scan controls
 * Status displays
-* Orbit views
 * Future reporting
 
 ---
 
-## Trading System
+# Trading Framework
 
-Features:
+## Strategy Name
+
+Liquidity-Driven ICT with BRTC Execution
+
+---
+
+## Core Philosophy
+
+Price seeks liquidity.
+
+FVGs are reaction zones, not targets.
+
+The purpose of an FVG is to reveal whether price intends to continue toward liquidity or reject away from it.
+
+The scanner should never treat touching an FVG as a trade signal.
+
+---
+
+## Analysis Framework
+
+### Step 1: Determine HTF Bias
+
+Timeframes:
+
+* Daily
+* 4H
+* 1H
+
+Questions:
+
+* Bullish, bearish, or neutral?
+* What liquidity has already been taken?
+* What liquidity remains?
+
+---
+
+### Step 2: Identify Draw on Liquidity
+
+Examples:
+
+* PDH
+* PDL
+* PDNYH
+* PDNYL
+* Asia High
+* Asia Low
+* London High
+* London Low
+* Previous Week High
+* Previous Week Low
+
+Question:
+
+Where is price trying to go?
+
+---
+
+### Step 3: Identify Reaction Zones
+
+Priority:
+
+1. Daily FVG
+2. 4H FVG
+3. 1H FVG
+4. 15M FVG
+
+Question:
+
+Where should price make a decision?
+
+---
+
+### Step 4: Classify Behavior
+
+Examples:
+
+* Acceptance
+* Rejection
+* Reclaim
+* Sweep
+* Displacement
+* Consolidation
+
+Question:
+
+How is price behaving inside the reaction zone?
+
+---
+
+### Step 5: Structure Confirmation
+
+Timeframes:
+
+* 15M MSS/BOS
+* 5M MSS/BOS
+
+Question:
+
+Is the market changing direction or continuing?
+
+---
+
+### Step 6: Opportunity Recognition
+
+Possible outputs:
+
+* Bullish Continuation Watch
+* Bearish Continuation Watch
+* Reversal Watch
+* Range / Chop Warning
+* No Opportunity
+
+---
+
+### Step 7: Alert Eligibility
+
+Possible outputs:
+
+* None
+* Low
+* Medium
+* High
+
+Purpose:
+
+Determine whether the market state is important enough to notify the user.
+
+---
+
+### Step 8: Execution Confirmation
+
+Execution timeframe:
+
+* 1M
+
+Examples:
+
+* BRTC
+* FVG retest
+* Sweep and reclaim
+* MSS after displacement
+
+The 1M chart is used for execution confirmation only.
+
+It is not used for HTF bias.
+
+---
+
+# Trading System
+
+## Current Scanner Capabilities
+
+### Analysis
+
+* Market structure analysis
+* FVG detection
+* Liquidity analysis
+* Bias determination
+* Opportunity Watch generation
+* News Risk analysis
+
+### Capture
 
 * TradingView screenshot capture
-* CSV analysis
-* FVG detection
-* Market structure analysis
-* Scheduled scans
-* Alert eligibility engine
-* Deterministic market summaries
+* Forced 15M scans
+* Multi-timeframe capture
 
-Supported Symbols:
+  * 4H
+  * 1H
+  * 15M
+
+### Safety
+
+* CSV freshness awareness
+* Source-of-truth enforcement
+* Scan status monitoring
+
+### Current Outputs
+
+* Market State
+* News Risk
+* Data Freshness
+* Opportunity Watch
+* Deterministic Market Summary
+
+---
+
+## Future Scanner Capabilities
+
+* Liquidity Draw Engine
+* Behavior Classification Engine
+* Alert Eligibility Engine
+* Execution Confirmation Layer
+* Automated Opportunity Detection
+* Enhanced News Integration
+
+---
+
+## Supported Symbols
 
 * MES
 * ES
@@ -132,18 +345,19 @@ Supported Symbols:
 
 ---
 
-## Communication Layer
+# Communication Layer
 
-Current:
+## Current
 
 * Dashboard
 * iMessage
 * Text-to-Speech
 
-Future:
+## Future
 
 * Voice activation
 * Mobile notifications
+* Conversational voice mode
 
 ---
 
@@ -151,22 +365,9 @@ Future:
 
 Orbit is a planning and execution platform powered by Helix.
 
-Orbit is NOT another AI.
+Orbit is not another AI.
 
 Orbit stores structured data and allows Helix to manage daily execution.
-
----
-
-## Orbit Responsibilities
-
-* Tasks
-* Goals
-* Daily plans
-* Weekly reviews
-* Reminders
-* Milestones
-* Major events
-* Progress tracking
 
 ---
 
@@ -176,10 +377,10 @@ Major Events represent significant life objectives.
 
 Examples:
 
-* Quit Corporate World
-* Reach Trading Capital Target
-* Launch Business
-* Boxing Milestone
+* Corporate Escape
+* Trading Capital Goals
+* Business Launches
+* Boxing Milestones
 * Travel Goals
 
 Each Major Event contains:
@@ -202,18 +403,173 @@ Objective:
 
 Leave corporate employment and replace income through trading, business, and other ventures.
 
-Target Timeline:
+Target Date:
 
-Approximately 9 months.
+2027-02-28
 
-Orbit should track:
+Orbit tracks:
 
-* Days remaining
 * Progress percentage
-* Milestone completion
-* Trading performance
-* Capital accumulation
+* Milestones
+* Tasks
+* Reviews
 * Readiness score
+* Capital accumulation progress
+
+---
+
+# Orbit Architecture
+
+## Major Events
+
+Top-level objectives.
+
+Current Example:
+
+* Corporate Escape
+
+---
+
+## Milestones
+
+Current Examples:
+
+* Define income replacement target
+* Build trading review cadence
+* Create business launch plan
+* Set capital accumulation checkpoints
+
+---
+
+## Goals
+
+Planning containers.
+
+Current:
+
+* Inbox Goal
+
+---
+
+## Tasks
+
+Capabilities:
+
+* Create tasks
+* Complete tasks
+* Store completion timestamps
+* Daily planning integration
+
+---
+
+## Reviews
+
+Supported:
+
+* Daily
+* Weekly
+* Monthly
+
+Capabilities:
+
+* Save reviews
+* Display reviews
+* Feed planning recommendations
+* Feed future readiness systems
+
+---
+
+## Readiness System
+
+Purpose:
+
+Measure actual readiness for major life objectives.
+
+Current Categories:
+
+* Financial
+* Trading
+* Business
+* Personal
+
+Current State:
+
+Manual updates with Helix assistance.
+
+Future State:
+
+Evidence-based readiness scoring.
+
+---
+
+# Trade Journal
+
+Purpose:
+
+Capture trading performance and generate readiness evidence.
+
+Current Capabilities:
+
+* Trade session logging
+* PnL tracking
+* Rule adherence tracking
+* Confidence tracking
+* Session grading
+* Notes and lessons
+
+Future Capabilities:
+
+* Screenshot linking
+* Setup tagging
+* Mistake tracking
+* Performance analytics
+* Readiness evidence generation
+
+---
+
+# Orbit Dashboard
+
+Current Sections:
+
+* Major Event Countdown
+* Readiness Tracking
+* Inbox Tasks
+* Milestones
+* Reviews
+* Blockers
+* Weekly Focus
+
+---
+
+# Helix Orbit Tools
+
+## Read Tools
+
+* get_orbit_major_events
+* get_orbit_milestones
+* get_orbit_goals
+* get_orbit_tasks
+* get_orbit_reviews
+* get_corporate_escape_status
+* get_corporate_escape_readiness
+* get_trade_sessions
+
+## Write Tools
+
+* create_orbit_task
+* create_orbit_goal
+* complete_orbit_task
+* create_orbit_review
+* create_trade_session
+* update_orbit_milestone_progress
+* update_orbit_major_event_progress
+* update_readiness_category
+
+## Planning Tools
+
+* generate_orbit_daily_summary
+* generate_orbit_focus
+* suggest_trading_readiness_update
 
 ---
 
@@ -227,96 +583,40 @@ Users interact only with Helix.
 
 Examples:
 
-## Planning Agent
-
-Responsibilities:
-
-* Daily plans
-* Prioritization
-* Scheduling
-
-## Reminder Agent
-
-Responsibilities:
-
-* Reminder creation
-* Follow-ups
-* Deadlines
-
-## Trading Agent
-
-Responsibilities:
-
-* Scan interpretation
-* Alert generation
-* Market summaries
-
-## Reflection Agent
-
-Responsibilities:
-
-* Daily reviews
-* Weekly reviews
-* Lesson extraction
-
-## Research Agent
-
-Responsibilities:
-
-* Information gathering
-* Summaries
-* Knowledge collection
+* Planning Agent
+* Reminder Agent
+* Trading Agent
+* Reflection Agent
+* Research Agent
 
 ---
 
 # Development Roadmap
 
-## Helix v1
+## Current Focus
 
-Completed / In Progress:
+Trading Intelligence
 
-* FastAPI backend
-* Trading analysis
-* Dashboard
-* iMessage integration
-* TTS
-* Scheduled scans
+Priority Order:
 
----
-
-## Orbit v1
-
-Planned:
-
-* Major Events
-* Milestones
-* Goals
-* Tasks
-* Daily Plans
-* Reviews
+1. Liquidity Draw Engine
+2. Behavior Classification Engine
+3. Opportunity Recognition Refinement
+4. Alert Eligibility Engine
+5. Execution Confirmation Layer
 
 ---
 
-## Orbit v2
+## Orbit Roadmap
 
-Planned:
+Future:
 
-* Agent integration
-* Enhanced dashboards
-* Progress tracking
-* Trading journal integration
-
----
-
-## Orbit v3
-
-Planned:
-
-* Life progression system
-* Skill trees
-* XP
-* Milestone verification
-* Achievement system
+* Planning Agent
+* Reflection Agent
+* Voice-first planning
+* Ascend integration
+* Achievement systems
+* Skill progression systems
 
 ---
 
@@ -339,201 +639,3 @@ Before implementing features:
 When unsure:
 
 Ask for clarification rather than making architectural decisions.
-
-## Orbit Module Status (Current)
-
-### Purpose
-
-Orbit is Helix's planning, execution, and reflection system.
-
-Orbit exists to help track major life objectives, break them into milestones and tasks, measure progress, and generate actionable planning guidance.
-
-Current flagship Major Event:
-
-* Corporate Escape
-* Target Date: 2027-02-28
-
----
-
-## Orbit Architecture
-
-### Major Events
-
-Top-level objectives.
-
-Example:
-
-* Corporate Escape
-
-Stored Data:
-
-* title
-* description
-* target date
-* status
-* progress percentage
-
----
-
-### Milestones
-
-Major checkpoints that support a Major Event.
-
-Current Examples:
-
-* Define income replacement target
-* Build trading review cadence
-* Create business launch plan
-* Set capital accumulation checkpoints
-
----
-
-### Goals
-
-Secondary planning layer.
-
-Currently used primarily as task containers.
-
-Includes:
-
-* Inbox Goal
-
----
-
-### Tasks
-
-Actionable work items.
-
-Capabilities:
-
-* Create tasks through Helix
-* View tasks in Orbit Dashboard
-* Complete tasks by title
-* Store completion timestamps
-
-Example:
-
-* Review my trading journal tonight
-
----
-
-### Reviews
-
-Reflection and learning layer.
-
-Supported Types:
-
-* Daily
-* Weekly
-* Monthly
-
-Capabilities:
-
-* Save reviews through Helix
-* View reviews in Orbit Dashboard
-* Include reviews in planning summaries
-
----
-
-## Orbit Dashboard
-
-Current Sections:
-
-* Major Event Countdown
-* Progress Tracking
-* Inbox Tasks
-* Milestones
-* Reviews
-* Blockers
-* Weekly Focus
-
-Data Source:
-
-* Live Orbit API
-* SQLite backend
-
----
-
-## Helix Orbit Tools
-
-Read Tools:
-
-* get_orbit_major_events
-* get_orbit_milestones
-* get_orbit_goals
-* get_orbit_tasks
-* get_corporate_escape_status
-* get_orbit_reviews
-
-Write Tools:
-
-* create_orbit_task
-* create_orbit_goal
-* complete_orbit_task
-* update_orbit_milestone_progress
-* update_orbit_major_event_progress
-* create_orbit_review
-
-Planning Tools:
-
-* generate_orbit_daily_summary
-* generate_orbit_focus
-
----
-
-## Current Orbit Workflow
-
-Helix can:
-
-1. Create tasks
-2. Complete tasks
-3. Update progress
-4. Save reviews
-5. Generate daily summaries
-6. Generate focus recommendations
-
-Example:
-
-"What should I focus on today?"
-
-↓
-
-Helix analyzes:
-
-* Major events
-* Open tasks
-* Milestones
-* Reviews
-
-↓
-
-Returns:
-
-* Highest leverage priority
-* Top 3 actions
-* Biggest blocker
-* Suggested next milestone
-
----
-
-## Next Development Phase
-
-Priority 1:
-
-* Context-aware planning recommendations
-
-Priority 2:
-
-* Trading Journal integration
-
-Priority 3:
-
-* Planning Agent
-
-Future:
-
-* Ascend
-* Reflection Agent
-* Voice-first planning
-* Helix Avatar / Core Interface
-

@@ -7,7 +7,11 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from news_risk import build_news_risk_summary, format_news_risk_section
-from tools import analyze_tradingview
+from tools import (
+    analyze_tradingview,
+    capture_tradingview,
+    extract_tradingview_visuals_from_path,
+)
 
 
 # -------------------------
@@ -15,6 +19,7 @@ from tools import analyze_tradingview
 # -------------------------
 SYMBOL = "MES"
 SCAN_TIMEFRAME = "15M"
+SCHEDULED_SCAN_TIMEFRAMES = ["4H", "1H", "15M"]
 SCAN_INTERVAL_SECONDS = 5 * 60
 TIMEZONE = ZoneInfo("America/Denver")
 
@@ -114,6 +119,413 @@ def attach_news_risk(result: dict, now: datetime) -> None:
         (result.get("message") or "")
         + "\n\n"
         + format_news_risk_section(news_risk)
+    ).strip()
+
+
+# -------------------------
+# Multi-timeframe visual context
+# -------------------------
+def _build_timeframe_capture_from_result(timeframe: str, result: dict) -> dict:
+    visual_extraction = result.get("visual_extraction") or {}
+
+    return {
+        "timeframe": timeframe,
+        "success": bool(result.get("screenshot_path")),
+        "screenshot_path": result.get("screenshot_path"),
+        "visual_extraction": visual_extraction,
+        "vision_success": visual_extraction.get("success", False),
+        "vision_error": visual_extraction.get("error"),
+        "error": result.get("error"),
+    }
+
+
+def _capture_timeframe_context(
+    *,
+    timeframe: str,
+    prompt: str,
+) -> dict:
+    capture_result = capture_tradingview(symbol=SYMBOL, timeframe=timeframe)
+
+    if not capture_result.get("success"):
+        return {
+            "timeframe": timeframe,
+            "success": False,
+            "screenshot_path": None,
+            "visual_extraction": None,
+            "vision_success": False,
+            "vision_error": None,
+            "error": capture_result.get("error") or capture_result.get("message"),
+        }
+
+    screenshot_path = capture_result.get("screenshot_path")
+    visual_extraction = extract_tradingview_visuals_from_path(
+        image_path=screenshot_path,
+        prompt=prompt,
+        symbol=SYMBOL,
+        source=f"scheduled {timeframe} TradingView capture",
+    )
+
+    return {
+        "timeframe": timeframe,
+        "success": True,
+        "screenshot_path": screenshot_path,
+        "visual_extraction": visual_extraction,
+        "vision_success": visual_extraction.get("success", False),
+        "vision_error": visual_extraction.get("error"),
+        "error": None,
+    }
+
+
+def collect_scheduled_timeframe_captures(
+    *,
+    primary_timeframe: str,
+    primary_result: dict,
+    session_label: str,
+) -> dict:
+    prompt = (
+        f"Scheduled {SYMBOL} scan during {session_label}. "
+        "Extract visible user markings only."
+    )
+    captures = {}
+
+    for timeframe in SCHEDULED_SCAN_TIMEFRAMES:
+        if timeframe == primary_timeframe:
+            captures[timeframe] = _build_timeframe_capture_from_result(
+                timeframe=timeframe,
+                result=primary_result,
+            )
+            continue
+
+        try:
+            captures[timeframe] = _capture_timeframe_context(
+                timeframe=timeframe,
+                prompt=prompt,
+            )
+        except Exception as e:
+            captures[timeframe] = {
+                "timeframe": timeframe,
+                "success": False,
+                "screenshot_path": None,
+                "visual_extraction": None,
+                "vision_success": False,
+                "vision_error": None,
+                "error": str(e),
+            }
+
+    return captures
+
+
+def format_timeframe_screenshots_section(timeframe_captures: dict | None) -> str:
+    lines = ["## Timeframe Screenshots"]
+
+    for timeframe in SCHEDULED_SCAN_TIMEFRAMES:
+        capture = (timeframe_captures or {}).get(timeframe) or {}
+        status = "captured" if capture.get("screenshot_path") else "failed"
+        lines.append(f"- {timeframe}: {status}")
+
+    return "\n".join(lines)
+
+
+def scheduled_timeframe_label() -> str:
+    return "/".join(SCHEDULED_SCAN_TIMEFRAMES)
+
+
+def attach_timeframe_screenshots_section(
+    result: dict,
+    timeframe_captures: dict | None,
+) -> None:
+    result["timeframe_captures"] = timeframe_captures or {}
+    result["message"] = (
+        (result.get("message") or "")
+        + "\n\n"
+        + format_timeframe_screenshots_section(timeframe_captures)
+    ).strip()
+
+
+# -------------------------
+# Opportunity recognition
+# -------------------------
+OPPORTUNITY_TYPE_LABELS = {
+    "no_opportunity": "No Opportunity",
+    "bullish_continuation_watch": "Bullish Continuation Watch",
+    "bearish_continuation_watch": "Bearish Continuation Watch",
+    "reversal_watch": "Reversal Watch",
+    "range_chop_warning": "Range/Chop Warning",
+}
+
+
+def _dedupe_text(items: list[str]) -> list[str]:
+    seen = set()
+    cleaned = []
+
+    for item in items:
+        text = str(item).strip()
+        key = text.lower()
+
+        if not text or key in seen:
+            continue
+
+        seen.add(key)
+        cleaned.append(text)
+
+    return cleaned
+
+
+def _visuals_from_capture(capture: dict | None) -> dict:
+    extraction = (capture or {}).get("visual_extraction") or {}
+    return extraction.get("visuals") or {}
+
+
+def _visual_text_from_visuals(visuals: dict) -> str:
+    parts = []
+
+    for label in visuals.get("visible_labels") or []:
+        parts.append(str(label))
+
+    for key in ["horizontal_lines", "drawn_boxes"]:
+        for item in visuals.get(key) or []:
+            if isinstance(item, dict):
+                parts.extend([
+                    str(item.get("label") or ""),
+                    str(item.get("color") or ""),
+                    str(item.get("location_notes") or ""),
+                ])
+            else:
+                parts.append(str(item))
+
+    for key in ["arrows_or_annotations", "notes_about_user_markings", "uncertainty_flags"]:
+        for item in visuals.get(key) or []:
+            parts.append(str(item))
+
+    return " ".join(part for part in parts if part).lower()
+
+
+def _record_visual_context(record: dict) -> dict:
+    timeframe_captures = record.get("timeframe_captures") or {}
+    capture_15m = timeframe_captures.get("15M") or {}
+    visuals_15m = _visuals_from_capture(capture_15m)
+
+    if not visuals_15m and record.get("timeframe") == "15M":
+        visuals_15m = (record.get("visual_extraction") or {}).get("visuals") or {}
+
+    all_visual_text = [_visual_text_from_visuals(visuals_15m)]
+
+    for capture in timeframe_captures.values():
+        all_visual_text.append(_visual_text_from_visuals(_visuals_from_capture(capture)))
+
+    return {
+        "visuals_15m": visuals_15m,
+        "text_15m": _visual_text_from_visuals(visuals_15m),
+        "text_all": " ".join(text for text in all_visual_text if text),
+    }
+
+
+def _contains_any(text: str, terms: list[str]) -> bool:
+    return any(term in text for term in terms)
+
+
+def _csv_is_stale(record: dict) -> bool:
+    freshness = record.get("csv_freshness") or {}
+
+    if isinstance(freshness, dict):
+        if freshness.get("is_stale"):
+            return True
+
+        for timeframe in ["1M", "15M"]:
+            item = freshness.get(timeframe) or {}
+            if isinstance(item, dict) and item.get("is_stale"):
+                return True
+
+    return False
+
+
+def _news_risk_level(record: dict) -> str:
+    news_risk = record.get("news_risk") or {}
+    return str(news_risk.get("risk") or "Low").strip().lower()
+
+
+def _downgrade_confidence(confidence: str) -> str:
+    if confidence == "high":
+        return "medium"
+    if confidence == "medium":
+        return "low"
+    return "low"
+
+
+def recognize_opportunity(record: dict) -> dict:
+    state = record.get("state") or extract_structured_state(record)
+    htf_bias = state.get("htf_bias", "unknown")
+    execution_bias = state.get("execution_bias", "unknown")
+    price_relation = state.get("price_relation", "unknown")
+
+    visual_context = _record_visual_context(record)
+    visual_text_15m = visual_context.get("text_15m", "")
+    visual_text_all = visual_context.get("text_all", "")
+
+    bullish_terms = [
+        "pdh",
+        "pdnyh",
+        "fvg",
+        "reclaim",
+        "holding above",
+        "hold above",
+        "above level",
+        "above the level",
+        "support",
+        "demand",
+        "bullish",
+    ]
+    bearish_terms = [
+        "rejection",
+        "reject",
+        "failure",
+        "failed",
+        "lost level",
+        "reclaim lost",
+        "below level",
+        "below the level",
+        "resistance",
+        "supply",
+        "bearish",
+    ]
+    range_terms = ["range", "chop", "sideways", "consolidation", "balanced", "inside range"]
+    reversal_terms = ["sweep", "reversal", "raid", "failed breakout", "failed breakdown"]
+
+    bullish_visual = _contains_any(visual_text_15m, bullish_terms) or _contains_any(visual_text_all, bullish_terms)
+    bearish_visual = _contains_any(visual_text_15m, bearish_terms) or _contains_any(visual_text_all, bearish_terms)
+    range_visual = _contains_any(visual_text_all, range_terms)
+    reversal_visual = _contains_any(visual_text_all, reversal_terms)
+    csv_stale = _csv_is_stale(record)
+    news_risk_level = _news_risk_level(record)
+
+    opportunity_type = "no_opportunity"
+    confidence = "low"
+    reasons = []
+    risks = []
+    next_confirmation_needed = []
+
+    if htf_bias == "bullish" and execution_bias == "bearish":
+        if bullish_visual:
+            opportunity_type = "bullish_continuation_watch"
+            confidence = "medium"
+            reasons.append("HTF bias is bullish while execution is temporarily bearish.")
+            reasons.append("15M or multi-timeframe visuals include reclaim, FVG, PDH, or hold-above context.")
+            next_confirmation_needed.append("Execution structure needs to shift back in line with the bullish HTF read.")
+            next_confirmation_needed.append("Price should continue respecting the marked level or zone on fresh chart context.")
+        else:
+            opportunity_type = "range_chop_warning" if range_visual else "no_opportunity"
+            reasons.append("HTF and execution bias conflict without enough supportive visual context.")
+            next_confirmation_needed.append("Wait for clearer visual confirmation around a marked level or zone.")
+    elif htf_bias == "bearish" and execution_bias == "bullish":
+        if bearish_visual:
+            opportunity_type = "bearish_continuation_watch"
+            confidence = "medium"
+            reasons.append("HTF bias is bearish while execution is temporarily bullish.")
+            reasons.append("15M or multi-timeframe visuals include rejection, failure, lost-level, or overhead context.")
+            next_confirmation_needed.append("Execution structure needs to shift back in line with the bearish HTF read.")
+            next_confirmation_needed.append("Price should continue failing or rejecting the marked level or zone on fresh chart context.")
+        else:
+            opportunity_type = "range_chop_warning" if range_visual else "no_opportunity"
+            reasons.append("HTF and execution bias conflict without enough rejection or failure evidence.")
+            next_confirmation_needed.append("Wait for clearer visual confirmation around a marked level or zone.")
+    elif htf_bias == execution_bias and htf_bias in ["bullish", "bearish"]:
+        if htf_bias == "bullish" and bullish_visual:
+            opportunity_type = "bullish_continuation_watch"
+            confidence = "medium"
+            reasons.append("HTF and execution bias are aligned bullish.")
+            reasons.append("Visual context includes bullish level, FVG, PDH, or hold-above evidence.")
+            next_confirmation_needed.append("Fresh lower-timeframe structure should continue to support the aligned bullish read.")
+        elif htf_bias == "bearish" and bearish_visual:
+            opportunity_type = "bearish_continuation_watch"
+            confidence = "medium"
+            reasons.append("HTF and execution bias are aligned bearish.")
+            reasons.append("Visual context includes rejection, failure, supply, or lost-level evidence.")
+            next_confirmation_needed.append("Fresh lower-timeframe structure should continue to support the aligned bearish read.")
+        elif range_visual:
+            opportunity_type = "range_chop_warning"
+            reasons.append("Bias is aligned, but visual context suggests range or chop conditions.")
+            next_confirmation_needed.append("Need cleaner displacement away from the current range.")
+        else:
+            reasons.append("Bias is aligned, but visual context is not specific enough for an opportunity watch.")
+            next_confirmation_needed.append("Need clearer marked-level confirmation before upgrading the watch.")
+    elif reversal_visual and (bullish_visual or bearish_visual):
+        opportunity_type = "reversal_watch"
+        confidence = "low"
+        reasons.append("Visual context includes sweep, raid, reversal, or failed-breakout language.")
+        next_confirmation_needed.append("Need follow-through structure before treating the reversal context as meaningful.")
+    elif range_visual:
+        opportunity_type = "range_chop_warning"
+        reasons.append("Visual context suggests range or chop conditions.")
+        next_confirmation_needed.append("Need cleaner directional structure away from the range.")
+    else:
+        reasons.append("No conservative opportunity context was confirmed from current state and visuals.")
+        next_confirmation_needed.append("Need alignment between HTF, execution, and visible marked-level behavior.")
+
+    if price_relation != "unknown":
+        reasons.append(f"Computed price relation is {price_relation}.")
+
+    if csv_stale:
+        confidence = _downgrade_confidence(confidence)
+        risks.append("CSV freshness is stale, so computed current price should be treated as historical context.")
+
+    if news_risk_level == "high":
+        confidence = _downgrade_confidence(confidence)
+        risks.append("News Risk is High, so market movement may be less reliable.")
+    elif news_risk_level == "medium":
+        risks.append("News Risk is Medium, so confirmation quality matters more.")
+
+    if not record.get("vision_success"):
+        confidence = "low"
+        risks.append("Primary visual extraction did not succeed.")
+
+    if not visual_text_15m:
+        risks.append("15M visual labels were not available or not readable.")
+
+    if not risks:
+        risks.append("No major contextual risk flag was detected.")
+
+    return {
+        "opportunity_type": opportunity_type,
+        "confidence": confidence,
+        "reasons": _dedupe_text(reasons),
+        "risks": _dedupe_text(risks),
+        "next_confirmation_needed": _dedupe_text(next_confirmation_needed),
+    }
+
+
+def format_opportunity_watch_section(opportunity: dict) -> str:
+    opportunity_type = opportunity.get("opportunity_type") or "no_opportunity"
+    label = OPPORTUNITY_TYPE_LABELS.get(opportunity_type, "No Opportunity")
+    confidence = str(opportunity.get("confidence") or "low").capitalize()
+    reasons = opportunity.get("reasons") or ["No conservative opportunity context was confirmed."]
+    risks = opportunity.get("risks") or ["No major contextual risk flag was detected."]
+    confirmations = opportunity.get("next_confirmation_needed") or [
+        "Need clearer alignment between market state and visible chart context."
+    ]
+
+    lines = [
+        "## Opportunity Watch",
+        f"Type: {label}",
+        f"Confidence: {confidence}",
+        "",
+        "Reasons:",
+    ]
+    lines.extend(f"- {item}" for item in reasons)
+    lines.extend(["", "Risks:"])
+    lines.extend(f"- {item}" for item in risks)
+    lines.extend(["", "Next confirmation needed:"])
+    lines.extend(f"- {item}" for item in confirmations)
+
+    return "\n".join(lines)
+
+
+def attach_opportunity_watch(record: dict) -> None:
+    opportunity = recognize_opportunity(record)
+    record["opportunity_watch"] = opportunity
+    record["message"] = (
+        (record.get("message") or "")
+        + "\n\n"
+        + format_opportunity_watch_section(opportunity)
     ).strip()
 
 
@@ -477,6 +889,7 @@ def build_scan_record(
         "session_label": " + ".join(sessions),
         "success": result.get("success", False),
         "screenshot_path": result.get("screenshot_path"),
+        "timeframe_captures": result.get("timeframe_captures") or {},
         "vision_success": visual_extraction.get("success", False),
         "vision_error": visual_extraction.get("error"),
         "csv_success": csv_analysis.get("success", False),
@@ -628,10 +1041,13 @@ def run_scan(
     force: bool = False,
     update_runtime_status: bool = False,
     timeframe: str = SCAN_TIMEFRAME,
+    multi_timeframe: bool = False,
 ) -> dict | None:
     now = datetime.now(TIMEZONE)
     sessions = get_active_sessions(now)
     timeframe = timeframe.upper()
+    primary_timeframe = SCAN_TIMEFRAME if multi_timeframe else timeframe
+    status_timeframe = scheduled_timeframe_label() if multi_timeframe else primary_timeframe
 
     if not force and not sessions:
         print(f"[{now.isoformat()}] Outside scan window. No scan ran.")
@@ -639,23 +1055,35 @@ def run_scan(
 
     session_label = " + ".join(sessions) if sessions else "Forced Scan"
 
-    print(f"[{now.isoformat()}] Running {SYMBOL} {timeframe} scan during: {session_label}")
+    print(f"[{now.isoformat()}] Running {SYMBOL} {status_timeframe} scan during: {session_label}")
 
     try:
         if update_runtime_status:
             write_scanner_runtime_status(
                 scanner_enabled=True,
-                timeframe=timeframe,
+                timeframe=status_timeframe,
                 running_scan=True,
             )
 
         result = analyze_tradingview(
             symbol=SYMBOL,
-            timeframe=timeframe,
+            timeframe=primary_timeframe,
             prompt=f"Scheduled {SYMBOL} scan during {session_label}. Analyze with marked levels.",
         )
 
+        if multi_timeframe:
+            timeframe_captures = collect_scheduled_timeframe_captures(
+                primary_timeframe=primary_timeframe,
+                primary_result=result,
+                session_label=session_label,
+            )
+        else:
+            timeframe_captures = {}
+
         attach_news_risk(result, now)
+
+        if multi_timeframe:
+            attach_timeframe_screenshots_section(result, timeframe_captures)
 
         previous_scan = load_last_successful_scan()
 
@@ -678,12 +1106,14 @@ def run_scan(
             alert=alert,
         )
 
+        attach_opportunity_watch(record)
+
         save_scan_record(record)
 
         if update_runtime_status:
             write_scanner_runtime_status(
                 scanner_enabled=True,
-                timeframe=timeframe,
+                timeframe=status_timeframe,
                 running_scan=False,
                 last_scan_timestamp=record.get("timestamp"),
                 latest_scan_success=record.get("success"),
@@ -731,7 +1161,8 @@ def run_scan(
             "timestamp": now.isoformat(),
             "timezone": "America/Denver",
             "symbol": SYMBOL,
-            "timeframe": timeframe,
+            "timeframe": primary_timeframe,
+            "timeframe_captures": {},
             "sessions": sessions if sessions else ["Forced Scan"],
             "session_label": session_label,
             "success": False,
@@ -743,7 +1174,7 @@ def run_scan(
         if update_runtime_status:
             write_scanner_runtime_status(
                 scanner_enabled=True,
-                timeframe=timeframe,
+                timeframe=status_timeframe,
                 running_scan=False,
                 last_scan_timestamp=error_record.get("timestamp"),
                 latest_scan_success=False,
@@ -754,11 +1185,12 @@ def run_scan(
 
 
 def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
-    timeframe = timeframe.upper()
+    timeframe = SCAN_TIMEFRAME
 
     print("Scheduled scanner started.")
     print(f"Symbol: {SYMBOL}")
-    print(f"Timeframe: {timeframe}")
+    print(f"Timeframes: {scheduled_timeframe_label()}")
+    print(f"Primary analysis timeframe: {timeframe}")
     print(f"Interval: {SCAN_INTERVAL_SECONDS // 60} minutes")
     print(f"History file: {SCAN_HISTORY_PATH}")
     print("Press CTRL+C to stop.")
@@ -767,18 +1199,23 @@ def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
     latest_scan = load_latest_scan()
     write_scanner_runtime_status(
         scanner_enabled=True,
-        timeframe=timeframe,
+        timeframe=scheduled_timeframe_label(),
         last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
         latest_scan_success=latest_scan.get("success") if latest_scan else None,
     )
 
     try:
         while True:
-            run_scan(force=False, update_runtime_status=True, timeframe=timeframe)
+            run_scan(
+                force=False,
+                update_runtime_status=True,
+                timeframe=timeframe,
+                multi_timeframe=True,
+            )
             latest_scan = load_latest_scan()
             write_scanner_runtime_status(
                 scanner_enabled=True,
-                timeframe=timeframe,
+                timeframe=scheduled_timeframe_label(),
                 last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
                 latest_scan_success=latest_scan.get("success") if latest_scan else None,
             )
@@ -789,7 +1226,7 @@ def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
         latest_scan = load_latest_scan()
         write_scanner_runtime_status(
             scanner_enabled=False,
-            timeframe=timeframe,
+            timeframe=scheduled_timeframe_label(),
             last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
             latest_scan_success=latest_scan.get("success") if latest_scan else None,
         )
@@ -813,7 +1250,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--timeframe",
         default=SCAN_TIMEFRAME,
-        help=f"TradingView timeframe to capture. Defaults to {SCAN_TIMEFRAME}.",
+        help=(
+            "TradingView timeframe for forced manual scans. "
+            f"Scheduled scans always collect {scheduled_timeframe_label()} with {SCAN_TIMEFRAME} primary analysis."
+        ),
     )
 
     args = parser.parse_args()
@@ -821,6 +1261,6 @@ if __name__ == "__main__":
     if args.force:
         run_scan(force=True, timeframe=args.timeframe)
     elif args.once:
-        run_scan(force=False, timeframe=args.timeframe)
+        run_scan(force=False, timeframe=SCAN_TIMEFRAME, multi_timeframe=True)
     else:
-        run_loop(timeframe=args.timeframe)
+        run_loop()
