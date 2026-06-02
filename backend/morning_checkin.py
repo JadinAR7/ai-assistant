@@ -139,6 +139,13 @@ def _extract_line_value(summary: str, label: str) -> str | None:
     return match.group(1).strip()
 
 
+def _extract_label_value(summary: str, label: str) -> str | None:
+    value = _extract_line_value(summary, label)
+    if value:
+        return value
+    return _first_item_after_heading(summary, label)
+
+
 def _first_item_after_heading(summary: str, heading: str) -> str | None:
     lines = summary.splitlines()
     for index, line in enumerate(lines):
@@ -175,38 +182,57 @@ def _clean_morning_task_for_speech(task: str) -> str:
     return _sentence_case(task)
 
 
-def format_morning_summary_for_speech(summary: str) -> str:
+def _clean_status_for_speech(value: str) -> str:
+    value = re.sub(r"\s*\(P\d+\)\s*", "", value).strip()
+    value = re.sub(r"(\d+(?:\.\d+)?)\s*%", r"\1 percent", value)
+    return _sentence_case(value)
+
+
+def condense_morning_summary_for_speech(summary: str) -> str:
     parts: list[str] = ["Good morning."]
 
     corporate_match = re.search(
-        r"Corporate Escape is\s+(\d+(?:\.\d+)?)%\s+complete",
+        r"Corporate Escape is\s+(\d+(?:\.\d+)?)%\s+complete(?:\s+with\s+([^.\n]+))?",
         summary,
         re.IGNORECASE,
     )
     if corporate_match:
-        parts.append(
-            f"Corporate Escape is {corporate_match.group(1)} percent complete."
-        )
+        progress = corporate_match.group(1)
+        days_text = corporate_match.group(2)
+        if days_text:
+            parts.append(
+                f"Corporate Escape is {progress} percent complete, with {days_text}."
+            )
+        else:
+            parts.append(f"Corporate Escape is {progress} percent complete.")
 
-    readiness = _extract_line_value(summary, "Readiness")
+    readiness = _extract_label_value(summary, "Readiness")
     if readiness:
-        readiness = re.sub(r"(\d+(?:\.\d+)?)\s*%", r"\1 percent", readiness)
-        parts.append(f"Overall readiness is {_sentence_case(readiness)}.")
+        parts.append(f"Overall readiness is {_clean_status_for_speech(readiness)}.")
 
-    top_task = _extract_line_value(summary, "Top Priority Task")
+    top_task = _extract_label_value(summary, "Top Priority Task")
     if top_task:
         parts.append(f"Your top priority is to {_clean_morning_task_for_speech(top_task)}.")
 
-    gap = _first_item_after_heading(summary, "Strategic Gaps")
-    if gap:
-        gap = re.sub(r"\s*\(P\d+\)\s*", "", gap).strip()
-        parts.append(f"The first strategic gap is {_clean_morning_task_for_speech(gap)}.")
+    blocker = _first_item_after_heading(summary, "Blockers")
+    if blocker and blocker.lower() != "no active blockers":
+        parts.append(f"The biggest blocker is {_clean_status_for_speech(blocker)}.")
+    else:
+        gap = _first_item_after_heading(summary, "Strategic Gaps")
+        if gap and gap.lower() != "no strategic gaps":
+            parts.append(
+                f"The biggest strategic gap is {_clean_morning_task_for_speech(gap)}."
+            )
 
-    next_action = _extract_line_value(summary, "Next action")
+    next_action = _extract_label_value(summary, "Next action")
     if next_action:
-        parts.append(f"Next, {_clean_morning_task_for_speech(next_action)}.")
+        parts.append(f"For focus, {_clean_morning_task_for_speech(next_action)}.")
 
     return format_text_for_speech(" ".join(parts))
+
+
+def format_morning_summary_for_speech(summary: str) -> str:
+    return condense_morning_summary_for_speech(summary)
 
 
 def _should_speak(source: Source, speak: bool | None) -> bool:
@@ -272,11 +298,13 @@ def check_in(source: Source = "manual", speak: bool | None = None) -> dict[str, 
     original_text = None
     tts_success = False
     tts_error = None
+    full_spoken_text_available = False
     if should_speak:
+        original_text = summary
+        spoken_text = condense_morning_summary_for_speech(summary)
+        full_spoken_text_available = True
         try:
-            original_text = summary
-            speech_summary = format_morning_summary_for_speech(summary)
-            spoken_text = speak_text(speech_summary)
+            spoken_text = speak_text(spoken_text)
             spoken = True
             tts_success = True
         except Exception as exc:
@@ -292,6 +320,7 @@ def check_in(source: Source = "manual", speak: bool | None = None) -> dict[str, 
         "delivery_channel": channel,
         "spoken": spoken,
         "spoken_text": spoken_text,
+        "full_spoken_text_available": full_spoken_text_available,
         "original_text": original_text,
         "tts_success": tts_success,
         "tts_error": tts_error,

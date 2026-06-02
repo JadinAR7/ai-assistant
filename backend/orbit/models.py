@@ -384,6 +384,7 @@ class MorningCheckInResult(BaseModel):
     delivery_channel: Optional[str] = None
     spoken: bool = False
     spoken_text: Optional[str] = None
+    full_spoken_text_available: bool = False
     original_text: Optional[str] = None
     tts_success: bool = False
     tts_error: Optional[str] = None
