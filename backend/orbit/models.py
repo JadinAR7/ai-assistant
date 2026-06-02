@@ -131,10 +131,28 @@ class LinkedMilestone(BaseModel):
     title: str
     status: str
     progress_percent: int
+    major_event_id: Optional[int] = None
+    major_event_title: Optional[str] = None
 
 
 class TaskWithMilestones(Task):
     milestones: list[LinkedMilestone] = Field(default_factory=list)
+    priority_score: int = 0
+    priority_factors: list[str] = Field(default_factory=list)
+
+
+class TaskPriority(BaseModel):
+    id: int
+    title: str
+    priority_score: int
+    factors: list[str] = Field(default_factory=list)
+
+
+class StrategicGap(BaseModel):
+    milestone_id: int
+    title: str
+    priority_score: int
+    reasons: list[str] = Field(default_factory=list)
 
 
 class TaskMilestoneLink(BaseModel):

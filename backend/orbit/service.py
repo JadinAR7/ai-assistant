@@ -84,6 +84,7 @@ ORBIT_INBOX_MILESTONE_TITLE = "Inbox / General"
 ORBIT_INBOX_GOAL_TITLE = "Inbox"
 MILESTONE_PROGRESS_SOURCES = {"manual", "task_advisory", "helix_tool", "system"}
 ORBIT_LOCAL_TIMEZONE = ZoneInfo("America/Denver")
+STRATEGIC_GAP_RECENT_ACTIVITY_DAYS = 7
 
 
 def _serialize_value(value: Any) -> Any:
@@ -432,9 +433,10 @@ def list_milestones_linked_to_task(task_id: int) -> list[dict[str, Any]]:
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT milestones.*
+        SELECT milestones.*, major_events.title AS major_event_title
         FROM task_milestone_links
         JOIN milestones ON milestones.id = task_milestone_links.milestone_id
+        JOIN major_events ON major_events.id = milestones.major_event_id
         WHERE task_milestone_links.task_id = ?
         ORDER BY milestones.id
         """,
@@ -464,7 +466,10 @@ def list_tasks_linked_to_milestone(milestone_id: int) -> list[dict[str, Any]]:
     rows = cursor.fetchall()
     conn.close()
 
-    return [_with_linked_milestones(dict(row)) for row in rows]
+    return sorted(
+        [_with_linked_milestones(dict(row)) for row in rows],
+        key=_priority_sort_key,
+    )
 
 
 def get_milestone_progress_advisory(milestone_id: int) -> dict[str, Any] | None:
@@ -520,17 +525,283 @@ def _summarize_linked_milestone(milestone: dict[str, Any]) -> dict[str, Any]:
         "title": milestone.get("title"),
         "status": milestone.get("status"),
         "progress_percent": milestone.get("progress_percent"),
+        "major_event_id": milestone.get("major_event_id"),
+        "major_event_title": milestone.get("major_event_title"),
     }
+
+
+def _priority_factor(
+    factors: list[str],
+    label: str,
+    points: int,
+) -> int:
+    if label not in factors:
+        factors.append(label)
+        return points
+    return 0
+
+
+def _milestone_text_matches(milestone: dict[str, Any], keywords: set[str]) -> bool:
+    text = " ".join(
+        str(milestone.get(field) or "")
+        for field in ["title", "description", "major_event_title"]
+    ).casefold()
+    return any(keyword in text for keyword in keywords)
+
+
+def calculate_task_priority(task: dict[str, Any]) -> dict[str, Any]:
+    """Explainable Orbit Priority Scoring Engine v1."""
+    today = datetime.now(ORBIT_LOCAL_TIMEZONE).date()
+    score = 0
+    factors: list[str] = []
+    milestones = task.get("milestones")
+    if milestones is None:
+        milestones = list_milestones_linked_to_task(int(task.get("id")))
+
+    if milestones:
+        score += _priority_factor(factors, "Milestone linked", 50)
+
+    has_corporate_escape_milestone = any(
+        str(milestone.get("major_event_title") or "").casefold()
+        == ORBIT_CORPORATE_ESCAPE_TITLE.casefold()
+        for milestone in milestones
+    )
+    if has_corporate_escape_milestone:
+        score += _priority_factor(factors, "Corporate Escape", 30)
+
+    has_active_milestone = any(
+        str(milestone.get("status") or "").casefold() in {"active", "in_progress"}
+        and _is_open(milestone)
+        for milestone in milestones
+    )
+    if has_active_milestone:
+        score += _priority_factor(factors, "Active milestone", 20)
+
+    due_date = _parse_date(task.get("due_date"))
+    if due_date == today:
+        score += _priority_factor(factors, "Due today", 20)
+    elif due_date is not None and due_date < today:
+        score += _priority_factor(factors, "Overdue", 40)
+
+    status = str(task.get("status") or "").casefold()
+    if status == "in_progress":
+        score += _priority_factor(factors, "Task in progress", 10)
+    elif status == "queued":
+        score += _priority_factor(factors, "Task queued", 5)
+
+    if any(
+        _milestone_text_matches(milestone, {"trading", "trade", "scanner", "chart"})
+        for milestone in milestones
+    ):
+        score += _priority_factor(factors, "Trading milestone", 15)
+
+    if any(
+        _milestone_text_matches(
+            milestone,
+            {"business", "revenue", "client", "offer", "product", "income"},
+        )
+        for milestone in milestones
+    ):
+        score += _priority_factor(factors, "Business milestone", 15)
+
+    return {
+        "priority_score": score,
+        "factors": factors,
+    }
+
+
+def _priority_sort_key(task: dict[str, Any]) -> tuple[int, date, int]:
+    return (
+        -int(task.get("priority_score") or 0),
+        _parse_date(task.get("due_date")) or date.max,
+        int(task.get("id") or 0),
+    )
 
 
 def _with_linked_milestones(task: dict[str, Any]) -> dict[str, Any]:
-    return {
+    full_milestones = list_milestones_linked_to_task(int(task.get("id")))
+    priority = calculate_task_priority({**task, "milestones": full_milestones})
+    linked_task = {
         **task,
         "milestones": [
             _summarize_linked_milestone(milestone)
-            for milestone in list_milestones_linked_to_task(int(task.get("id")))
+            for milestone in full_milestones
         ],
+        "priority_score": priority["priority_score"],
+        "priority_factors": priority["factors"],
     }
+    return linked_task
+
+
+def _get_major_event_title(major_event_id: Any) -> str | None:
+    if major_event_id is None:
+        return None
+
+    event = get_record("major_events", int(major_event_id))
+    return str(event.get("title")) if event else None
+
+
+def _latest_milestone_activity_at(milestone_id: int) -> datetime | None:
+    history = list_milestone_progress_history(milestone_id)
+    if not history:
+        return None
+
+    return _parse_datetime(history[0].get("created_at"), assume_naive_utc=True)
+
+
+def _has_recent_milestone_activity(milestone_id: int) -> bool:
+    latest_activity = _latest_milestone_activity_at(milestone_id)
+    if latest_activity is None:
+        return False
+
+    now = datetime.now(ORBIT_LOCAL_TIMEZONE)
+    if latest_activity.tzinfo is None:
+        latest_activity = latest_activity.replace(tzinfo=timezone.utc)
+
+    age_days = (now - latest_activity.astimezone(ORBIT_LOCAL_TIMEZONE)).days
+    return age_days < STRATEGIC_GAP_RECENT_ACTIVITY_DAYS
+
+
+def _milestone_priority_sort_key(milestone: dict[str, Any]) -> tuple[int, int]:
+    return (
+        -int(milestone.get("priority_score") or 0),
+        int(milestone.get("milestone_id") or milestone.get("id") or 0),
+    )
+
+
+def calculate_milestone_priority(milestone: dict[str, Any]) -> dict[str, Any]:
+    """Explainable Strategic Gap milestone scoring v1."""
+    milestone_id = int(milestone.get("id") or milestone.get("milestone_id"))
+    status = str(milestone.get("status") or "").casefold()
+    progress = int(milestone.get("progress_percent") or 0)
+    linked_tasks = milestone.get("linked_tasks")
+    if linked_tasks is None:
+        linked_tasks = list_tasks_linked_to_milestone(milestone_id)
+
+    open_linked_tasks = [
+        task
+        for task in linked_tasks
+        if _is_open(task)
+    ]
+    major_event_title = milestone.get("major_event_title") or _get_major_event_title(
+        milestone.get("major_event_id"),
+    )
+    has_recent_activity = milestone.get("has_recent_activity")
+    if has_recent_activity is None:
+        has_recent_activity = _has_recent_milestone_activity(milestone_id)
+
+    score = 0
+    reasons: list[str] = []
+
+    if status == "active":
+        score += _priority_factor(reasons, "Active milestone", 50)
+    elif status == "in_progress":
+        score += _priority_factor(reasons, "In progress milestone", 40)
+
+    if str(major_event_title or "").casefold() == ORBIT_CORPORATE_ESCAPE_TITLE.casefold():
+        score += _priority_factor(reasons, "Corporate Escape milestone", 30)
+
+    if progress <= 10:
+        score += _priority_factor(
+            reasons,
+            "Progress remains 0%" if progress == 0 else "Progress <= 10%",
+            25,
+        )
+
+    if not open_linked_tasks:
+        score += _priority_factor(reasons, "No linked open tasks", 30)
+
+    if not linked_tasks:
+        score += _priority_factor(reasons, "No linked tasks", 40)
+
+    if has_recent_activity:
+        score -= 10
+        reasons.append("Recent progress activity")
+    else:
+        reasons.append("No recent progress activity")
+
+    if status in {"complete", "completed", "done"}:
+        score -= 100
+        reasons.append("Completed milestone")
+
+    return {
+        "priority_score": score,
+        "reasons": reasons,
+        "linked_task_count": len(linked_tasks),
+        "open_linked_task_count": len(open_linked_tasks),
+        "has_recent_activity": bool(has_recent_activity),
+    }
+
+
+def _with_milestone_priority(milestone: dict[str, Any]) -> dict[str, Any]:
+    major_event_title = _get_major_event_title(milestone.get("major_event_id"))
+    linked_tasks = list_tasks_linked_to_milestone(int(milestone["id"]))
+    priority = calculate_milestone_priority(
+        {
+            **milestone,
+            "major_event_title": major_event_title,
+            "linked_tasks": linked_tasks,
+        },
+    )
+    return {
+        **milestone,
+        "major_event_title": major_event_title,
+        "priority_score": priority["priority_score"],
+        "priority_reasons": priority["reasons"],
+        "linked_task_count": priority["linked_task_count"],
+        "open_linked_task_count": priority["open_linked_task_count"],
+        "has_recent_activity": priority["has_recent_activity"],
+    }
+
+
+def _is_strategic_gap(milestone: dict[str, Any]) -> bool:
+    status = str(milestone.get("status") or "").casefold()
+    progress = int(milestone.get("progress_percent") or 0)
+    is_active_status = status in {"active", "in_progress"}
+    no_open_linked_tasks = int(milestone.get("open_linked_task_count") or 0) == 0
+    no_linked_tasks = int(milestone.get("linked_task_count") or 0) == 0
+    no_recent_activity = not bool(milestone.get("has_recent_activity"))
+
+    return (
+        (is_active_status and no_open_linked_tasks)
+        or (progress <= 10 and no_recent_activity)
+        or no_linked_tasks
+    )
+
+
+def _compact_strategic_gap_reasons(reasons: list[str]) -> list[str]:
+    preferred = [
+        "No linked tasks",
+        "Progress remains 0%",
+        "Progress <= 10%",
+        "No recent progress activity",
+        "No linked open tasks",
+        "Active milestone",
+        "In progress milestone",
+    ]
+    ordered = [reason for reason in preferred if reason in reasons]
+    ordered.extend(reason for reason in reasons if reason not in ordered)
+    return ordered
+
+
+def list_strategic_gaps() -> list[dict[str, Any]]:
+    gaps = [
+        {
+            "milestone_id": milestone.get("id"),
+            "title": milestone.get("title"),
+            "priority_score": milestone.get("priority_score"),
+            "reasons": milestone.get("priority_reasons") or [],
+        }
+        for milestone in (
+            _with_milestone_priority(milestone)
+            for milestone in list_records("milestones")
+            if str(milestone.get("title") or "") != ORBIT_INBOX_MILESTONE_TITLE
+        )
+        if _is_strategic_gap(milestone)
+        and str(milestone.get("status") or "").casefold()
+        not in {"complete", "completed", "done", "cancelled"}
+    ]
+    return sorted(gaps, key=_milestone_priority_sort_key)
 
 
 def _find_record(table: str, **matches: Any) -> dict[str, Any] | None:
@@ -592,10 +863,29 @@ def get_or_create_inbox_goal() -> dict[str, Any]:
 def list_inbox_tasks() -> list[dict[str, Any]]:
     inbox_goal = get_or_create_inbox_goal()
     inbox_goal_id = inbox_goal.get("id")
-    return [
+    return sorted([
         _with_linked_milestones(task)
         for task in list_records("tasks")
         if task.get("goal_id") == inbox_goal_id
+    ], key=_priority_sort_key)
+
+
+def list_task_priorities() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": task.get("id"),
+            "title": task.get("title"),
+            "priority_score": task.get("priority_score"),
+            "factors": task.get("priority_factors") or [],
+        }
+        for task in sorted(
+            [
+                _with_linked_milestones(task)
+                for task in list_records("tasks")
+                if _is_open(task)
+            ],
+            key=_priority_sort_key,
+        )
     ]
 
 
@@ -792,6 +1082,7 @@ def _format_briefing_text(
     major_event: dict[str, Any] | None,
     readiness: dict[str, Any],
     top_tasks: list[dict[str, Any]],
+    strategic_gaps: list[dict[str, Any]],
     current_blockers: list[str],
     suggested_next_action: str,
 ) -> str:
@@ -804,19 +1095,41 @@ def _format_briefing_text(
             f"with {days_text}."
         )
 
-    task_lines = [
-        f"{index}. {task.get('title')}"
-        + (f" ({task.get('milestone_title')})" if task.get("milestone_title") else "")
-        for index, task in enumerate(top_tasks[:3], start=1)
-    ] or ["No priority tasks"]
+    top_task = top_tasks[0] if top_tasks else None
+    top_task_line = (
+        f"{top_task.get('title')} (P{top_task.get('priority_score')})"
+        + (f" - {top_task.get('milestone_title')}" if top_task.get("milestone_title") else "")
+        if top_task
+        else "No priority task"
+    )
+    secondary_lines = [
+        f"{index}. {task.get('title')} (P{task.get('priority_score')})"
+        + (f" - {task.get('milestone_title')}" if task.get("milestone_title") else "")
+        for index, task in enumerate(top_tasks[1:4], start=1)
+    ] or ["No secondary tasks"]
+    gap_lines: list[str] = []
+    for index, gap in enumerate(strategic_gaps[:3], start=1):
+        gap_lines.append(
+            f"{index}. {gap.get('title')} (P{gap.get('priority_score')})",
+        )
+        gap_lines.extend(
+            f"   - {reason}"
+            for reason in _compact_strategic_gap_reasons(gap.get("reasons") or [])[:2]
+        )
+    if not gap_lines:
+        gap_lines = ["No strategic gaps"]
     blocker_lines = current_blockers[:3] or ["No active blockers"]
 
     return (
         "Morning Briefing\n\n"
         f"{event_line}\n"
         f"Readiness: {readiness.get('overall')}% overall.\n\n"
-        "Top tasks:\n"
-        + "\n".join(task_lines)
+        "Top Priority Task:\n"
+        + top_task_line
+        + "\n\nSecondary Tasks:\n"
+        + "\n".join(secondary_lines)
+        + "\n\nStrategic Gaps:\n"
+        + "\n".join(gap_lines)
         + "\n\nBlockers:\n"
         + "\n".join(f"- {blocker}" for blocker in blocker_lines)
         + f"\n\nNext action: {suggested_next_action}"
@@ -832,7 +1145,6 @@ def generate_morning_briefing() -> dict[str, Any]:
 
     major_events = list_records("major_events")
     milestones = list_records("milestones")
-    goals = list_records("goals")
     tasks = list_records("tasks")
     reviews = list_records("reviews")
     readiness_categories = get_readiness_categories()
@@ -909,66 +1221,35 @@ def generate_morning_briefing() -> dict[str, Any]:
         )
         priority_milestones.append(summary)
 
-    goals_by_id = {goal.get("id"): goal for goal in goals}
-    milestones_by_id = {milestone.get("id"): milestone for milestone in milestones}
     linked_milestones_by_task_id = {
         task.get("id"): list_milestones_linked_to_task(int(task.get("id")))
         for task in tasks
     }
-    active_link_milestone_ids = {
-        milestone.get("id")
-        for milestone in milestones
-        if str(milestone.get("status") or "").casefold() in {"active", "in_progress"}
-        and _is_open(milestone)
-    }
-    inbox_goal_ids = {
-        goal.get("id")
-        for goal in goals
-        if str(goal.get("title") or "").casefold() == "inbox"
-    }
     open_tasks = [task for task in tasks if _is_open(task)]
 
-    def task_sort_key(task: dict[str, Any]) -> tuple[int, int, int, date, int, int]:
-        due_date = _parse_date(task.get("due_date"))
-        goal = goals_by_id.get(task.get("goal_id"))
-        milestone = milestones_by_id.get(goal.get("milestone_id")) if goal else None
-        is_inbox = task.get("goal_id") in inbox_goal_ids
-        linked_milestones = linked_milestones_by_task_id.get(task.get("id"), [])
-        has_active_milestone_link = any(
-            linked_milestone.get("id") in active_link_milestone_ids
-            for linked_milestone in linked_milestones
-        )
-        is_event_task = (
-            active_event_id is not None
-            and milestone is not None
-            and milestone.get("major_event_id") == active_event_id
-        )
-        is_urgent = due_date is not None and due_date <= today
-        return (
-            0 if has_active_milestone_link else 1,
-            0 if is_inbox else 1,
-            0 if is_urgent else 1,
-            due_date or date.max,
-            0 if is_event_task else 1,
-            int(task.get("id") or 0),
-        )
-
     def _task_with_briefing_milestones(task: dict[str, Any]) -> dict[str, Any]:
+        full_milestones = linked_milestones_by_task_id.get(task.get("id"), [])
         linked_milestones = [
             _summarize_linked_milestone(milestone)
-            for milestone in linked_milestones_by_task_id.get(task.get("id"), [])
+            for milestone in full_milestones
         ]
         summary = _summary(task, ["id", "title", "status", "due_date", "goal_id"])
         summary["milestones"] = linked_milestones
         summary["milestone_title"] = (
             linked_milestones[0].get("title") if linked_milestones else None
         )
-        return summary
+        priority = calculate_task_priority({**summary, "milestones": full_milestones})
+        return {
+            **summary,
+            "priority_score": priority["priority_score"],
+            "priority_factors": priority["factors"],
+        }
 
-    top_tasks = [
-        _task_with_briefing_milestones(task)
-        for task in sorted(open_tasks, key=task_sort_key)[:5]
-    ]
+    top_tasks = sorted(
+        [_task_with_briefing_milestones(task) for task in open_tasks],
+        key=_priority_sort_key,
+    )[:5]
+    strategic_gaps = list_strategic_gaps()[:5]
 
     recent_reviews = [
         _summary(review, ["id", "title", "review_type", "summary", "rating", "created_at"])
@@ -1054,6 +1335,7 @@ def generate_morning_briefing() -> dict[str, Any]:
         major_event=major_event,
         readiness=readiness,
         top_tasks=top_tasks,
+        strategic_gaps=strategic_gaps,
         current_blockers=current_blockers,
         suggested_next_action=suggested_next_action,
     )
@@ -1065,6 +1347,7 @@ def generate_morning_briefing() -> dict[str, Any]:
         "readiness": readiness,
         "priority_milestones": priority_milestones,
         "top_tasks": top_tasks,
+        "strategic_gaps": strategic_gaps,
         "current_blockers": current_blockers,
         "suggested_next_action": suggested_next_action,
         "recent_reviews": recent_reviews,
@@ -1076,6 +1359,7 @@ def generate_morning_briefing() -> dict[str, Any]:
 def _format_daily_closeout_text(
     completed_today: list[dict[str, Any]],
     open_tasks: list[dict[str, Any]],
+    strategic_gaps: list[dict[str, Any]],
     milestone_progress: list[dict[str, Any]],
     readiness: dict[str, Any],
     trade_summary: dict[str, Any],
@@ -1088,10 +1372,21 @@ def _format_daily_closeout_text(
         for task in completed_today[:5]
     ] or ["- No tasks completed today"]
     open_lines = [
-        f"- {task.get('title')}"
+        f"- {task.get('title')} (P{task.get('priority_score')})"
         + (f" ({task.get('milestone_title')})" if task.get("milestone_title") else "")
         for task in open_tasks[:5]
     ] or ["- No open tasks remaining"]
+    strategic_gap_lines: list[str] = []
+    for gap in strategic_gaps[:5]:
+        strategic_gap_lines.append(
+            f"- {gap.get('title')} (P{gap.get('priority_score')})",
+        )
+        strategic_gap_lines.extend(
+            f"  - {reason}"
+            for reason in _compact_strategic_gap_reasons(gap.get("reasons") or [])[:2]
+        )
+    if not strategic_gap_lines:
+        strategic_gap_lines = ["- No strategic gaps"]
     milestone_lines = [
         (
             f"- {milestone.get('milestone_title')}: "
@@ -1117,6 +1412,8 @@ def _format_daily_closeout_text(
         + "\n".join(completed_lines)
         + "\n\nStill open:\n"
         + "\n".join(open_lines)
+        + "\n\nStrategic gaps:\n"
+        + "\n".join(strategic_gap_lines)
         + "\n\nMilestone progress:\n"
         + "\n".join(milestone_lines)
         + "\n\nTrade sessions:\n"
@@ -1146,9 +1443,10 @@ def generate_daily_closeout() -> dict[str, Any]:
     }
 
     def task_summary(task: dict[str, Any]) -> dict[str, Any]:
+        full_milestones = linked_milestones_by_task_id.get(task.get("id"), [])
         linked_milestones = [
             _summarize_linked_milestone(milestone)
-            for milestone in linked_milestones_by_task_id.get(task.get("id"), [])
+            for milestone in full_milestones
         ]
         summary = _summary(
             task,
@@ -1158,23 +1456,23 @@ def generate_daily_closeout() -> dict[str, Any]:
         summary["milestone_title"] = (
             linked_milestones[0].get("title") if linked_milestones else None
         )
-        return summary
+        priority = calculate_task_priority({**summary, "milestones": full_milestones})
+        return {
+            **summary,
+            "priority_score": priority["priority_score"],
+            "priority_factors": priority["factors"],
+        }
 
     completed_today = [
         task_summary(task)
         for task in tasks
         if not _is_open(task) and _is_today(task.get("completed_at"), today)
     ]
-    open_tasks = [
-        task_summary(task)
-        for task in sorted(
-            [task for task in tasks if _is_open(task)],
-            key=lambda task: (
-                _parse_date(task.get("due_date")) or date.max,
-                int(task.get("id") or 0),
-            ),
-        )
-    ]
+    open_tasks = sorted(
+        [task_summary(task) for task in tasks if _is_open(task)],
+        key=_priority_sort_key,
+    )
+    strategic_gaps = list_strategic_gaps()[:5]
 
     milestone_progress = [
         _summary(
@@ -1267,6 +1565,7 @@ def generate_daily_closeout() -> dict[str, Any]:
     closeout_text = _format_daily_closeout_text(
         completed_today=completed_today,
         open_tasks=open_tasks,
+        strategic_gaps=strategic_gaps,
         milestone_progress=milestone_progress,
         readiness=readiness,
         trade_summary=trade_summary,
@@ -1279,6 +1578,7 @@ def generate_daily_closeout() -> dict[str, Any]:
         "generated_at": generated_at,
         "completed_today": completed_today,
         "open_tasks": open_tasks,
+        "strategic_gaps": strategic_gaps,
         "milestone_progress": milestone_progress,
         "readiness": readiness,
         "trade_summary": trade_summary,

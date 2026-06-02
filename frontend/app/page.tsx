@@ -59,6 +59,14 @@ type MorningBriefing = {
     status: string;
     due_date: string | null;
     goal_id: number;
+    priority_score?: number;
+    priority_factors?: string[];
+  }>;
+  strategic_gaps?: Array<{
+    milestone_id: number;
+    title: string;
+    priority_score: number;
+    reasons: string[];
   }>;
   current_blockers: string[];
   suggested_next_action: string;
