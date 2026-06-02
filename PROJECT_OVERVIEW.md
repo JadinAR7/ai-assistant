@@ -486,6 +486,7 @@ Current behavior:
 * Scheduled Agent Runs v1 can be run manually via endpoint or by a future macOS LaunchAgent
 * Morning Check-In / Fallback Summary v1 lets Jadin initiate a morning check-in through UI, iMessage, manual calls, or a future voice path
 * Voice Trigger Prototype v1 lets Jadin manually trigger Morning Check-In from a push-to-talk CLI script or typed test phrase
+* Wake Phrase Listener v1 lets Jadin manually run a local microphone listener for simple Morning Check-In wake phrases
 * Morning fallback sends the Morning Review summary by iMessage after the 6:30 AM local cutoff only when no check-in has been acknowledged
 
 Current restrictions:
@@ -503,7 +504,7 @@ Current restrictions:
 * Actual cited web search is reserved for a later version.
 * Agent Prioritization Layer v1 is read-only and recommendation-only. It does not run agents, create tasks, update readiness, create reviews, or send notifications.
 * Scheduled Agent Runs v1 does not install a LaunchAgent yet. Actual LaunchAgent install can come later.
-* Morning Check-In / Fallback Summary v1 does not implement microphone wake phrase detection or full conversational voice.
+* Wake Phrase Listener v1 is manual CLI only. It does not auto-start, install a service, send iMessage, create tasks, update readiness, change scanner behavior, or implement full conversational voice.
 * Voice Trigger Prototype v1 is manual/push-to-talk only and does not install or run an always-on microphone listener.
 * Morning Check-In only uses TTS when the endpoint is explicitly called with `speak=true`.
 
@@ -553,7 +554,19 @@ Voice Trigger Prototype v1:
 * Does not run automatically
 * Does not install a service
 
-Always-on speech input and wake phrase listening are not implemented yet.
+Wake Phrase Listener v1:
+
+* Manual CLI script: `python3 backend/wake_listener.py --once`
+* Loop mode: `python3 backend/wake_listener.py --loop`
+* Supported phrases: `good morning helix`, `morning helix`, `start my morning`
+* Calls `POST /agents/morning/check-in` with `source="voice"` and `speak=true`
+* Uses a configurable cooldown to prevent duplicate triggers
+* Prints setup instructions and exits cleanly when microphone/STT dependencies are missing
+* Does not run automatically
+* Does not install a service or LaunchAgent
+* Does not send iMessage
+
+Conversational voice mode is not implemented yet.
 
 Future "Good morning Helix" audible workflow requires:
 
@@ -601,8 +614,8 @@ Runbook:
 * Smart notifications are disabled by default and require explicit environment configuration.
 * iMessage delivery depends on macOS Messages and AppleScript availability.
 * TTS delivery depends on macOS `say`.
-* Always-on speech input, wake phrase detection, and conversational voice mode are not implemented yet.
-* Morning Check-In / Fallback Summary v1 supports the manual Voice Trigger Prototype through `source="voice"` and `speak=true`, but no always-on microphone wake phrase listener has been implemented.
+* Always-on speech input and conversational voice mode are not implemented yet.
+* Morning Check-In / Fallback Summary v1 supports the manual Voice Trigger Prototype and manual Wake Phrase Listener through `source="voice"` and `speak=true`, but no auto-starting microphone service has been implemented.
 * Orbit readiness scoring still requires manual judgment and Helix-assisted updates.
 * Orbit milestone progress remains manual unless Jadin explicitly applies the task-derived advisory.
 * Suggested task creation is user-approved only.
