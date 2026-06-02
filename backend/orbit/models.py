@@ -237,3 +237,26 @@ class TradeSessionRead(TradeSessionBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+
+class AgentRun(BaseModel):
+    id: int
+    agent_id: int
+    agent_name: Optional[str] = None
+    status: Literal["running", "completed", "failed"]
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    summary: Optional[str] = None
+    output_json: Optional[dict] = None
+    error: Optional[str] = None
+
+
+class AgentDefinition(BaseModel):
+    id: int
+    name: str
+    agent_type: str
+    description: Optional[str] = None
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+    last_run: Optional[AgentRun] = None

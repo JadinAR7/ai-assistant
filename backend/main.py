@@ -12,6 +12,7 @@ from tools import TOOLS, analyze_uploaded_chart_image
 from database import get_connection, log_tool
 from database import init_db, save_message, get_recent_messages, clear_messages
 from notification_config import get_default_imessage_recipient, get_notification_config
+from agent_routes import router as agent_router
 from orbit.database import init_orbit_db
 from orbit.routes import router as orbit_router
 
@@ -25,6 +26,7 @@ app = FastAPI(title="Jadin AI Assistant Backend")
 init_db()
 init_orbit_db()
 app.include_router(orbit_router)
+app.include_router(agent_router)
 
 
 # -------------------------

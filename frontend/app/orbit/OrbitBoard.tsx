@@ -132,6 +132,29 @@ export type DailyCloseout = {
   closeout_text: string;
 };
 
+export type AgentRun = {
+  id: number;
+  agent_id: number;
+  agent_name?: string | null;
+  status: "running" | "completed" | "failed";
+  started_at: string;
+  completed_at?: string | null;
+  summary?: string | null;
+  output_json?: Record<string, unknown> | null;
+  error?: string | null;
+};
+
+export type AgentDefinition = {
+  id: number;
+  name: string;
+  agent_type: string;
+  description?: string | null;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  last_run?: AgentRun | null;
+};
+
 type OrbitBoardProps = Readonly<{
   event: MajorEvent | undefined;
   milestones: Milestone[];
@@ -148,6 +171,8 @@ type OrbitBoardProps = Readonly<{
   milestoneTasksById: Record<number, InboxTask[]>;
   milestoneAdvisoriesById: Record<number, MilestoneProgressAdvisory>;
   latestProgressHistoryByMilestoneId: Record<number, MilestoneProgressHistory>;
+  agents: AgentDefinition[];
+  agentsError: string | null;
   errorMessage: string | null;
 }>;
 
@@ -157,6 +182,7 @@ const tabs = [
   "Milestones",
   "Reviews",
   "Readiness",
+  "Agents",
 ] as const;
 type Tab = (typeof tabs)[number];
 type Toast = {
@@ -276,6 +302,8 @@ export default function OrbitBoard({
   milestoneTasksById,
   milestoneAdvisoriesById,
   latestProgressHistoryByMilestoneId,
+  agents: initialAgents,
+  agentsError,
   errorMessage,
 }: OrbitBoardProps) {
   const router = useRouter();
@@ -291,6 +319,8 @@ export default function OrbitBoard({
   const [closeoutNotes, setCloseoutNotes] = useState("");
   const [loadingCloseout, setLoadingCloseout] = useState(false);
   const [savingCloseoutReview, setSavingCloseoutReview] = useState(false);
+  const [agents, setAgents] = useState<AgentDefinition[]>(initialAgents);
+  const [runningAgentId, setRunningAgentId] = useState<number | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const daysRemaining = getDaysRemaining(event?.target_date ?? null);
   const progressPercentage = event?.progress_percent ?? 0;
@@ -413,6 +443,40 @@ export default function OrbitBoard({
     setCloseoutRating("");
     setCloseoutNotes("");
     setSavingCloseoutReview(false);
+    router.refresh();
+  }
+
+  async function runAgent(agentId: number) {
+    setRunningAgentId(agentId);
+    setToast(null);
+
+    const response = await fetch(`${API_BASE}/agents/${agentId}/run`, {
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      setToast({
+        message: "Could not run agent.",
+        type: "error",
+      });
+      setRunningAgentId(null);
+      return;
+    }
+
+    const run = (await response.json()) as AgentRun;
+    setAgents((current) =>
+      current.map((agent) =>
+        agent.id === agentId ? { ...agent, last_run: run } : agent,
+      ),
+    );
+    setToast({
+      message:
+        run.status === "completed"
+          ? "Agent run logged."
+          : "Agent run finished with an error.",
+      type: run.status === "completed" ? "success" : "error",
+    });
+    setRunningAgentId(null);
     router.refresh();
   }
 
@@ -856,6 +920,76 @@ export default function OrbitBoard({
           ) : (
             <div className="rounded-xl border border-white/10 bg-neutral-950/70 p-4 text-sm text-neutral-500">
               No readiness categories have been added to Orbit yet.
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {activeTab === "Agents" ? (
+        <div className="space-y-2">
+          {agentsError ? (
+            <div className="rounded-xl border border-red-500/30 bg-red-950/20 p-4 text-sm text-red-100">
+              Agents are unavailable right now.
+            </div>
+          ) : agents.length > 0 ? (
+            agents.map((agent) => {
+              const lastRun = agent.last_run;
+              const latestSummary =
+                lastRun?.summary || lastRun?.error || "No runs logged yet.";
+
+              return (
+                <article
+                  key={agent.id}
+                  className="rounded-xl border border-white/10 bg-neutral-950/70 p-4"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-sm font-semibold text-neutral-100">
+                          {agent.name}
+                        </h2>
+                        <span
+                          className={`rounded-full border px-2 py-0.5 text-xs ${
+                            agent.enabled
+                              ? "border-emerald-300/25 bg-emerald-300/10 text-emerald-100"
+                              : "border-neutral-500/25 bg-neutral-500/10 text-neutral-400"
+                          }`}
+                        >
+                          {agent.enabled ? "Enabled" : "Disabled"}
+                        </span>
+                        <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-xs text-neutral-400">
+                          {lastRun ? formatStatus(lastRun.status) : "Never run"}
+                        </span>
+                      </div>
+                      {agent.description ? (
+                        <p className="mt-1 text-xs text-neutral-500">
+                          {agent.description}
+                        </p>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => runAgent(agent.id)}
+                      disabled={!agent.enabled || runningAgentId === agent.id}
+                      className="rounded-lg border border-cyan-300/25 bg-cyan-300/10 px-3 py-2 text-xs font-semibold text-cyan-100 hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {runningAgentId === agent.id ? "Running..." : "Run"}
+                    </button>
+                  </div>
+                  <p className="mt-3 line-clamp-4 whitespace-pre-wrap text-sm leading-6 text-neutral-300">
+                    {latestSummary}
+                  </p>
+                  {lastRun?.started_at ? (
+                    <p className="mt-2 text-xs text-neutral-600">
+                      Last run {formatDateTime(lastRun.started_at)}
+                    </p>
+                  ) : null}
+                </article>
+              );
+            })
+          ) : (
+            <div className="rounded-xl border border-white/10 bg-neutral-950/70 p-4 text-sm text-neutral-500">
+              No agents have been defined yet.
             </div>
           )}
         </div>
