@@ -293,6 +293,22 @@ class AgentRun(BaseModel):
     error: Optional[str] = None
 
 
+class AgentPriorityRank(BaseModel):
+    agent_type: str
+    agent_name: str
+    priority_score: int
+    reasons: list[str] = Field(default_factory=list)
+
+
+class AgentPrioritizationResult(BaseModel):
+    recommended_agent_type: str
+    recommended_agent_name: str
+    priority_score: int
+    reason: str
+    ranked_agents: list[AgentPriorityRank] = Field(default_factory=list)
+    actions_taken: list[str] = Field(default_factory=list)
+
+
 class AgentDefinition(BaseModel):
     id: int
     name: str

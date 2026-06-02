@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from orbit.database import get_connection, init_orbit_db
@@ -112,6 +112,310 @@ def list_recent_agent_runs(limit: int = 20) -> list[dict[str, Any]]:
     conn.close()
 
     return [_decode_output_json(dict(row)) for row in rows]
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _parse_date(value: Any) -> date | None:
+    if not value:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _hours_since(value: Any, now: datetime) -> float | None:
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        return None
+    return max(0.0, (now - parsed).total_seconds() / 3600)
+
+
+def _days_since_date(value: Any, today: date) -> int | None:
+    parsed = _parse_date(value)
+    if parsed is None:
+        return None
+    return max(0, (today - parsed).days)
+
+
+def _latest_run_started_at(agent: dict[str, Any]) -> Any:
+    last_run = agent.get("last_run")
+    if isinstance(last_run, dict):
+        return last_run.get("started_at")
+    return None
+
+
+def _score_recent_run_penalty(agent: dict[str, Any], now: datetime) -> tuple[int, str | None]:
+    hours = _hours_since(_latest_run_started_at(agent), now)
+    if hours is None:
+        return 0, None
+    if hours < 12:
+        return -25, "Ran in the last 12 hours."
+    if hours < 24:
+        return -18, "Ran in the last day."
+    if hours < 72:
+        return -10, "Ran in the last three days."
+    return 0, None
+
+
+def _contains_external_context_signal(records: list[dict[str, Any]]) -> bool:
+    keywords = {
+        "business launch",
+        "launch plan",
+        "capital checkpoint",
+        "capital",
+        "law",
+        "laws",
+        "legal",
+        "rule",
+        "rules",
+        "policy",
+        "policies",
+        "travel",
+        "news",
+        "current",
+        "external",
+        "market",
+        "requirements",
+        "benchmark",
+        "research",
+        "official",
+    }
+    return any(_matches_any(_text_for_record(record), list(keywords)) for record in records)
+
+
+def _clamp_priority(score: int) -> int:
+    return max(0, min(100, score))
+
+
+def _make_rank(
+    agent: dict[str, Any],
+    score: int,
+    reasons: list[str],
+) -> dict[str, Any]:
+    return {
+        "agent_type": str(agent.get("agent_type") or ""),
+        "agent_name": str(agent.get("name") or "Agent"),
+        "priority_score": _clamp_priority(score),
+        "reasons": reasons,
+    }
+
+
+def prioritize_agents() -> dict[str, Any]:
+    """Recommend the next manual agent to run without taking any actions."""
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    agents = [agent for agent in list_agents() if agent.get("enabled")]
+    agents_by_type = {str(agent.get("agent_type")): agent for agent in agents}
+
+    readiness = orbit_service.get_readiness_categories()
+    strategic_gaps = orbit_service.list_strategic_gaps()
+    tasks = orbit_service.list_records("tasks")
+    open_tasks = [task for task in tasks if orbit_service._is_open(task)]
+    priority_tasks = sorted(open_tasks, key=orbit_service._priority_sort_key)
+    reviews = sorted(
+        orbit_service.list_records("reviews"),
+        key=lambda review: str(review.get("created_at") or ""),
+        reverse=True,
+    )
+    recent_review_count = sum(
+        1
+        for review in reviews
+        if (
+            _days_since_date(review.get("created_at"), today) is not None
+            and (_days_since_date(review.get("created_at"), today) or 0) <= 7
+        )
+    )
+    closeout_review_today = any(
+        str(review.get("review_type") or "").casefold() == "daily_closeout"
+        and _days_since_date(review.get("created_at"), today) == 0
+        for review in reviews
+    )
+    trade_sessions = orbit_service.list_trade_sessions()
+    progress_history = orbit_service.list_recent_milestone_progress_history(limit=20)
+    recommendations_output = orbit_service.generate_recommendations(
+        top_priority_tasks=priority_tasks[:5],
+        strategic_gaps=strategic_gaps[:5],
+        blockers=[],
+        milestone_progress_history=progress_history,
+        readiness={
+            "overall": (
+                round(
+                    sum(int(category.get("current_score") or 0) for category in readiness)
+                    / len(readiness)
+                )
+                if readiness
+                else 0
+            ),
+            "categories": readiness,
+        },
+    )
+    recommendations = recommendations_output.get("recommendations") or []
+
+    ranked_agents: list[dict[str, Any]] = []
+
+    def add_agent_score(agent_type: str, base_score: int, reasons: list[str]) -> None:
+        agent = agents_by_type.get(agent_type)
+        if agent is None:
+            return
+        score = base_score
+        penalty, penalty_reason = _score_recent_run_penalty(agent, now)
+        if penalty_reason:
+            score += penalty
+            reasons = [*reasons, penalty_reason]
+        ranked_agents.append(_make_rank(agent, score, reasons))
+
+    low_readiness = [
+        category
+        for category in readiness
+        if int(category.get("current_score") or 0) < 30
+    ]
+    stale_readiness = [
+        category
+        for category in readiness
+        if (
+            _hours_since(category.get("last_updated"), now) is None
+            or (_hours_since(category.get("last_updated"), now) or 0) > 24 * 14
+        )
+    ]
+    readiness_score = 35
+    readiness_reasons = ["Readiness evidence can be reviewed without changing scores."]
+    if low_readiness:
+        readiness_score = 90
+        readiness_reasons.insert(
+            0,
+            f"{len(low_readiness)} readiness categor{'y is' if len(low_readiness) == 1 else 'ies are'} below 30.",
+        )
+    elif stale_readiness:
+        readiness_score = 75
+        readiness_reasons.insert(0, "Readiness has not been reviewed recently.")
+    add_agent_score("readiness_advisory", readiness_score, readiness_reasons)
+
+    external_context_records = [*strategic_gaps, *recommendations, *priority_tasks[:10]]
+    web_score = 30
+    web_reasons = ["No urgent external-information need was detected."]
+    if _contains_external_context_signal(external_context_records):
+        web_score = 82
+        web_reasons = [
+            "Strategic gaps or recommendations may need current or external information."
+        ]
+    elif strategic_gaps or recommendations:
+        web_score = 60
+        web_reasons = ["Open strategic gaps or recommendations may benefit from research."]
+    add_agent_score("web_search", web_score, web_reasons)
+
+    blocker_count = sum(
+        1
+        for task in open_tasks
+        if _matches_any(_text_for_record(task), ["blocker", "blocked", "waiting"])
+    )
+    executive_score = 45
+    executive_reasons = ["Open Orbit work can be summarized for manual planning."]
+    if priority_tasks or strategic_gaps or blocker_count:
+        executive_score = min(
+            88,
+            62
+            + min(len(priority_tasks), 5) * 3
+            + min(len(strategic_gaps), 4) * 3
+            + blocker_count * 4,
+        )
+        executive_reasons = [
+            f"{len(priority_tasks)} open task(s), {len(strategic_gaps)} strategic gap(s), and {blocker_count} blocker signal(s) need planning attention."
+        ]
+    if recent_review_count == 0:
+        executive_score += 8
+        executive_reasons.append("No recent reviews are available for planning context.")
+    add_agent_score("executive_assistant", executive_score, executive_reasons)
+
+    morning_agent = agents_by_type.get("morning_review")
+    morning_ran_today = (
+        morning_agent is not None
+        and _days_since_date(_latest_run_started_at(morning_agent), today) == 0
+    )
+    morning_score = 35
+    morning_reasons = ["Morning briefing is useful but not time-critical right now."]
+    if 5 <= now.astimezone().hour < 12 and not morning_ran_today:
+        morning_score = 82
+        morning_reasons = ["It is morning and no morning review agent run is logged today."]
+    elif not morning_ran_today:
+        morning_score = 55
+        morning_reasons = ["No morning review agent run is logged today."]
+    add_agent_score("morning_review", morning_score, morning_reasons)
+
+    evening_agent = agents_by_type.get("evening_review")
+    evening_ran_today = (
+        evening_agent is not None
+        and _days_since_date(_latest_run_started_at(evening_agent), today) == 0
+    )
+    evening_score = 35
+    evening_reasons = ["Daily closeout is useful but not time-critical right now."]
+    if now.astimezone().hour >= 16 and not evening_ran_today:
+        evening_score = 82
+        evening_reasons = ["It is late day and no evening review agent run is logged today."]
+    elif not evening_ran_today:
+        evening_score = 50
+        evening_reasons = ["No evening review agent run is logged today."]
+    if closeout_review_today:
+        evening_score = min(evening_score, 35)
+        evening_reasons.append("A daily closeout review is already logged today.")
+    add_agent_score("evening_review", evening_score, evening_reasons)
+
+    recent_trade_sessions = [
+        session
+        for session in trade_sessions[:10]
+        if (
+            _days_since_date(session.get("session_date"), today) is None
+            or (_days_since_date(session.get("session_date"), today) or 0) <= 7
+        )
+    ]
+    trading_score = 30
+    trading_reasons = ["No recent trade sessions need coaching review."]
+    if recent_trade_sessions:
+        trading_score = 78
+        trading_reasons = [
+            f"{len(recent_trade_sessions)} recent trade session(s) are available for review."
+        ]
+    add_agent_score("trading_coach", trading_score, trading_reasons)
+
+    ranked_agents.sort(
+        key=lambda rank: (-int(rank["priority_score"]), str(rank["agent_name"]))
+    )
+    recommended = ranked_agents[0] if ranked_agents else {
+        "agent_type": "none",
+        "agent_name": "No enabled agent",
+        "priority_score": 0,
+        "reasons": ["No enabled agents are available."],
+    }
+    reason = (
+        recommended["reasons"][0]
+        if recommended.get("reasons")
+        else "No prioritization reason available."
+    )
+
+    return {
+        "recommended_agent_type": recommended["agent_type"],
+        "recommended_agent_name": recommended["agent_name"],
+        "priority_score": recommended["priority_score"],
+        "reason": reason,
+        "ranked_agents": ranked_agents,
+        "actions_taken": [],
+    }
 
 
 def _create_agent_run(agent_id: int) -> int:

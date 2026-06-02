@@ -450,6 +450,7 @@ Agent tables:
 Current routes:
 
 * `GET /agents`
+* `GET /agents/prioritize`
 * `GET /agents/{agent_id}`
 * `POST /agents/{agent_id}/run`
 * `GET /agents/runs/recent`
@@ -474,6 +475,7 @@ Current behavior:
 * Trading Coach Agent summarizes recent trade sessions and readiness evidence
 * Web Search Agent inspects top recommendations and strategic gaps, then creates a research plan for one target that may need current or external context
 * Readiness Advisory Agent suggests readiness score improvements from Orbit evidence
+* Agent Prioritization Layer v1 recommends which agent should run next based on Orbit state
 
 Current restrictions:
 
@@ -488,6 +490,8 @@ Current restrictions:
 * Readiness Advisory Agent suggestions require manual approval before any readiness score can change.
 * Web Search Agent v1 does not browse the web. It outputs `research_target`, `reason`, `suggested_queries`, `sources_required`, `actions_taken: []`, and `web_search_performed: false`.
 * Actual cited web search is reserved for a later version.
+* Agent Prioritization Layer v1 is read-only and recommendation-only. It does not run agents, create tasks, update readiness, create reviews, send notifications, or schedule anything.
+* Agent execution remains manual only.
 
 Future scheduled or background automation should call `run_agent(agent_id)` rather than duplicating agent behavior.
 

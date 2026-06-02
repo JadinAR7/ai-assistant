@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, status
 
 import agent_service
-from orbit.models import AgentDefinition, AgentRun
+from orbit.models import AgentDefinition, AgentPrioritizationResult, AgentRun
 
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -22,6 +22,11 @@ def list_agents():
 @router.get("/runs/recent", response_model=list[AgentRun])
 def list_recent_agent_runs():
     return agent_service.list_recent_agent_runs()
+
+
+@router.get("/prioritize", response_model=AgentPrioritizationResult)
+def prioritize_agents():
+    return agent_service.prioritize_agents()
 
 
 @router.get("/{agent_id}", response_model=AgentDefinition)

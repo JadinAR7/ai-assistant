@@ -1,6 +1,7 @@
 import Link from "next/link";
 import OrbitBoard, {
   type AgentDefinition,
+  type AgentPrioritizationResult,
   type DailyCloseout,
   type MajorEvent,
   type Milestone,
@@ -29,6 +30,7 @@ const DAILY_CLOSEOUT_URL = "http://127.0.0.1:8000/orbit/daily-closeout";
 const RECOMMENDATIONS_URL = "http://127.0.0.1:8000/orbit/recommendations";
 const INBOX_TASKS_URL = "http://127.0.0.1:8000/orbit/inbox-tasks";
 const AGENTS_URL = "http://127.0.0.1:8000/agents";
+const AGENT_PRIORITIZATION_URL = "http://127.0.0.1:8000/agents/prioritize";
 
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url, { cache: "no-store" });
@@ -53,6 +55,7 @@ async function getOrbitData() {
     milestoneAdvisoriesResult,
     progressHistoryResult,
     agentsResult,
+    agentPrioritizationResult,
   ] = await Promise.all([
     fetchJson<MajorEvent[]>(MAJOR_EVENTS_URL),
     fetchJson<Milestone[]>(MILESTONES_URL),
@@ -131,6 +134,15 @@ async function getOrbitData() {
             ? error.message
             : "Orbit agents could not be loaded.",
       })),
+    fetchJson<AgentPrioritizationResult>(AGENT_PRIORITIZATION_URL)
+      .then((prioritization) => ({ prioritization, error: null }))
+      .catch((error: unknown) => ({
+        prioritization: null,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Agent prioritization could not be loaded.",
+      })),
   ]);
 
   const event = majorEvents.find(
@@ -180,6 +192,8 @@ async function getOrbitData() {
     latestProgressHistoryByMilestoneId,
     agents: agentsResult.agents,
     agentsError: agentsResult.error,
+    agentPrioritization: agentPrioritizationResult.prioritization,
+    agentPrioritizationError: agentPrioritizationResult.error,
   };
 }
 
@@ -256,6 +270,8 @@ export default async function OrbitPage() {
       latestProgressHistoryByMilestoneId: {},
       agents: [],
       agentsError: null,
+      agentPrioritization: null,
+      agentPrioritizationError: null,
     };
     errorMessage =
       error instanceof Error
@@ -322,6 +338,8 @@ export default async function OrbitPage() {
           }
           agents={orbitData.agents}
           agentsError={orbitData.agentsError}
+          agentPrioritization={orbitData.agentPrioritization}
+          agentPrioritizationError={orbitData.agentPrioritizationError}
           errorMessage={errorMessage}
         />
       </div>

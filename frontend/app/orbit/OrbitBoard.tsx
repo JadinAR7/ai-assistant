@@ -196,6 +196,22 @@ export type AgentDefinition = {
   last_run?: AgentRun | null;
 };
 
+export type AgentPriorityRank = {
+  agent_type: string;
+  agent_name: string;
+  priority_score: number;
+  reasons: string[];
+};
+
+export type AgentPrioritizationResult = {
+  recommended_agent_type: string;
+  recommended_agent_name: string;
+  priority_score: number;
+  reason: string;
+  ranked_agents: AgentPriorityRank[];
+  actions_taken: string[];
+};
+
 type ReadinessSuggestion = {
   category: string;
   current_score: number;
@@ -225,6 +241,8 @@ type OrbitBoardProps = Readonly<{
   latestProgressHistoryByMilestoneId: Record<number, MilestoneProgressHistory>;
   agents: AgentDefinition[];
   agentsError: string | null;
+  agentPrioritization: AgentPrioritizationResult | null;
+  agentPrioritizationError: string | null;
   errorMessage: string | null;
 }>;
 
@@ -493,6 +511,8 @@ export default function OrbitBoard({
   latestProgressHistoryByMilestoneId,
   agents: initialAgents,
   agentsError,
+  agentPrioritization,
+  agentPrioritizationError,
   errorMessage,
 }: OrbitBoardProps) {
   const router = useRouter();
@@ -1478,7 +1498,79 @@ export default function OrbitBoard({
               Agents are unavailable right now.
             </div>
           ) : agents.length > 0 ? (
-            agents.map((agent) => {
+            <>
+              {agentPrioritization ? (
+                <article className="rounded-xl border border-cyan-300/20 bg-cyan-300/10 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-100/70">
+                        Recommended Next Agent
+                      </p>
+                      <h2 className="mt-1 text-base font-semibold text-neutral-50">
+                        {agentPrioritization.recommended_agent_name}
+                      </h2>
+                      <p className="mt-2 max-w-3xl text-sm leading-6 text-cyan-50/80">
+                        {agentPrioritization.reason}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="rounded-full border border-cyan-200/30 bg-neutral-950/40 px-3 py-1 text-sm font-semibold text-cyan-50">
+                        P{agentPrioritization.priority_score}
+                      </span>
+                      {(() => {
+                        const recommendedAgent = agents.find(
+                          (agent) =>
+                            agent.agent_type ===
+                            agentPrioritization.recommended_agent_type,
+                        );
+
+                        return recommendedAgent ? (
+                          <button
+                            type="button"
+                            onClick={() => runAgent(recommendedAgent.id)}
+                            disabled={
+                              !recommendedAgent.enabled ||
+                              runningAgentId === recommendedAgent.id
+                            }
+                            className="rounded-lg border border-cyan-200/30 bg-neutral-950/40 px-3 py-2 text-xs font-semibold text-cyan-50 hover:bg-neutral-950/60 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {runningAgentId === recommendedAgent.id
+                              ? "Running..."
+                              : "Run"}
+                          </button>
+                        ) : null;
+                      })()}
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-3">
+                    {agentPrioritization.ranked_agents
+                      .slice(0, 3)
+                      .map((rank) => (
+                        <div
+                          key={rank.agent_type}
+                          className="rounded-lg border border-cyan-100/15 bg-neutral-950/35 px-3 py-2"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="truncate text-sm font-semibold text-neutral-100">
+                              {rank.agent_name}
+                            </p>
+                            <span className="shrink-0 text-xs font-semibold text-cyan-100">
+                              P{rank.priority_score}
+                            </span>
+                          </div>
+                          <p className="mt-1 line-clamp-2 text-xs leading-5 text-cyan-50/70">
+                            {rank.reasons[0] ?? "No reason available."}
+                          </p>
+                        </div>
+                      ))}
+                  </div>
+                </article>
+              ) : agentPrioritizationError ? (
+                <div className="rounded-xl border border-white/10 bg-neutral-950/70 p-4 text-sm text-neutral-500">
+                  Agent prioritization is unavailable right now.
+                </div>
+              ) : null}
+              {agents.map((agent) => {
               const lastRun = agent.last_run;
               const latestSummary =
                 lastRun?.summary || lastRun?.error || "No runs logged yet.";
@@ -1701,7 +1793,8 @@ export default function OrbitBoard({
                   ) : null}
                 </article>
               );
-            })
+            })}
+            </>
           ) : (
             <div className="rounded-xl border border-white/10 bg-neutral-950/70 p-4 text-sm text-neutral-500">
               No agents have been defined yet.
