@@ -41,6 +41,18 @@ export type MilestoneProgressAdvisory = {
   reason: string | null;
 };
 
+export type MilestoneProgressHistory = {
+  id: number;
+  milestone_id: number;
+  milestone_title?: string | null;
+  previous_progress: number;
+  new_progress: number;
+  change_amount: number;
+  reason?: string | null;
+  source: "manual" | "task_advisory" | "helix_tool" | "system";
+  created_at: string;
+};
+
 export type OrbitReview = {
   id: number | string;
   title?: string | null;
@@ -63,9 +75,17 @@ export type ReadinessCategory = {
 export type MorningBriefingTask = {
   id: number;
   title: string;
+  description?: string | null;
   status: string;
   due_date: string | null;
+  completed_at?: string | null;
   goal_id: number;
+  milestones?: Array<{
+    id: number;
+    title: string;
+    status: string;
+    progress_percent: number;
+  }>;
   milestone_title?: string | null;
 };
 
@@ -74,6 +94,42 @@ export type MorningBriefing = {
   top_tasks: MorningBriefingTask[];
   current_blockers: string[];
   suggested_next_action: string;
+};
+
+export type DailyCloseout = {
+  success: boolean;
+  generated_at: string;
+  completed_today: MorningBriefingTask[];
+  open_tasks: MorningBriefingTask[];
+  milestone_progress: Array<{
+    id: number;
+    milestone_id: number;
+    milestone_title?: string | null;
+    previous_progress: number;
+    new_progress: number;
+    change_amount: number;
+    reason?: string | null;
+    source: "manual" | "task_advisory" | "helix_tool" | "system";
+    created_at: string;
+  }>;
+  readiness: {
+    overall: number;
+    categories: ReadinessCategory[];
+  };
+  trade_summary: {
+    sessions_logged_today: number;
+    total_pnl: number;
+    average_rule_adherence: number | null;
+    sessions: Array<{
+      id: number;
+      session_date: string;
+      symbol: string;
+      pnl: number;
+      session_grade?: string | null;
+    }>;
+  };
+  recommended_review_prompt: string;
+  closeout_text: string;
 };
 
 type OrbitBoardProps = Readonly<{
@@ -87,8 +143,11 @@ type OrbitBoardProps = Readonly<{
   morningBriefingError: string | null;
   inboxTasks: InboxTask[];
   inboxTasksError: string | null;
+  dailyCloseout: DailyCloseout | null;
+  dailyCloseoutError: string | null;
   milestoneTasksById: Record<number, InboxTask[]>;
   milestoneAdvisoriesById: Record<number, MilestoneProgressAdvisory>;
+  latestProgressHistoryByMilestoneId: Record<number, MilestoneProgressHistory>;
   errorMessage: string | null;
 }>;
 
@@ -212,8 +271,11 @@ export default function OrbitBoard({
   morningBriefingError,
   inboxTasks,
   inboxTasksError,
+  dailyCloseout: initialDailyCloseout,
+  dailyCloseoutError,
   milestoneTasksById,
   milestoneAdvisoriesById,
+  latestProgressHistoryByMilestoneId,
   errorMessage,
 }: OrbitBoardProps) {
   const router = useRouter();
@@ -222,6 +284,13 @@ export default function OrbitBoard({
   const [applyingMilestoneId, setApplyingMilestoneId] = useState<number | null>(
     null,
   );
+  const [dailyCloseout, setDailyCloseout] = useState<DailyCloseout | null>(
+    initialDailyCloseout,
+  );
+  const [closeoutRating, setCloseoutRating] = useState("");
+  const [closeoutNotes, setCloseoutNotes] = useState("");
+  const [loadingCloseout, setLoadingCloseout] = useState(false);
+  const [savingCloseoutReview, setSavingCloseoutReview] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const daysRemaining = getDaysRemaining(event?.target_date ?? null);
   const progressPercentage = event?.progress_percent ?? 0;
@@ -269,7 +338,11 @@ export default function OrbitBoard({
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ progress_percent: progressPercent }),
+      body: JSON.stringify({
+        progress_percent: progressPercent,
+        progress_update_source: "task_advisory",
+        progress_update_reason: "Applied task-derived progress advisory.",
+      }),
     });
 
     if (!response.ok) {
@@ -286,6 +359,60 @@ export default function OrbitBoard({
       type: "success",
     });
     setApplyingMilestoneId(null);
+    router.refresh();
+  }
+
+  async function generateDailyCloseout() {
+    setLoadingCloseout(true);
+    setToast(null);
+
+    const response = await fetch(`${API_BASE}/orbit/daily-closeout`);
+
+    if (!response.ok) {
+      setToast({
+        message: "Could not generate daily closeout.",
+        type: "error",
+      });
+      setLoadingCloseout(false);
+      return;
+    }
+
+    setDailyCloseout((await response.json()) as DailyCloseout);
+    setLoadingCloseout(false);
+  }
+
+  async function saveDailyCloseoutReview() {
+    setSavingCloseoutReview(true);
+    setToast(null);
+
+    const ratingValue = closeoutRating.trim();
+    const response = await fetch(`${API_BASE}/orbit/daily-closeout/review`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        rating: ratingValue ? Number(ratingValue) : undefined,
+        summary: closeoutNotes.trim() || undefined,
+      }),
+    });
+
+    if (!response.ok) {
+      setToast({
+        message: "Could not save daily review.",
+        type: "error",
+      });
+      setSavingCloseoutReview(false);
+      return;
+    }
+
+    setToast({
+      message: "Daily review saved.",
+      type: "success",
+    });
+    setCloseoutRating("");
+    setCloseoutNotes("");
+    setSavingCloseoutReview(false);
     router.refresh();
   }
 
@@ -449,6 +576,8 @@ export default function OrbitBoard({
                 suggestedPercent !== null &&
                 suggestedPercent !== milestone.progress_percent;
               const expanded = expandedMilestoneIds.includes(milestone.id);
+              const latestProgressChange =
+                latestProgressHistoryByMilestoneId[milestone.id];
 
               return (
                 <article
@@ -493,6 +622,17 @@ export default function OrbitBoard({
                     <span>{milestone.progress_percent}%</span>
                   </div>
                   <ProgressBar value={milestone.progress_percent} />
+                  {latestProgressChange ? (
+                    <p className="mt-2 text-xs text-neutral-500">
+                      Latest change: {latestProgressChange.previous_progress}%{" "}
+                      {"->"}{" "}
+                      {latestProgressChange.new_progress}% via{" "}
+                      {formatStatus(latestProgressChange.source)}
+                      {latestProgressChange.reason
+                        ? ` - ${latestProgressChange.reason}`
+                        : ""}
+                    </p>
+                  ) : null}
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-500">
                     <span>{openLinkedTasks.length} open</span>
                     <span>Current: {milestone.progress_percent}%</span>
@@ -555,6 +695,103 @@ export default function OrbitBoard({
 
       {activeTab === "Reviews" ? (
         <div className="space-y-2">
+          <article className="rounded-xl border border-white/10 bg-neutral-950/70 p-4">
+            <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-neutral-100">
+                  Daily Closeout
+                </h2>
+                <p className="mt-1 text-xs text-neutral-500">
+                  {dailyCloseout?.generated_at
+                    ? `Generated ${formatDateTime(dailyCloseout.generated_at)}`
+                    : dailyCloseoutError
+                      ? "Closeout unavailable right now."
+                      : "Ready when you are."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={generateDailyCloseout}
+                disabled={loadingCloseout}
+                className="rounded-lg border border-cyan-300/25 bg-cyan-300/10 px-3 py-2 text-xs font-semibold text-cyan-100 hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {loadingCloseout ? "Generating..." : dailyCloseout ? "Refresh" : "Generate"}
+              </button>
+            </div>
+
+            {dailyCloseout ? (
+              <div className="space-y-3">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <div className="rounded-lg bg-white/[0.03] px-3 py-2">
+                    <p className="text-lg font-semibold text-white">
+                      {dailyCloseout.completed_today.length}
+                    </p>
+                    <p className="text-xs text-neutral-500">
+                      {dailyCloseout.completed_today.length === 0
+                        ? "No tasks completed today"
+                        : "completed today"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-white/[0.03] px-3 py-2">
+                    <p className="text-lg font-semibold text-white">
+                      {dailyCloseout.open_tasks.length}
+                    </p>
+                    <p className="text-xs text-neutral-500">
+                      {dailyCloseout.open_tasks.length === 0
+                        ? "No open tasks remaining"
+                        : "open tasks"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-white/[0.03] px-3 py-2">
+                    <p className="text-lg font-semibold text-white">
+                      {dailyCloseout.trade_summary.sessions_logged_today}
+                    </p>
+                    <p className="text-xs text-neutral-500">
+                      {dailyCloseout.trade_summary.sessions_logged_today === 0
+                        ? "No trade sessions logged today"
+                        : "trade sessions today"}
+                    </p>
+                  </div>
+                </div>
+
+                <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-black/20 p-3 text-sm leading-6 text-neutral-300">
+                  {dailyCloseout.closeout_text}
+                </pre>
+
+                <div className="grid gap-2 sm:grid-cols-[8rem_1fr_auto]">
+                  <input
+                    type="number"
+                    min="1"
+                    max="10"
+                    value={closeoutRating}
+                    onChange={(event) => setCloseoutRating(event.target.value)}
+                    placeholder="Rating"
+                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
+                  />
+                  <textarea
+                    value={closeoutNotes}
+                    onChange={(event) => setCloseoutNotes(event.target.value)}
+                    placeholder="Notes"
+                    rows={2}
+                    className="min-h-10 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
+                  />
+                  <button
+                    type="button"
+                    onClick={saveDailyCloseoutReview}
+                    disabled={savingCloseoutReview}
+                    className="rounded-lg border border-emerald-300/25 bg-emerald-300/10 px-3 py-2 text-xs font-semibold text-emerald-100 hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {savingCloseoutReview ? "Saving..." : "Save Daily Review"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-neutral-500">
+                No daily closeout generated yet.
+              </p>
+            )}
+          </article>
+
           {reviews.length > 0 ? (
             reviews.map((review) => (
               <article

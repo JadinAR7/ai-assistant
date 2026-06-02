@@ -94,6 +94,25 @@ def init_orbit_db() -> None:
     """)
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS milestone_progress_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            milestone_id INTEGER NOT NULL,
+            previous_progress INTEGER NOT NULL,
+            new_progress INTEGER NOT NULL,
+            change_amount INTEGER NOT NULL,
+            reason TEXT,
+            source TEXT NOT NULL DEFAULT 'manual',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK (previous_progress >= 0 AND previous_progress <= 100),
+            CHECK (new_progress >= 0 AND new_progress <= 100),
+            CHECK (source IN ('manual', 'task_advisory', 'helix_tool', 'system')),
+            FOREIGN KEY (milestone_id)
+                REFERENCES milestones (id)
+                ON DELETE CASCADE
+        )
+    """)
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS reviews (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT,

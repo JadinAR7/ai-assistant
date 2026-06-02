@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -51,6 +51,10 @@ class MilestoneUpdate(BaseModel):
     description: Optional[str] = None
     status: Optional[str] = None
     progress_percent: Optional[int] = Field(default=None, ge=0, le=100)
+    progress_update_source: Optional[
+        Literal["manual", "task_advisory", "helix_tool", "system"]
+    ] = None
+    progress_update_reason: Optional[str] = None
     target_value: Optional[float] = None
     current_value: Optional[float] = None
     due_date: Optional[date] = None
@@ -58,6 +62,18 @@ class MilestoneUpdate(BaseModel):
 
 class Milestone(MilestoneBase):
     id: int
+
+
+class MilestoneProgressHistory(BaseModel):
+    id: int
+    milestone_id: int
+    milestone_title: Optional[str] = None
+    previous_progress: int
+    new_progress: int
+    change_amount: int
+    reason: Optional[str] = None
+    source: Literal["manual", "task_advisory", "helix_tool", "system"]
+    created_at: datetime
 
 
 class GoalBase(BaseModel):
@@ -156,6 +172,11 @@ class ReviewBase(BaseModel):
 
 class ReviewCreate(ReviewBase):
     pass
+
+
+class DailyCloseoutReviewCreate(BaseModel):
+    rating: Optional[float] = Field(default=None, ge=1, le=10)
+    summary: Optional[str] = None
 
 
 class Review(ReviewBase):
