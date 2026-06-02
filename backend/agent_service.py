@@ -193,6 +193,14 @@ def _summarize_executive_assistant() -> tuple[str, dict[str, Any]]:
     progress_history = orbit_service.list_recent_milestone_progress_history(limit=10)
     blockers = briefing.get("current_blockers") or []
     strategic_gaps = orbit_service.list_strategic_gaps()
+    recommendations_output = orbit_service.generate_recommendations(
+        top_priority_tasks=priority_tasks[:5],
+        strategic_gaps=strategic_gaps[:5],
+        blockers=blockers,
+        milestone_progress_history=progress_history,
+        readiness=briefing.get("readiness") or {},
+    )
+    recommendations = recommendations_output.get("recommendations") or []
     highest_priority_task = priority_tasks[0] if priority_tasks else None
     highest_strategic_gap = strategic_gaps[0] if strategic_gaps else None
     highest_priority_milestone = None
@@ -237,14 +245,17 @@ def _summarize_executive_assistant() -> tuple[str, dict[str, Any]]:
         else ""
     )
 
+    recommendation_lines = [
+        f"{index}. {recommendation.get('recommendation')}"
+        for index, recommendation in enumerate(recommendations[:3], start=1)
+    ] or ["No recommendations yet."]
     summary = (
-        f"Highest priority task: "
-        f"{highest_task_title}{highest_task_score}. "
-        f"Highest strategic gap: {highest_gap_title}{highest_gap_score}. "
-        f"Highest priority milestone: {highest_milestone_title}. "
-        f"Top blockers: {blockers[0] if blockers else 'none'}. "
-        f"{len(open_tasks)} open task(s) and {len(progress_history)} recent milestone progress event(s) reviewed. "
-        f"Next action: {briefing.get('suggested_next_action')}"
+        "Highest Priority Task:\n"
+        f"{highest_task_title}{highest_task_score}\n\n"
+        "Highest Strategic Gap:\n"
+        f"{highest_gap_title}{highest_gap_score}\n\n"
+        "Recommendations:\n"
+        + "\n".join(recommendation_lines)
     )
     output = {
         "open_task_count": len(open_tasks),
@@ -267,7 +278,14 @@ def _summarize_executive_assistant() -> tuple[str, dict[str, Any]]:
         "top_blockers": blockers[:5],
         "blockers": blockers,
         "milestone_progress_history": progress_history,
-        "suggested_next_action": briefing.get("suggested_next_action"),
+        "top_recommendations": recommendations[:3],
+        "recommendations": recommendations,
+        "recommendation_rationale": recommendations_output.get("rationale") or [],
+        "suggested_next_action": (
+            recommendations[0].get("recommendation")
+            if recommendations
+            else briefing.get("suggested_next_action")
+        ),
         "actions_taken": [],
     }
     return summary, output

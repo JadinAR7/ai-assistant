@@ -1683,6 +1683,16 @@ def generate_daily_closeout():
         }
 
 
+def generate_recommendations():
+    try:
+        return orbit_service.generate_recommendations()
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Unable to generate recommendations: {e}",
+        }
+
+
 def generate_orbit_daily_summary():
     try:
         event = _get_corporate_escape_event()
@@ -5248,6 +5258,7 @@ TOOLS = {
     "suggest_trading_readiness_update": suggest_trading_readiness_update,
     "generate_morning_briefing": generate_morning_briefing,
     "generate_daily_closeout": generate_daily_closeout,
+    "generate_recommendations": generate_recommendations,
     "generate_orbit_daily_summary": generate_orbit_daily_summary,
     "generate_orbit_focus": generate_orbit_focus,
 

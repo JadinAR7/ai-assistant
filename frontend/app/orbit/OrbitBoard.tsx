@@ -98,12 +98,33 @@ export type StrategicGap = {
   reasons: string[];
 };
 
+export type Recommendation = {
+  id: string;
+  category:
+    | "task_execution"
+    | "strategic_gap"
+    | "blocker_resolution"
+    | "readiness_improvement";
+  recommendation: string;
+  score: number;
+  rationale: string[];
+};
+
+export type RecommendationSet = {
+  success: boolean;
+  generated_at: string;
+  recommendations: Recommendation[];
+  rationale: string[];
+};
+
 export type MorningBriefing = {
   success: boolean;
   top_tasks: MorningBriefingTask[];
   strategic_gaps?: StrategicGap[];
   current_blockers: string[];
   suggested_next_action: string;
+  recommendations?: Recommendation[];
+  recommendation_rationale?: string[];
 };
 
 export type DailyCloseout = {
@@ -140,6 +161,9 @@ export type DailyCloseout = {
     }>;
   };
   recommended_review_prompt: string;
+  tomorrow_focus?: Recommendation[];
+  recommendations?: Recommendation[];
+  recommendation_rationale?: string[];
   closeout_text: string;
 };
 
@@ -179,6 +203,8 @@ type OrbitBoardProps = Readonly<{
   inboxTasksError: string | null;
   dailyCloseout: DailyCloseout | null;
   dailyCloseoutError: string | null;
+  recommendations: RecommendationSet | null;
+  recommendationsError: string | null;
   milestoneTasksById: Record<number, InboxTask[]>;
   milestoneAdvisoriesById: Record<number, MilestoneProgressAdvisory>;
   latestProgressHistoryByMilestoneId: Record<number, MilestoneProgressHistory>;
@@ -328,6 +354,8 @@ export default function OrbitBoard({
   inboxTasksError,
   dailyCloseout: initialDailyCloseout,
   dailyCloseoutError,
+  recommendations,
+  recommendationsError,
   milestoneTasksById,
   milestoneAdvisoriesById,
   latestProgressHistoryByMilestoneId,
@@ -357,6 +385,10 @@ export default function OrbitBoard({
   const priorityTasks = morningBriefing?.top_tasks.slice(0, 3) ?? [];
   const strategicGaps = morningBriefing?.strategic_gaps?.slice(0, 3) ?? [];
   const activeBlockers = morningBriefing?.current_blockers ?? [];
+  const topRecommendations =
+    recommendations?.recommendations.slice(0, 3) ??
+    morningBriefing?.recommendations?.slice(0, 3) ??
+    [];
   const tagMilestones = milestones.filter(
     (milestone) => milestone.title !== INBOX_MILESTONE_TITLE,
   );
@@ -585,6 +617,37 @@ export default function OrbitBoard({
                   ? "Suggested action unavailable right now."
                   : "No suggested action yet")}
             </p>
+          </MiniPanel>
+
+          <MiniPanel title="Recommendations">
+            {topRecommendations.length > 0 ? (
+              <div className="space-y-2">
+                {topRecommendations.map((recommendation) => (
+                  <div
+                    key={recommendation.id}
+                    className="rounded-lg bg-white/[0.03] px-3 py-2"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="min-w-0 text-sm leading-5 text-neutral-200">
+                        {recommendation.recommendation}
+                      </p>
+                      <span className="shrink-0 rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[11px] font-semibold text-cyan-100">
+                        {recommendation.score}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] uppercase tracking-wide text-neutral-500">
+                      {formatStatus(recommendation.category)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-neutral-500">
+                {recommendationsError
+                  ? "Recommendations unavailable right now."
+                  : "No recommendations yet"}
+              </p>
+            )}
           </MiniPanel>
 
           <MiniPanel title="Top Priority Tasks">
