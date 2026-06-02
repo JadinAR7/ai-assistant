@@ -786,6 +786,202 @@ def _compact_strategic_gap_reasons(reasons: list[str]) -> list[str]:
     return ordered
 
 
+def _lowest_readiness_category(readiness: dict[str, Any]) -> dict[str, Any] | None:
+    categories = readiness.get("categories") or []
+    if not categories:
+        return None
+
+    return sorted(
+        categories,
+        key=lambda category: (
+            int(category.get("current_score") or 0),
+            int(category.get("id") or 0),
+        ),
+    )[0]
+
+
+def _recommendation_sort_key(recommendation: dict[str, Any]) -> tuple[int, str]:
+    return (
+        -int(recommendation.get("score") or 0),
+        str(recommendation.get("id") or ""),
+    )
+
+
+def _dedupe_recommendations(
+    recommendations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for recommendation in sorted(recommendations, key=_recommendation_sort_key):
+        text = str(recommendation.get("recommendation") or "").casefold()
+        category = str(recommendation.get("category") or "")
+        key = f"{category}:{text}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(recommendation)
+    return deduped
+
+
+def generate_recommendations(
+    top_priority_tasks: list[dict[str, Any]] | None = None,
+    strategic_gaps: list[dict[str, Any]] | None = None,
+    blockers: list[str] | None = None,
+    milestone_progress_history: list[dict[str, Any]] | None = None,
+    readiness: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Rank read-only Orbit recommendations from existing operating signals."""
+    init_orbit_db()
+
+    generated_at = datetime.now(timezone.utc).isoformat()
+    if top_priority_tasks is None:
+        top_priority_tasks = [
+            _with_linked_milestones(task)
+            for task in list_records("tasks")
+            if _is_open(task)
+        ]
+        top_priority_tasks = sorted(top_priority_tasks, key=_priority_sort_key)[:5]
+    if strategic_gaps is None:
+        strategic_gaps = list_strategic_gaps()[:5]
+    if blockers is None:
+        blockers = []
+    if milestone_progress_history is None:
+        milestone_progress_history = list_recent_milestone_progress_history(limit=20)
+    if readiness is None:
+        readiness_categories = get_readiness_categories()
+        readiness = {
+            "overall": (
+                round(
+                    sum(
+                        int(category.get("current_score") or 0)
+                        for category in readiness_categories
+                    )
+                    / len(readiness_categories)
+                )
+                if readiness_categories
+                else 0
+            ),
+            "categories": [
+                _summary(
+                    category,
+                    ["id", "category_name", "current_score", "target_score", "notes"],
+                )
+                for category in readiness_categories
+            ],
+        }
+
+    recommendations: list[dict[str, Any]] = []
+    rationale: list[str] = []
+
+    if top_priority_tasks:
+        task = top_priority_tasks[0]
+        score = 50 + int(task.get("priority_score") or 0)
+        title = str(task.get("title") or "highest priority task")
+        recommendations.append(
+            {
+                "id": f"task-{task.get('id')}",
+                "category": "task_execution",
+                "recommendation": f"Complete or advance {title}.",
+                "score": score,
+                "rationale": [
+                    f"Highest ranked open task with priority score {task.get('priority_score') or 0}.",
+                    *[
+                        str(factor)
+                        for factor in (task.get("priority_factors") or [])[:3]
+                    ],
+                ],
+            },
+        )
+        rationale.append(f"Top task recommendation is based on {title}.")
+
+    for gap in strategic_gaps[:3]:
+        reasons = gap.get("reasons") or []
+        compact_reasons = _compact_strategic_gap_reasons(reasons)
+        score = 45 + int(gap.get("priority_score") or 0)
+        title = str(gap.get("title") or "strategic gap")
+        if "No linked tasks" in reasons:
+            recommendation_text = f"Create first task supporting {title}."
+            score += 25
+        elif "No linked open tasks" in reasons:
+            recommendation_text = f"Queue a next open task for {title}."
+            score += 15
+        elif "Progress remains 0%" in reasons or "Progress <= 10%" in reasons:
+            recommendation_text = f"Resolve milestone stuck at 0%: {title}."
+            score += 10
+        else:
+            recommendation_text = f"Close strategic gap: {title}."
+        recommendations.append(
+            {
+                "id": f"strategic-gap-{gap.get('milestone_id')}",
+                "category": "strategic_gap",
+                "recommendation": recommendation_text,
+                "score": score,
+                "rationale": [
+                    f"Strategic gap priority score {gap.get('priority_score') or 0}.",
+                    *compact_reasons[:3],
+                ],
+            },
+        )
+    if strategic_gaps:
+        rationale.append("Strategic gap recommendations favor active milestones with low progress or missing linked work.")
+
+    for index, blocker in enumerate(blockers[:3], start=1):
+        text = str(blocker)
+        score = 80 - (index - 1) * 5
+        if "overdue" in text.casefold():
+            score += 15
+        if "0%" in text:
+            score += 10
+        recommendations.append(
+            {
+                "id": f"blocker-{index}",
+                "category": "blocker_resolution",
+                "recommendation": f"Clear blocker: {text}",
+                "score": score,
+                "rationale": ["Current blocker from Orbit briefing signals."],
+            },
+        )
+    if blockers:
+        rationale.append("Blocker recommendations prioritize overdue, stalled, and low-readiness friction.")
+
+    lowest_readiness = _lowest_readiness_category(readiness)
+    if lowest_readiness is not None:
+        current_score = int(lowest_readiness.get("current_score") or 0)
+        target_score = int(lowest_readiness.get("target_score") or 100)
+        gap_to_target = max(target_score - current_score, 0)
+        if gap_to_target > 0:
+            category_name = str(lowest_readiness.get("category_name") or "readiness")
+            notes = _excerpt(lowest_readiness.get("notes"), 90)
+            recommendations.append(
+                {
+                    "id": f"readiness-{lowest_readiness.get('id')}",
+                    "category": "readiness_improvement",
+                    "recommendation": f"Improve {category_name} readiness.",
+                    "score": 40 + gap_to_target,
+                    "rationale": [
+                        f"Lowest readiness category at {current_score}% toward target {target_score}%.",
+                        *([notes] if notes else []),
+                    ],
+                },
+            )
+            rationale.append(f"Readiness recommendation targets the lowest category: {category_name}.")
+
+    progress_history_count = len(milestone_progress_history or [])
+    rationale.append(
+        f"Reviewed {len(top_priority_tasks or [])} priority task(s), "
+        f"{len(strategic_gaps or [])} strategic gap(s), "
+        f"{len(blockers or [])} blocker(s), and "
+        f"{progress_history_count} progress event(s)."
+    )
+
+    return {
+        "success": True,
+        "generated_at": generated_at,
+        "recommendations": _dedupe_recommendations(recommendations),
+        "rationale": rationale,
+    }
+
+
 def list_strategic_gaps() -> list[dict[str, Any]]:
     gaps = [
         {
@@ -1154,6 +1350,7 @@ def _format_briefing_text(
     strategic_gaps: list[dict[str, Any]],
     current_blockers: list[str],
     suggested_next_action: str,
+    recommendations: list[dict[str, Any]],
 ) -> str:
     event_line = "No active major event found."
     if major_event:
@@ -1188,6 +1385,10 @@ def _format_briefing_text(
     if not gap_lines:
         gap_lines = ["No strategic gaps"]
     blocker_lines = current_blockers[:3] or ["No active blockers"]
+    recommendation_lines = [
+        f"{index}. {recommendation.get('recommendation')}"
+        for index, recommendation in enumerate(recommendations[:3], start=1)
+    ] or ["No recommendations yet"]
 
     return (
         "Morning Briefing\n\n"
@@ -1201,6 +1402,8 @@ def _format_briefing_text(
         + "\n".join(gap_lines)
         + "\n\nBlockers:\n"
         + "\n".join(f"- {blocker}" for blocker in blocker_lines)
+        + "\n\nRecommended Actions:\n"
+        + "\n".join(recommendation_lines)
         + f"\n\nNext action: {suggested_next_action}"
     )
 
@@ -1391,7 +1594,17 @@ def generate_morning_briefing() -> dict[str, Any]:
     if latest_review_date is None or (today - latest_review_date).days > 2:
         current_blockers.append("No recent Orbit review within the last 2 days.")
 
-    if top_tasks:
+    recommendations_output = generate_recommendations(
+        top_priority_tasks=top_tasks,
+        strategic_gaps=strategic_gaps,
+        blockers=current_blockers,
+        milestone_progress_history=list_recent_milestone_progress_history(limit=20),
+        readiness=readiness,
+    )
+    recommendations = recommendations_output.get("recommendations") or []
+    if recommendations:
+        suggested_next_action = str(recommendations[0].get("recommendation"))
+    elif top_tasks:
         suggested_next_action = f"Complete or advance: {top_tasks[0].get('title')}."
     elif current_blockers:
         suggested_next_action = f"Clear blocker: {current_blockers[0]}"
@@ -1407,6 +1620,7 @@ def generate_morning_briefing() -> dict[str, Any]:
         strategic_gaps=strategic_gaps,
         current_blockers=current_blockers,
         suggested_next_action=suggested_next_action,
+        recommendations=recommendations,
     )
 
     return {
@@ -1419,6 +1633,8 @@ def generate_morning_briefing() -> dict[str, Any]:
         "strategic_gaps": strategic_gaps,
         "current_blockers": current_blockers,
         "suggested_next_action": suggested_next_action,
+        "recommendations": recommendations,
+        "recommendation_rationale": recommendations_output.get("rationale") or [],
         "recent_reviews": recent_reviews,
         "recent_trade_sessions": recent_trade_sessions,
         "briefing_text": briefing_text,
@@ -1433,6 +1649,7 @@ def _format_daily_closeout_text(
     readiness: dict[str, Any],
     trade_summary: dict[str, Any],
     recent_reviews: list[dict[str, Any]],
+    tomorrow_focus: list[dict[str, Any]],
     recommended_review_prompt: str,
 ) -> str:
     completed_lines = [
@@ -1473,6 +1690,10 @@ def _format_daily_closeout_text(
         f"- {review.get('title') or review.get('review_type')}: {review.get('summary') or 'No summary'}"
         for review in recent_reviews[:3]
     ] or ["- No recent reviews"]
+    tomorrow_focus_lines = [
+        f"{index}. {recommendation.get('recommendation')}"
+        for index, recommendation in enumerate(tomorrow_focus[:3], start=1)
+    ] or ["No tomorrow focus yet"]
 
     return (
         "Daily Closeout\n\n"
@@ -1489,6 +1710,8 @@ def _format_daily_closeout_text(
         + "\n".join(trade_lines)
         + "\n\nRecent reviews:\n"
         + "\n".join(review_lines)
+        + "\n\nTomorrow Focus:\n"
+        + "\n".join(tomorrow_focus_lines)
         + f"\n\nReview prompt: {recommended_review_prompt}"
     )
 
@@ -1631,6 +1854,14 @@ def generate_daily_closeout() -> dict[str, Any]:
         "What did today complete, what still needs tomorrow's attention, "
         "and what should Helix watch for in the next morning briefing?"
     )
+    recommendations_output = generate_recommendations(
+        top_priority_tasks=open_tasks[:5],
+        strategic_gaps=strategic_gaps,
+        blockers=[],
+        milestone_progress_history=list_recent_milestone_progress_history(limit=20),
+        readiness=readiness,
+    )
+    tomorrow_focus = (recommendations_output.get("recommendations") or [])[:3]
     closeout_text = _format_daily_closeout_text(
         completed_today=completed_today,
         open_tasks=open_tasks,
@@ -1639,6 +1870,7 @@ def generate_daily_closeout() -> dict[str, Any]:
         readiness=readiness,
         trade_summary=trade_summary,
         recent_reviews=recent_reviews,
+        tomorrow_focus=tomorrow_focus,
         recommended_review_prompt=recommended_review_prompt,
     )
 
@@ -1651,6 +1883,9 @@ def generate_daily_closeout() -> dict[str, Any]:
         "milestone_progress": milestone_progress,
         "readiness": readiness,
         "trade_summary": trade_summary,
+        "tomorrow_focus": tomorrow_focus,
+        "recommendations": recommendations_output.get("recommendations") or [],
+        "recommendation_rationale": recommendations_output.get("rationale") or [],
         "recommended_review_prompt": recommended_review_prompt,
         "closeout_text": closeout_text,
     }

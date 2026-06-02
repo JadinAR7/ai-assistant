@@ -18,6 +18,7 @@ from .models import (
     ReadinessCategory,
     ReadinessCategoryUpdate,
     RecommendationTaskDraft,
+    RecommendationSet,
     Review,
     ReviewCreate,
     StrategicGap,
@@ -49,6 +50,11 @@ def get_morning_briefing():
 @router.get("/daily-closeout")
 def get_daily_closeout():
     return service.generate_daily_closeout()
+
+
+@router.get("/recommendations", response_model=RecommendationSet)
+def get_recommendations():
+    return service.generate_recommendations()
 
 
 @router.post("/daily-closeout/review", response_model=Review, status_code=status.HTTP_201_CREATED)

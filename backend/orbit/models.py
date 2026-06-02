@@ -159,6 +159,24 @@ class RecommendationTaskDraft(BaseModel):
     title: str
     description: Optional[str] = None
     milestone_ids: list[int] = Field(default_factory=list)
+class Recommendation(BaseModel):
+    id: str
+    category: Literal[
+        "task_execution",
+        "strategic_gap",
+        "blocker_resolution",
+        "readiness_improvement",
+    ]
+    recommendation: str
+    score: int
+    rationale: list[str] = Field(default_factory=list)
+
+
+class RecommendationSet(BaseModel):
+    success: bool
+    generated_at: datetime
+    recommendations: list[Recommendation] = Field(default_factory=list)
+    rationale: list[str] = Field(default_factory=list)
 
 
 class TaskMilestoneLink(BaseModel):
