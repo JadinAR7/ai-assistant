@@ -182,6 +182,37 @@ def _complete_agent_run(
     return _decode_output_json(record)
 
 
+def _summarize_priority_task(task: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": task.get("id"),
+        "title": task.get("title"),
+        "status": task.get("status"),
+        "due_date": task.get("due_date"),
+        "priority_score": task.get("priority_score"),
+        "priority_factors": task.get("priority_factors") or [],
+    }
+
+
+def _recommendation_from_strategic_gap(gap: dict[str, Any]) -> dict[str, Any]:
+    recommendation_id = f"strategic-gap-{gap.get('milestone_id')}"
+    draft = orbit_service.get_recommendation_task_draft(recommendation_id)
+    recommendation_title = f"Create first task supporting {gap.get('title')}"
+    if draft:
+        recommendation_title = str(draft.get("title") or recommendation_title)
+
+    return {
+        "id": recommendation_id,
+        "category": "strategic_gap",
+        "title": recommendation_title,
+        "milestone_id": gap.get("milestone_id"),
+        "milestone_title": gap.get("title"),
+        "priority_score": gap.get("priority_score"),
+        "reasons": gap.get("reasons") or [],
+        "task_draft": draft,
+        "requires_user_approval": True,
+    }
+
+
 def _summarize_executive_assistant() -> tuple[str, dict[str, Any]]:
     briefing = orbit_service.generate_morning_briefing()
     open_tasks = [
@@ -195,6 +226,11 @@ def _summarize_executive_assistant() -> tuple[str, dict[str, Any]]:
     strategic_gaps = orbit_service.list_strategic_gaps()
     highest_priority_task = priority_tasks[0] if priority_tasks else None
     highest_strategic_gap = strategic_gaps[0] if strategic_gaps else None
+    recommendations = [
+        _recommendation_from_strategic_gap(gap)
+        for gap in strategic_gaps[:10]
+    ]
+    top_recommendation = recommendations[0] if recommendations else None
     highest_priority_milestone = None
     if highest_priority_task:
         linked_milestones = highest_priority_task.get("milestones") or []
@@ -205,18 +241,15 @@ def _summarize_executive_assistant() -> tuple[str, dict[str, Any]]:
         highest_priority_milestone = priority_milestones[0] if priority_milestones else None
     top_open_tasks = [
         {
-            "id": task.get("id"),
-            "title": task.get("title"),
-            "status": task.get("status"),
-            "due_date": task.get("due_date"),
-            "priority_score": task.get("priority_score"),
-            "priority_factors": task.get("priority_factors") or [],
+            **_summarize_priority_task(task),
         }
         for task in priority_tasks[:10]
     ]
 
     highest_task_title = (
-        highest_priority_task.get("title") if highest_priority_task else "none"
+        highest_priority_task.get("title")
+        if highest_priority_task
+        else "No active priority task"
     )
     highest_task_score = (
         f" (P{highest_priority_task.get('priority_score')})"
@@ -236,33 +269,57 @@ def _summarize_executive_assistant() -> tuple[str, dict[str, Any]]:
         if highest_strategic_gap
         else ""
     )
+    top_recommendation_title = (
+        top_recommendation.get("title")
+        if top_recommendation
+        else "No recommendations"
+    )
+    top_recommendation_score = (
+        f" (P{top_recommendation.get('priority_score')})"
+        if top_recommendation
+        else ""
+    )
+    top_3_recommendation_titles = [
+        str(recommendation.get("title"))
+        + (
+            f" (P{recommendation.get('priority_score')})"
+            if recommendation.get("priority_score") is not None
+            else ""
+        )
+        for recommendation in recommendations[:3]
+    ]
+    top_3_recommendations_text = (
+        "; ".join(top_3_recommendation_titles)
+        if top_3_recommendation_titles
+        else "No recommendations"
+    )
 
     summary = (
-        f"Highest priority task: "
+        f"Highest Priority Task: "
         f"{highest_task_title}{highest_task_score}. "
-        f"Highest strategic gap: {highest_gap_title}{highest_gap_score}. "
-        f"Highest priority milestone: {highest_milestone_title}. "
+        f"Highest Strategic Gap: {highest_gap_title}{highest_gap_score}. "
+        f"Top Recommendation: {top_recommendation_title}{top_recommendation_score}. "
+        f"Top 3 Recommendations: {top_3_recommendations_text}. "
         f"Top blockers: {blockers[0] if blockers else 'none'}. "
         f"{len(open_tasks)} open task(s) and {len(progress_history)} recent milestone progress event(s) reviewed. "
+        f"Highest priority milestone: {highest_milestone_title}. "
         f"Next action: {briefing.get('suggested_next_action')}"
     )
     output = {
         "open_task_count": len(open_tasks),
         "highest_priority_task": (
-            {
-                "id": highest_priority_task.get("id"),
-                "title": highest_priority_task.get("title"),
-                "status": highest_priority_task.get("status"),
-                "due_date": highest_priority_task.get("due_date"),
-                "priority_score": highest_priority_task.get("priority_score"),
-                "priority_factors": highest_priority_task.get("priority_factors") or [],
-            }
+            _summarize_priority_task(highest_priority_task)
             if highest_priority_task
             else None
         ),
         "highest_priority_milestone": highest_priority_milestone,
         "highest_strategic_gap": highest_strategic_gap,
         "strategic_gaps": strategic_gaps[:10],
+        "top_recommendation": top_recommendation,
+        "top_3_recommendations": recommendations[:3],
+        "recommendations": recommendations,
+        "task_creation_enabled": False,
+        "automatic_task_creation": False,
         "top_open_tasks": top_open_tasks,
         "top_blockers": blockers[:5],
         "blockers": blockers,

@@ -258,15 +258,37 @@ The Milestones tab can show current progress, linked task completion count, task
 
 Progress is applied only when Jadin explicitly presses Apply suggested progress. Orbit stores progress history for manual changes and task-advisory applications.
 
+## Recommendations and Suggested Task Creation
+
+Suggested Task Creation v1 is implemented for Orbit recommendations.
+
+Current capabilities:
+
+* Recommendations can produce task drafts.
+* Task creation requires explicit user approval.
+* Strategic gap recommendations can create milestone-linked Inbox tasks.
+* Created tasks remain Inbox tasks and use milestone links as structured tags.
+* No autonomous task creation yet.
+
 Confirmed Orbit flow:
 
-1. Task
-2. Milestone tag
-3. Morning Briefing priority
-4. Task completion
-5. Progress advisory
-6. Manual progress apply
-7. Progress history
+1. Strategic Gap
+2. Recommendation
+3. Preview Task
+4. Create Task
+5. Linked Inbox Task
+6. Priority Score
+7. Morning Briefing
+
+## Priority and Recommendation State
+
+Current state:
+
+* Task priority scoring works.
+* Strategic gap detection works.
+* Recommendations work.
+* Suggested task creation works.
+* Agents are still read-only and do not create tasks.
 
 ---
 
@@ -542,6 +564,8 @@ Runbook:
 * Speech input, wake phrase detection, and conversational voice mode are not implemented yet.
 * Orbit readiness scoring still requires manual judgment and Helix-assisted updates.
 * Orbit milestone progress remains manual unless Jadin explicitly applies the task-derived advisory.
+* Suggested task creation is user-approved only.
+* No autonomous task creation exists yet.
 * Agents are manual and read-only in v1.
 * Agents do not schedule themselves, create tasks, update readiness, send notifications, or modify scanner state.
 * Task reminders are not connected yet.
@@ -552,12 +576,12 @@ Runbook:
 
 # Next Development Priorities
 
-1. Priority Scoring Engine for Orbit tasks, blockers, milestones, readiness gaps, and time-sensitive work.
-2. Agent Prioritization Layer so Helix can decide which agent should run and why.
-3. Web Search Agent for tasks requiring current or external information.
-4. Voice Input / Wake Word prototype for the future "Good morning Helix" workflow.
-5. Scheduled Agent Runs using `run_agent(agent_id)` as the shared execution path.
-6. Agent Notifications for controlled summaries after scheduled or manual runs.
+1. Web Search Agent for tasks requiring current or external information.
+2. Scheduled Agent Runs using `run_agent(agent_id)` as the shared execution path.
+3. Voice wake / speech input prototype for the future "Good morning Helix" workflow.
+4. Agent notification approvals for controlled summaries after scheduled or manual runs.
+5. Readiness update advisory.
+6. Agent Prioritization Layer so Helix can decide which agent should run and why.
 7. Helix Core Agent Summary so the home surface can show recent agent output without becoming noisy.
 8. Daily and weekly automation loops for Morning Review, Evening Review, planning review, and trading review.
 9. Task reminder support connected to Orbit tasks.

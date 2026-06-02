@@ -13,6 +13,7 @@ from .models import (
     MilestoneUpdate,
     ReadinessCategoryCreate,
     ReadinessCategoryUpdate,
+    RecommendationTaskDraft,
     ReviewCreate,
     TaskCreate,
     TaskUpdate,
@@ -85,6 +86,7 @@ ORBIT_INBOX_GOAL_TITLE = "Inbox"
 MILESTONE_PROGRESS_SOURCES = {"manual", "task_advisory", "helix_tool", "system"}
 ORBIT_LOCAL_TIMEZONE = ZoneInfo("America/Denver")
 STRATEGIC_GAP_RECENT_ACTIVITY_DAYS = 7
+STRATEGIC_GAP_RECOMMENDATION_PREFIX = "strategic-gap-"
 
 
 def _serialize_value(value: Any) -> Any:
@@ -907,6 +909,73 @@ def create_inbox_task(payload: Any) -> dict[str, Any]:
         link_task_to_milestone(int(task["id"]), int(milestone_id))
 
     return _with_linked_milestones(task)
+
+
+def _get_strategic_gap_milestone(
+    recommendation_id: str,
+) -> dict[str, Any] | None:
+    if not recommendation_id.startswith(STRATEGIC_GAP_RECOMMENDATION_PREFIX):
+        return None
+
+    milestone_id_text = recommendation_id.removeprefix(
+        STRATEGIC_GAP_RECOMMENDATION_PREFIX,
+    )
+    try:
+        milestone_id = int(milestone_id_text)
+    except ValueError:
+        return None
+
+    milestone = get_record("milestones", milestone_id)
+    if milestone is None:
+        return None
+
+    matching_gap = next(
+        (
+            gap
+            for gap in list_strategic_gaps()
+            if int(gap.get("milestone_id") or 0) == milestone_id
+        ),
+        None,
+    )
+    if matching_gap is None:
+        return None
+
+    return milestone
+
+
+def get_recommendation_task_draft(
+    recommendation_id: str,
+) -> dict[str, Any] | None:
+    milestone = _get_strategic_gap_milestone(recommendation_id)
+    if milestone is None:
+        return None
+
+    return _model_data(
+        RecommendationTaskDraft(
+            title=f"Create first review checklist for {milestone.get('title')}",
+            description=(
+                "Define what should be reviewed after each trading session: setup, "
+                "entry, exit, rule adherence, emotion, and lesson learned."
+            ),
+            milestone_ids=[int(milestone["id"])],
+        ),
+    )
+
+
+def create_task_from_recommendation(
+    recommendation_id: str,
+) -> dict[str, Any] | None:
+    draft = get_recommendation_task_draft(recommendation_id)
+    if draft is None:
+        return None
+
+    return create_inbox_task(
+        {
+            **draft,
+            "status": "queued",
+            "due_date": None,
+        },
+    )
 
 
 def create_review(payload: ReviewCreate) -> dict[str, Any]:
