@@ -196,6 +196,15 @@ export type AgentDefinition = {
   last_run?: AgentRun | null;
 };
 
+type ReadinessSuggestion = {
+  category: string;
+  current_score: number;
+  suggested_score: number;
+  confidence: string;
+  evidence: string[];
+  rationale: string[];
+};
+
 type OrbitBoardProps = Readonly<{
   event: MajorEvent | undefined;
   milestones: Milestone[];
@@ -398,6 +407,33 @@ function getStringArrayField(
   return value.filter((item): item is string => typeof item === "string");
 }
 
+function getReadinessSuggestions(
+  record: Record<string, unknown> | null | undefined,
+) {
+  const value = getRecordField(record, "suggestions");
+
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is ReadinessSuggestion => {
+    if (!isRecord(item)) {
+      return false;
+    }
+
+    return (
+      typeof item.category === "string" &&
+      typeof item.current_score === "number" &&
+      typeof item.suggested_score === "number" &&
+      typeof item.confidence === "string" &&
+      Array.isArray(item.evidence) &&
+      item.evidence.every((entry) => typeof entry === "string") &&
+      Array.isArray(item.rationale) &&
+      item.rationale.every((entry) => typeof entry === "string")
+    );
+  });
+}
+
 function formatExecutiveItem(
   record: Record<string, unknown> | null | undefined,
   fallback: string,
@@ -428,8 +464,8 @@ function MiniPanel({
   children: ReactNode;
 }>) {
   return (
-    <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-4">
-      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+    <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-3">
+      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
         {title}
       </h2>
       {children}
@@ -742,8 +778,10 @@ export default function OrbitBoard({
       ) : null}
 
       {activeTab === "Overview" ? (
-        <div className="grid gap-3 lg:grid-cols-[1.1fr_0.9fr]">
-          <MiniPanel title="Corporate Escape">
+        <div className="flex flex-col gap-2 lg:grid lg:grid-cols-[1.1fr_0.9fr] lg:items-start">
+          <div className="contents lg:flex lg:flex-col lg:gap-2">
+            <div className="order-1 lg:order-none">
+              <MiniPanel title="Corporate Escape">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-2xl font-semibold tracking-tight text-white">
@@ -762,188 +800,204 @@ export default function OrbitBoard({
                 <p className="text-xs text-neutral-500">days</p>
               </div>
             </div>
-            <div className="mt-4">
-              <div className="mb-2 flex justify-between text-xs text-neutral-400">
+            <div className="mt-3">
+              <div className="mb-1.5 flex justify-between text-xs text-neutral-400">
                 <span>Progress</span>
                 <span>{progressPercentage}%</span>
               </div>
               <ProgressBar value={progressPercentage} />
             </div>
-          </MiniPanel>
+              </MiniPanel>
+            </div>
 
-          <MiniPanel title="Suggested Next Action">
-            <p className="text-sm leading-6 text-neutral-200">
-              {suggestedNextAction ??
-                (morningBriefingError
-                  ? "Suggested action unavailable right now."
-                  : "No suggested action yet")}
-            </p>
-          </MiniPanel>
-
-          <MiniPanel title="Recommendations">
-            {topRecommendations.length > 0 ? (
-              <div className="space-y-2">
-                {topRecommendations.map((recommendation) => (
-                  <div
-                    key={recommendation.id}
-                    className="rounded-lg bg-white/[0.03] px-3 py-2"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <p className="min-w-0 text-sm leading-5 text-neutral-200">
-                        {recommendation.recommendation}
-                      </p>
-                      <span className="shrink-0 rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[11px] font-semibold text-cyan-100">
-                        {recommendation.score}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-[11px] uppercase tracking-wide text-neutral-500">
-                      {formatStatus(recommendation.category)}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-neutral-500">
-                {recommendationsError
-                  ? "Recommendations unavailable right now."
-                  : "No recommendations yet"}
-              </p>
-            )}
-          </MiniPanel>
-
-          <MiniPanel title="Top Priority Tasks">
-            {priorityTasks.length > 0 ? (
-              <div className="space-y-2">
-                {priorityTasks.map((task) => (
-                  <div
-                    key={task.id}
-                    className="flex items-center justify-between gap-3 rounded-lg bg-white/[0.03] px-3 py-2"
-                  >
-                    <span className="min-w-0 truncate text-sm text-neutral-200">
-                      {task.title}
-                    </span>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[11px] font-semibold text-cyan-100">
-                        P{task.priority_score ?? 0}
-                      </span>
-                      <span className="text-xs text-neutral-500">
-                        {task.milestone_title ?? formatStatus(task.status)}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-neutral-500">No priority tasks</p>
-            )}
-          </MiniPanel>
-
-          <MiniPanel title="Strategic Gaps">
-            {strategicGaps.length > 0 ? (
-              <div className="space-y-2">
-                {strategicGaps.map((gap) => {
-                  const recommendationId = getRecommendationId(gap);
-                  const draft = taskDraftsByRecommendationId[recommendationId];
-
-                  return (
-                    <div
-                      key={gap.milestone_id}
-                      className="rounded-lg bg-white/[0.03] px-3 py-2"
-                    >
-                      <div className="flex items-center justify-between gap-3">
+            <div className="order-3 lg:order-none">
+              <MiniPanel title="Top Priority Tasks">
+                {priorityTasks.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {priorityTasks.map((task) => (
+                      <div
+                        key={task.id}
+                        className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.03] px-2.5 py-1.5"
+                      >
                         <span className="min-w-0 truncate text-sm text-neutral-200">
-                          {gap.title}
+                          {task.title}
                         </span>
-                        <span className="shrink-0 rounded-full border border-amber-300/25 bg-amber-300/10 px-2 py-0.5 text-[11px] font-semibold text-amber-100">
-                          P{gap.priority_score}
-                        </span>
-                      </div>
-                      <div className="mt-1 flex flex-wrap gap-1.5">
-                        {getCompactGapReasons(gap.reasons).slice(0, 2).map((reason) => (
-                          <span
-                            key={reason}
-                            className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-400"
-                          >
-                            {reason}
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[11px] font-semibold text-cyan-100">
+                            P{task.priority_score ?? 0}
                           </span>
-                        ))}
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => previewRecommendationTask(gap)}
-                          disabled={previewingRecommendationId === recommendationId}
-                          className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {previewingRecommendationId === recommendationId
-                            ? "Previewing..."
-                            : "Preview Task"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => createRecommendationTask(gap)}
-                          disabled={creatingRecommendationId === recommendationId}
-                          className="rounded-lg border border-emerald-300/25 bg-emerald-300/10 px-2 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {creatingRecommendationId === recommendationId
-                            ? "Creating..."
-                            : "Create Task"}
-                        </button>
-                      </div>
-                      {draft ? (
-                        <div className="mt-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2">
-                          <p className="text-xs font-semibold text-neutral-200">
-                            {draft.title}
-                          </p>
-                          {draft.description ? (
-                            <p className="mt-1 text-xs leading-5 text-neutral-400">
-                              {draft.description}
-                            </p>
-                          ) : null}
-                          <p className="mt-1 text-[11px] text-neutral-500">
-                            Milestone: {gap.title}
-                          </p>
+                          <span className="text-xs text-neutral-500">
+                            {task.milestone_title ?? formatStatus(task.status)}
+                          </span>
                         </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="text-sm text-neutral-500">No strategic gaps</p>
-            )}
-          </MiniPanel>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-neutral-500">No priority tasks</p>
+                )}
+              </MiniPanel>
+            </div>
 
-          <MiniPanel title="Current Blockers">
-            {activeBlockers.length > 0 ? (
-              <div className="space-y-2">
-                {activeBlockers.slice(0, 4).map((blocker) => (
-                  <p
-                    key={blocker}
-                    className="rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-100"
-                  >
-                    {blocker}
-                  </p>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-neutral-500">No active blockers</p>
-            )}
-          </MiniPanel>
-
-          <MiniPanel title="Overall Readiness">
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-3xl font-semibold text-white">
+            <div className="order-7 lg:order-none">
+              <MiniPanel title="Overall Readiness">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-2xl font-semibold text-white">
                 {overallReadiness === null ? "--" : `${overallReadiness}%`}
               </span>
               <span className="text-xs text-neutral-500">
                 {readiness.length} categories
               </span>
             </div>
-            <div className="mt-4">
+            <div className="mt-2">
               <ProgressBar value={overallReadiness ?? 0} />
             </div>
-          </MiniPanel>
+              </MiniPanel>
+            </div>
+          </div>
+
+          <div className="contents lg:flex lg:flex-col lg:gap-2">
+            <div className="order-2 lg:order-none">
+              <MiniPanel title="Suggested Next Action">
+                <p className="line-clamp-3 text-sm leading-5 text-neutral-200">
+                  {suggestedNextAction ??
+                    (morningBriefingError
+                      ? "Suggested action unavailable right now."
+                      : "No suggested action yet")}
+                </p>
+              </MiniPanel>
+            </div>
+
+            <div className="order-4 lg:order-none">
+              <MiniPanel title="Recommendations">
+                {topRecommendations.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {topRecommendations.slice(0, 3).map((recommendation) => (
+                      <div
+                        key={recommendation.id}
+                        className="rounded-lg bg-white/[0.03] px-2.5 py-1.5"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="line-clamp-2 min-w-0 text-sm leading-5 text-neutral-200">
+                            {recommendation.recommendation}
+                          </p>
+                          <span className="shrink-0 rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[11px] font-semibold text-cyan-100">
+                            {recommendation.score}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-[11px] uppercase tracking-wide text-neutral-500">
+                          {formatStatus(recommendation.category)}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-neutral-500">
+                    {recommendationsError
+                      ? "Recommendations unavailable right now."
+                      : "No recommendations yet"}
+                  </p>
+                )}
+              </MiniPanel>
+            </div>
+
+            <div className="order-5 lg:order-none">
+              <MiniPanel title="Strategic Gaps">
+                {strategicGaps.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {strategicGaps.slice(0, 2).map((gap) => {
+                      const recommendationId = getRecommendationId(gap);
+                      const draft = taskDraftsByRecommendationId[recommendationId];
+
+                      return (
+                        <div
+                          key={gap.milestone_id}
+                          className="rounded-lg bg-white/[0.03] px-2.5 py-1.5"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="min-w-0 truncate text-sm text-neutral-200">
+                              {gap.title}
+                            </span>
+                            <span className="shrink-0 rounded-full border border-amber-300/25 bg-amber-300/10 px-2 py-0.5 text-[11px] font-semibold text-amber-100">
+                              P{gap.priority_score}
+                            </span>
+                          </div>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {getCompactGapReasons(gap.reasons).slice(0, 2).map((reason) => (
+                              <span
+                                key={reason}
+                                className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-400"
+                              >
+                                {reason}
+                              </span>
+                            ))}
+                          </div>
+                          <div className="mt-1.5 flex flex-wrap gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => previewRecommendationTask(gap)}
+                              disabled={previewingRecommendationId === recommendationId}
+                              className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-0.5 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {previewingRecommendationId === recommendationId
+                                ? "Previewing..."
+                                : "Preview Task"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => createRecommendationTask(gap)}
+                              disabled={creatingRecommendationId === recommendationId}
+                              className="rounded-md border border-emerald-300/25 bg-emerald-300/10 px-2 py-0.5 text-xs font-semibold text-emerald-100 hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {creatingRecommendationId === recommendationId
+                                ? "Creating..."
+                                : "Create Task"}
+                            </button>
+                          </div>
+                          {draft ? (
+                            <div className="mt-1.5 rounded-lg border border-white/10 bg-black/20 px-2.5 py-1.5">
+                              <p className="truncate text-xs font-semibold text-neutral-200">
+                                {draft.title}
+                              </p>
+                              {draft.description ? (
+                                <p className="mt-1 line-clamp-2 text-xs leading-5 text-neutral-400">
+                                  {draft.description}
+                                </p>
+                              ) : null}
+                              <p className="mt-1 truncate text-[11px] text-neutral-500">
+                                Milestone: {gap.title}
+                              </p>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-sm text-neutral-500">No strategic gaps</p>
+                )}
+              </MiniPanel>
+            </div>
+
+            <div className="order-6 lg:order-none">
+              <MiniPanel title="Current Blockers">
+                {activeBlockers.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {activeBlockers.slice(0, 2).map((blocker) => (
+                      <p
+                        key={blocker}
+                        className="line-clamp-2 rounded-lg border border-red-400/20 bg-red-400/10 px-2.5 py-1.5 text-sm leading-5 text-red-100"
+                      >
+                        {blocker}
+                      </p>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-neutral-500">No active blockers</p>
+                )}
+              </MiniPanel>
+            </div>
+          </div>
         </div>
       ) : null}
 
@@ -1437,6 +1491,10 @@ export default function OrbitBoard({
                 agent.agent_type === "web_search" && isRecord(output)
                   ? output
                   : null;
+              const readinessAdvisoryOutput =
+                agent.agent_type === "readiness_advisory" && isRecord(output)
+                  ? output
+                  : null;
               const priorityTask = getRecordField(
                 executiveOutput,
                 "highest_priority_task",
@@ -1458,6 +1516,11 @@ export default function OrbitBoard({
               );
               const webSearchPerformed =
                 getRecordField(webSearchOutput, "web_search_performed") === true;
+              const readinessSuggestions = getReadinessSuggestions(
+                readinessAdvisoryOutput,
+              );
+              const readinessApprovalRequired =
+                getRecordField(readinessAdvisoryOutput, "approval_required") === true;
 
               return (
                 <article
@@ -1569,6 +1632,66 @@ export default function OrbitBoard({
                           {webSearchPerformed ? "Yes" : "No"}
                         </p>
                       </div>
+                    </div>
+                  ) : null}
+                  {readinessAdvisoryOutput ? (
+                    <div className="mt-3 space-y-2">
+                      <div className="grid gap-2 md:grid-cols-3">
+                        <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                            Readiness Suggestions
+                          </p>
+                          <p className="mt-1 text-sm text-neutral-200">
+                            {readinessSuggestions.length}
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                            Approval Required
+                          </p>
+                          <p className="mt-1 text-sm text-neutral-200">
+                            {readinessApprovalRequired ? "Yes" : "No"}
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                            Confidence
+                          </p>
+                          <p className="mt-1 text-sm text-neutral-200">
+                            {readinessSuggestions.length > 0
+                              ? formatStatus(readinessSuggestions[0].confidence)
+                              : "No suggestion"}
+                          </p>
+                        </div>
+                      </div>
+                      {readinessSuggestions.length > 0 ? (
+                        <div className="space-y-2">
+                          {readinessSuggestions.slice(0, 4).map((suggestion) => (
+                            <div
+                              key={suggestion.category}
+                              className="rounded-lg border border-cyan-300/15 bg-cyan-300/5 px-3 py-2"
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                <div>
+                                  <p className="text-sm font-semibold text-neutral-100">
+                                    {suggestion.category}
+                                  </p>
+                                  <p className="mt-1 text-xs text-neutral-500">
+                                    Confidence: {formatStatus(suggestion.confidence)}
+                                  </p>
+                                </div>
+                                <span className="rounded-full border border-cyan-300/25 bg-cyan-300/10 px-2 py-0.5 text-xs font-semibold text-cyan-100">
+                                  {suggestion.current_score}% -&gt;{" "}
+                                  {suggestion.suggested_score}%
+                                </span>
+                              </div>
+                              <p className="mt-2 line-clamp-2 text-sm leading-6 text-neutral-300">
+                                {suggestion.evidence.slice(0, 3).join("; ")}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
                   {lastRun?.started_at ? (

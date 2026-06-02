@@ -461,6 +461,7 @@ Initial agents:
 * Executive Assistant Agent
 * Trading Coach Agent
 * Web Search Agent
+* Readiness Advisory Agent
 
 Current behavior:
 
@@ -472,6 +473,7 @@ Current behavior:
 * Executive Assistant Agent summarizes open tasks, blockers, and milestone progress history
 * Trading Coach Agent summarizes recent trade sessions and readiness evidence
 * Web Search Agent inspects top recommendations and strategic gaps, then creates a research plan for one target that may need current or external context
+* Readiness Advisory Agent suggests readiness score improvements from Orbit evidence
 
 Current restrictions:
 
@@ -482,6 +484,8 @@ Current restrictions:
 * No notifications yet.
 * No scanner changes.
 * No trading signals.
+* Readiness Advisory Agent is advisory only: it does not update readiness, create tasks, create reviews, send notifications, schedule itself, or modify milestones or major events.
+* Readiness Advisory Agent suggestions require manual approval before any readiness score can change.
 * Web Search Agent v1 does not browse the web. It outputs `research_target`, `reason`, `suggested_queries`, `sources_required`, `actions_taken: []`, and `web_search_performed: false`.
 * Actual cited web search is reserved for a later version.
 

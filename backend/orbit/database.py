@@ -31,6 +31,11 @@ INITIAL_AGENT_DEFINITIONS = [
         "web_search",
         "Researches current/external information for approved tasks, milestones, and recommendations.",
     ),
+    (
+        "Readiness Advisory Agent",
+        "readiness_advisory",
+        "Reviews Orbit evidence and suggests readiness score improvements that require manual approval.",
+    ),
 ]
 
 
