@@ -193,6 +193,13 @@ def _summarize_priority_task(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _compact_title(record: dict[str, Any] | None, fallback: str) -> str:
+    if not record:
+        return fallback
+    title = record.get("title") or record.get("recommendation")
+    return str(title or fallback)
+
+
 def _recommendation_from_strategic_gap(gap: dict[str, Any]) -> dict[str, Any]:
     recommendation_id = f"strategic-gap-{gap.get('milestone_id')}"
     draft = orbit_service.get_recommendation_task_draft(recommendation_id)
@@ -204,9 +211,12 @@ def _recommendation_from_strategic_gap(gap: dict[str, Any]) -> dict[str, Any]:
         "id": recommendation_id,
         "category": "strategic_gap",
         "title": recommendation_title,
+        "recommendation": recommendation_title,
+        "score": gap.get("priority_score"),
         "milestone_id": gap.get("milestone_id"),
         "milestone_title": gap.get("title"),
         "priority_score": gap.get("priority_score"),
+        "rationale": gap.get("reasons") or [],
         "reasons": gap.get("reasons") or [],
         "task_draft": draft,
         "requires_user_approval": True,
@@ -303,7 +313,7 @@ def _summarize_executive_assistant() -> tuple[str, dict[str, Any]]:
     )
 
     recommendation_lines = [
-        f"{index}. {recommendation.get('recommendation')}"
+        f"{index}. {_compact_title(recommendation, 'Recommendation unavailable')}"
         for index, recommendation in enumerate(recommendations[:3], start=1)
     ] or ["No recommendations yet."]
     summary = (
@@ -311,6 +321,8 @@ def _summarize_executive_assistant() -> tuple[str, dict[str, Any]]:
         f"{highest_task_title}{highest_task_score}\n\n"
         "Highest Strategic Gap:\n"
         f"{highest_gap_title}{highest_gap_score}\n\n"
+        "Top Recommendation:\n"
+        f"{top_recommendation_title}{top_recommendation_score}\n\n"
         "Recommendations:\n"
         + "\n".join(recommendation_lines)
     )
@@ -342,6 +354,204 @@ def _summarize_executive_assistant() -> tuple[str, dict[str, Any]]:
             else briefing.get("suggested_next_action")
         ),
         "actions_taken": [],
+    }
+    return summary, output
+
+
+def _string_list(values: Any, limit: int = 3) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    return [
+        str(value)
+        for value in values[:limit]
+        if value is not None and str(value).strip()
+    ]
+
+
+def _research_queries_for_target(
+    target: str,
+    category: str,
+    reasons: list[str],
+) -> list[str]:
+    target_text = target.strip() or "priority milestone"
+    base_queries = [
+        f"{target_text} current best practices 2026",
+        f"{target_text} checklist examples",
+        f"{target_text} risks requirements current information",
+    ]
+
+    category_queries = {
+        "readiness_improvement": [
+            f"{target_text} readiness benchmark",
+            f"{target_text} preparation checklist current guidance",
+        ],
+        "strategic_gap": [
+            f"{target_text} launch plan current examples",
+            f"{target_text} business plan current requirements",
+        ],
+        "blocker_resolution": [
+            f"{target_text} common blockers solutions",
+            f"{target_text} current requirements",
+        ],
+        "task_execution": [
+            f"{target_text} implementation guide current best practices",
+            f"{target_text} examples checklist",
+        ],
+    }
+
+    queries = [*category_queries.get(category, []), *base_queries]
+    if any("readiness" in reason.casefold() for reason in reasons):
+        queries.insert(0, f"{target_text} readiness requirements")
+    return list(dict.fromkeys(queries))[:5]
+
+
+def _sources_required_for_category(category: str) -> list[str]:
+    if category == "readiness_improvement":
+        return [
+            "Current official guidance or requirements",
+            "Recent benchmark or checklist source",
+            "At least one practical implementation example",
+        ]
+    if category == "strategic_gap":
+        return [
+            "Current official or primary source where applicable",
+            "Recent expert or industry reference",
+            "Comparable launch or planning example",
+        ]
+    return [
+        "Current authoritative source",
+        "Recent secondary source for context",
+        "Practical checklist or example",
+    ]
+
+
+def _select_web_research_target(
+    recommendations: list[dict[str, Any]],
+    strategic_gaps: list[dict[str, Any]],
+    readiness: dict[str, Any],
+) -> dict[str, Any]:
+    research_categories = {
+        "strategic_gap",
+        "readiness_improvement",
+        "blocker_resolution",
+    }
+    for recommendation in recommendations:
+        category = str(recommendation.get("category") or "")
+        if category in research_categories:
+            target = _compact_title(recommendation, "Priority recommendation")
+            return {
+                "target": target,
+                "category": category,
+                "reason": (
+                    "This recommendation would benefit from current or external "
+                    "context before Jadin turns it into execution work."
+                ),
+                "rationale": _string_list(
+                    recommendation.get("rationale") or recommendation.get("reasons"),
+                ),
+                "source": "recommendation",
+            }
+
+    if strategic_gaps:
+        gap = strategic_gaps[0]
+        target = str(gap.get("title") or "Strategic gap")
+        return {
+            "target": target,
+            "category": "strategic_gap",
+            "reason": (
+                "This strategic gap is a strong candidate for external research "
+                "before selecting the next milestone-linked action."
+            ),
+            "rationale": _string_list(gap.get("reasons")),
+            "source": "strategic_gap",
+            "milestone_id": gap.get("milestone_id"),
+        }
+
+    readiness_categories = readiness.get("categories") or []
+    low_readiness = sorted(
+        [
+            category
+            for category in readiness_categories
+            if int(category.get("current_score") or 0)
+            < int(category.get("target_score") or 100)
+        ],
+        key=lambda category: int(category.get("current_score") or 0),
+    )
+    if low_readiness:
+        category = low_readiness[0]
+        target = f"{category.get('category_name') or 'Readiness'} readiness"
+        return {
+            "target": target,
+            "category": "readiness_improvement",
+            "reason": (
+                "This readiness category is below target and may need current "
+                "requirements, benchmarks, or examples."
+            ),
+            "rationale": _string_list([category.get("notes")]),
+            "source": "readiness",
+            "readiness_category_id": category.get("id"),
+        }
+
+    return {
+        "target": "Current external context for Orbit priorities",
+        "category": "general_research",
+        "reason": (
+            "No urgent research-dependent gap was detected, so the agent prepared "
+            "a general research plan for future priority work."
+        ),
+        "rationale": [],
+        "source": "fallback",
+    }
+
+
+def _summarize_web_search_agent() -> tuple[str, dict[str, Any]]:
+    briefing = orbit_service.generate_morning_briefing()
+    strategic_gaps = orbit_service.list_strategic_gaps()
+    recommendations_output = orbit_service.generate_recommendations(
+        strategic_gaps=strategic_gaps[:5],
+        blockers=briefing.get("current_blockers") or [],
+        readiness=briefing.get("readiness") or {},
+    )
+    recommendations = (
+        recommendations_output.get("recommendations")
+        or briefing.get("recommendations")
+        or []
+    )
+    target = _select_web_research_target(
+        recommendations[:5],
+        strategic_gaps[:5],
+        briefing.get("readiness") or {},
+    )
+    research_target = str(target.get("target"))
+    category = str(target.get("category") or "")
+    reason = str(target.get("reason") or "Research could help clarify next steps.")
+    rationale = _string_list(target.get("rationale"))
+    suggested_queries = _research_queries_for_target(
+        research_target,
+        category,
+        rationale,
+    )
+    sources_required = _sources_required_for_category(category)
+
+    summary = (
+        "Research Target:\n"
+        f"{research_target}\n\n"
+        "Suggested Queries:\n"
+        + "\n".join(f"- {query}" for query in suggested_queries[:3])
+        + "\n\nWeb search performed: No"
+    )
+    output = {
+        "research_target": research_target,
+        "reason": reason,
+        "suggested_queries": suggested_queries,
+        "sources_required": sources_required,
+        "actions_taken": [],
+        "web_search_performed": False,
+        "research_target_source": target.get("source"),
+        "research_category": category,
+        "rationale": rationale,
+        "top_recommendations_reviewed": recommendations[:5],
+        "strategic_gaps_reviewed": strategic_gaps[:5],
     }
     return summary, output
 
@@ -409,6 +619,9 @@ def _run_agent_body(agent: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
     if agent_type == "trading_coach":
         return _summarize_trading_coach()
+
+    if agent_type == "web_search":
+        return _summarize_web_search_agent()
 
     raise ValueError(f"Unsupported agent type: {agent_type}")
 

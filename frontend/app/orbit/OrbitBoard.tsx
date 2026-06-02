@@ -102,6 +102,8 @@ export type RecommendationTaskDraft = {
   title: string;
   description: string | null;
   milestone_ids: number[];
+};
+
 export type Recommendation = {
   id: string;
   category:
@@ -381,6 +383,19 @@ function getScoreText(record: Record<string, unknown> | null | undefined) {
   }
 
   return null;
+}
+
+function getStringArrayField(
+  record: Record<string, unknown> | null | undefined,
+  field: string,
+) {
+  const value = getRecordField(record, field);
+
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is string => typeof item === "string");
 }
 
 function formatExecutiveItem(
@@ -1418,6 +1433,10 @@ export default function OrbitBoard({
                 agent.agent_type === "executive_assistant" && isRecord(output)
                   ? output
                   : null;
+              const webSearchOutput =
+                agent.agent_type === "web_search" && isRecord(output)
+                  ? output
+                  : null;
               const priorityTask = getRecordField(
                 executiveOutput,
                 "highest_priority_task",
@@ -1430,6 +1449,15 @@ export default function OrbitBoard({
                 executiveOutput,
                 "top_recommendation",
               );
+              const researchTarget =
+                getTextField(webSearchOutput, "research_target") ??
+                "No research target yet";
+              const suggestedQueries = getStringArrayField(
+                webSearchOutput,
+                "suggested_queries",
+              );
+              const webSearchPerformed =
+                getRecordField(webSearchOutput, "web_search_performed") === true;
 
               return (
                 <article
@@ -1509,6 +1537,36 @@ export default function OrbitBoard({
                                 "No recommendations",
                               )
                             : "No recommendations"}
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
+                  {webSearchOutput ? (
+                    <div className="mt-3 grid gap-2 md:grid-cols-3">
+                      <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                          Research Target
+                        </p>
+                        <p className="mt-1 truncate text-sm text-neutral-200">
+                          {researchTarget}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                          Suggested Queries
+                        </p>
+                        <p className="mt-1 line-clamp-2 text-sm text-neutral-200">
+                          {suggestedQueries.length > 0
+                            ? suggestedQueries.slice(0, 2).join("; ")
+                            : "No queries yet"}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                          Web Search Performed
+                        </p>
+                        <p className="mt-1 text-sm text-neutral-200">
+                          {webSearchPerformed ? "Yes" : "No"}
                         </p>
                       </div>
                     </div>
