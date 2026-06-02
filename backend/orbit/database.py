@@ -26,6 +26,11 @@ INITIAL_AGENT_DEFINITIONS = [
         "trading_coach",
         "Summarizes recent trade sessions and readiness evidence without scanner changes or trading signals.",
     ),
+    (
+        "Web Search Agent",
+        "web_search",
+        "Researches current/external information for approved tasks, milestones, and recommendations.",
+    ),
 ]
 
 

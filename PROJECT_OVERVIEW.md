@@ -460,6 +460,7 @@ Initial agents:
 * Evening Review Agent
 * Executive Assistant Agent
 * Trading Coach Agent
+* Web Search Agent
 
 Current behavior:
 
@@ -470,6 +471,7 @@ Current behavior:
 * Evening Review Agent calls/generates Daily Closeout
 * Executive Assistant Agent summarizes open tasks, blockers, and milestone progress history
 * Trading Coach Agent summarizes recent trade sessions and readiness evidence
+* Web Search Agent inspects top recommendations and strategic gaps, then creates a research plan for one target that may need current or external context
 
 Current restrictions:
 
@@ -480,6 +482,8 @@ Current restrictions:
 * No notifications yet.
 * No scanner changes.
 * No trading signals.
+* Web Search Agent v1 does not browse the web. It outputs `research_target`, `reason`, `suggested_queries`, `sources_required`, `actions_taken: []`, and `web_search_performed: false`.
+* Actual cited web search is reserved for a later version.
 
 Future scheduled or background automation should call `run_agent(agent_id)` rather than duplicating agent behavior.
 
@@ -576,7 +580,7 @@ Runbook:
 
 # Next Development Priorities
 
-1. Web Search Agent for tasks requiring current or external information.
+1. Cited Web Search Agent execution for tasks requiring current or external information.
 2. Scheduled Agent Runs using `run_agent(agent_id)` as the shared execution path.
 3. Voice wake / speech input prototype for the future "Good morning Helix" workflow.
 4. Agent notification approvals for controlled summaries after scheduled or manual runs.
@@ -592,7 +596,7 @@ Runbook:
 
 ## Web Search Agent Note
 
-The future Web Search Agent should be used only for tasks requiring current or external information, including:
+Web Search Agent v1 is manual, read-only, and research-plan-only. It should be used only for tasks requiring current or external information, including:
 
 * News
 * Travel
@@ -601,7 +605,7 @@ The future Web Search Agent should be used only for tasks requiring current or e
 * Laws, rules, or policies
 * Milestone-related research
 
-The Web Search Agent should cite sources and later save research output into Orbit and `agent_runs`.
+It does not perform actual web browsing in v1. A later version should perform cited search and save research output into Orbit and `agent_runs`.
 
 ---
 
