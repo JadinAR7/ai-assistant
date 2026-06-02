@@ -30,6 +30,28 @@ class IMessageRoutingTests(unittest.TestCase):
         self.assertEqual(reply, "Latest MES scan.")
         latest_scan.assert_called_once_with()
 
+    def test_good_morning_routes_to_morning_checkin(self):
+        with patch.object(
+            imessage_bridge,
+            "morning_check_in",
+            return_value="Morning summary.",
+        ) as check_in:
+            reply = imessage_bridge.route_message("good morning helix")
+
+        self.assertEqual(reply, "Morning summary.")
+        check_in.assert_called_once_with()
+
+    def test_start_my_morning_routes_to_morning_checkin_after_wake_prefix(self):
+        with patch.object(
+            imessage_bridge,
+            "morning_check_in",
+            return_value="Morning summary.",
+        ) as check_in:
+            reply = imessage_bridge.route_message("Helix start my morning")
+
+        self.assertEqual(reply, "Morning summary.")
+        check_in.assert_called_once_with()
+
     def test_wake_prefixed_chat_falls_back_without_prefix(self):
         with patch.object(imessage_bridge, "ask_helix", return_value="Chat reply.") as chat:
             reply = imessage_bridge.route_message("Helix how should I plan today?")

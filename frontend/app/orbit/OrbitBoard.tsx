@@ -212,6 +212,66 @@ export type AgentPrioritizationResult = {
   actions_taken: string[];
 };
 
+export type ScheduledAgentWindowStatus = {
+  agent_type: string;
+  window_start: string;
+  window_end: string;
+  due: boolean;
+  reason: string;
+  last_run?: AgentRun | null;
+};
+
+export type ScheduledAgentStatus = {
+  current_local_time: string;
+  scheduler_enabled: boolean;
+  scheduler_status: string;
+  morning: ScheduledAgentWindowStatus;
+  evening: ScheduledAgentWindowStatus;
+  last_scheduled_morning_run?: AgentRun | null;
+  last_scheduled_evening_run?: AgentRun | null;
+  prioritization_snapshot_due: boolean;
+  last_prioritization_snapshot?: Record<string, unknown> | null;
+};
+
+export type MorningCheckInStatus = {
+  date: string;
+  morning_acknowledged: boolean;
+  morning_acknowledged_at?: string | null;
+  morning_fallback_sent: boolean;
+  morning_fallback_sent_at?: string | null;
+  morning_agent_run_id?: number | null;
+  delivery_channel?: string | null;
+  current_local_time: string;
+  cutoff_time: string;
+  cutoff_due: boolean;
+};
+
+type MorningCheckInResult = {
+  success: boolean;
+  summary?: string | null;
+  agent_run?: AgentRun | null;
+  status: MorningCheckInStatus;
+  delivery_channel?: string | null;
+  tts_spoken: boolean;
+  fallback_sent: boolean;
+  reason?: string | null;
+};
+
+type ScheduledAgentRunOnceResult = {
+  checked_at: string;
+  actions: Array<{
+    schedule: string;
+    status: string;
+    agent_type?: string | null;
+    reason?: string | null;
+    agent_run_id?: number | null;
+    result_status?: string | null;
+    snapshot_date?: string | null;
+  }>;
+  runs: AgentRun[];
+  status: ScheduledAgentStatus;
+};
+
 type ReadinessSuggestion = {
   category: string;
   current_score: number;
@@ -243,6 +303,10 @@ type OrbitBoardProps = Readonly<{
   agentsError: string | null;
   agentPrioritization: AgentPrioritizationResult | null;
   agentPrioritizationError: string | null;
+  scheduledAgentsStatus: ScheduledAgentStatus | null;
+  scheduledAgentsStatusError: string | null;
+  morningCheckInStatus: MorningCheckInStatus | null;
+  morningCheckInStatusError: string | null;
   errorMessage: string | null;
 }>;
 
@@ -513,6 +577,10 @@ export default function OrbitBoard({
   agentsError,
   agentPrioritization,
   agentPrioritizationError,
+  scheduledAgentsStatus: initialScheduledAgentsStatus,
+  scheduledAgentsStatusError,
+  morningCheckInStatus: initialMorningCheckInStatus,
+  morningCheckInStatusError,
   errorMessage,
 }: OrbitBoardProps) {
   const router = useRouter();
@@ -532,6 +600,15 @@ export default function OrbitBoard({
   const [savingCloseoutReview, setSavingCloseoutReview] = useState(false);
   const [agents, setAgents] = useState<AgentDefinition[]>(initialAgents);
   const [runningAgentId, setRunningAgentId] = useState<number | null>(null);
+  const [scheduledAgentsStatus, setScheduledAgentsStatus] =
+    useState<ScheduledAgentStatus | null>(initialScheduledAgentsStatus);
+  const [checkingScheduledAgents, setCheckingScheduledAgents] = useState(false);
+  const [morningCheckInStatus, setMorningCheckInStatus] =
+    useState<MorningCheckInStatus | null>(initialMorningCheckInStatus);
+  const [morningCheckInSummary, setMorningCheckInSummary] = useState<
+    string | null
+  >(null);
+  const [checkingInMorning, setCheckingInMorning] = useState(false);
   const [taskDraftsByRecommendationId, setTaskDraftsByRecommendationId] =
     useState<Record<string, RecommendationTaskDraft>>({});
   const [previewingRecommendationId, setPreviewingRecommendationId] =
@@ -702,6 +779,96 @@ export default function OrbitBoard({
       type: run.status === "completed" ? "success" : "error",
     });
     setRunningAgentId(null);
+    router.refresh();
+  }
+
+  async function checkScheduledAgentsNow() {
+    setCheckingScheduledAgents(true);
+    setToast(null);
+
+    const response = await fetch(`${API_BASE}/agents/scheduled/run-once`, {
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      setToast({
+        message: "Could not check scheduled agents.",
+        type: "error",
+      });
+      setCheckingScheduledAgents(false);
+      return;
+    }
+
+    const result = (await response.json()) as ScheduledAgentRunOnceResult;
+    setScheduledAgentsStatus(result.status);
+    if (result.runs.length > 0) {
+      setAgents((current) =>
+        current.map((agent) => {
+          const run = result.runs.find((entry) => entry.agent_id === agent.id);
+          return run ? { ...agent, last_run: run } : agent;
+        }),
+      );
+    }
+    const runCount = result.actions.filter(
+      (action) => action.status === "ran",
+    ).length;
+    const snapshotCaptured = result.actions.some(
+      (action) =>
+        action.schedule === "prioritization_snapshot" &&
+        action.status === "captured",
+    );
+    setToast({
+      message:
+        runCount > 0 || snapshotCaptured
+          ? "Scheduled agent check completed."
+          : "No scheduled agents are due.",
+      type: "success",
+    });
+    setCheckingScheduledAgents(false);
+    router.refresh();
+  }
+
+  async function runMorningCheckIn() {
+    setCheckingInMorning(true);
+    setToast(null);
+
+    const response = await fetch(`${API_BASE}/agents/morning/check-in`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        source: "ui",
+        speak: false,
+      }),
+    });
+
+    if (!response.ok) {
+      setToast({
+        message: "Could not run morning check-in.",
+        type: "error",
+      });
+      setCheckingInMorning(false);
+      return;
+    }
+
+    const result = (await response.json()) as MorningCheckInResult;
+    setMorningCheckInStatus(result.status);
+    setMorningCheckInSummary(result.summary ?? null);
+    if (result.agent_run) {
+      setAgents((current) =>
+        current.map((agent) =>
+          agent.id === result.agent_run?.agent_id
+            ? { ...agent, last_run: result.agent_run }
+            : agent,
+        ),
+      );
+    }
+    setToast({
+      message: "Morning check-in acknowledged.",
+      type: "success",
+    });
+    setCheckingInMorning(false);
     router.refresh();
   }
 
@@ -1499,6 +1666,218 @@ export default function OrbitBoard({
             </div>
           ) : agents.length > 0 ? (
             <>
+              <article className="rounded-xl border border-white/10 bg-neutral-950/70 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                      Morning Check-In
+                    </p>
+                    <h2 className="mt-1 text-sm font-semibold text-neutral-100">
+                      {morningCheckInStatus?.morning_acknowledged
+                        ? "Acknowledged"
+                        : morningCheckInStatus?.morning_fallback_sent
+                          ? "Fallback Sent"
+                          : morningCheckInStatusError
+                            ? "Unavailable"
+                            : "Waiting"}
+                    </h2>
+                    <p className="mt-1 text-xs text-neutral-500">
+                      Cutoff:{" "}
+                      {morningCheckInStatus?.cutoff_time ?? "06:30"} local
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={runMorningCheckIn}
+                    disabled={checkingInMorning}
+                    className="rounded-lg border border-cyan-300/25 bg-cyan-300/10 px-3 py-2 text-xs font-semibold text-cyan-100 hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {checkingInMorning ? "Starting..." : "Good Morning Helix"}
+                  </button>
+                </div>
+                {morningCheckInStatus ? (
+                  <div className="mt-3 grid gap-2 md:grid-cols-3">
+                    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                        Acknowledged
+                      </p>
+                      <p className="mt-1 text-sm text-neutral-200">
+                        {morningCheckInStatus.morning_acknowledged
+                          ? "Yes"
+                          : "No"}
+                      </p>
+                      <p className="mt-1 text-xs text-neutral-600">
+                        {morningCheckInStatus.morning_acknowledged_at
+                          ? formatDateTime(
+                              morningCheckInStatus.morning_acknowledged_at,
+                            )
+                          : "No check-in yet"}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                        Fallback
+                      </p>
+                      <p className="mt-1 text-sm text-neutral-200">
+                        {morningCheckInStatus.morning_fallback_sent
+                          ? "Sent"
+                          : "Not sent"}
+                      </p>
+                      <p className="mt-1 text-xs text-neutral-600">
+                        {morningCheckInStatus.morning_fallback_sent_at
+                          ? formatDateTime(
+                              morningCheckInStatus.morning_fallback_sent_at,
+                            )
+                          : morningCheckInStatus.cutoff_due
+                            ? "Cutoff passed"
+                            : "Before cutoff"}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                        Channel
+                      </p>
+                      <p className="mt-1 text-sm text-neutral-200">
+                        {morningCheckInStatus.delivery_channel
+                          ? formatStatus(morningCheckInStatus.delivery_channel)
+                          : "None"}
+                      </p>
+                      <p className="mt-1 text-xs text-neutral-600">
+                        {morningCheckInStatus.morning_agent_run_id
+                          ? `Run ${morningCheckInStatus.morning_agent_run_id}`
+                          : "No run linked"}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-3 text-sm text-neutral-500">
+                    {morningCheckInStatusError ??
+                      "Morning check-in status has not loaded yet."}
+                  </p>
+                )}
+                {morningCheckInSummary ? (
+                  <p className="mt-3 line-clamp-6 whitespace-pre-wrap text-sm leading-6 text-neutral-300">
+                    {morningCheckInSummary}
+                  </p>
+                ) : null}
+              </article>
+              <article className="rounded-xl border border-white/10 bg-neutral-950/70 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                      Scheduled Agents
+                    </p>
+                    <h2 className="mt-1 text-sm font-semibold text-neutral-100">
+                      {scheduledAgentsStatus?.scheduler_enabled
+                        ? formatStatus(scheduledAgentsStatus.scheduler_status)
+                        : scheduledAgentsStatusError
+                          ? "Unavailable"
+                          : "Loading"}
+                    </h2>
+                    <p className="mt-1 text-xs text-neutral-500">
+                      Current local time:{" "}
+                      {scheduledAgentsStatus
+                        ? formatDateTime(
+                            scheduledAgentsStatus.current_local_time,
+                          )
+                        : "Unknown"}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={checkScheduledAgentsNow}
+                    disabled={checkingScheduledAgents}
+                    className="rounded-lg border border-cyan-300/25 bg-cyan-300/10 px-3 py-2 text-xs font-semibold text-cyan-100 hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {checkingScheduledAgents
+                      ? "Checking..."
+                      : "Check Scheduled Agents Now"}
+                  </button>
+                </div>
+                {scheduledAgentsStatus ? (
+                  <div className="mt-3 grid gap-2 md:grid-cols-3">
+                    {[
+                      ["Morning Review", scheduledAgentsStatus.morning],
+                      ["Evening Review", scheduledAgentsStatus.evening],
+                    ].map(([label, schedule]) => {
+                      const typedSchedule =
+                        schedule as ScheduledAgentWindowStatus;
+                      return (
+                        <div
+                          key={String(label)}
+                          className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="truncate text-sm font-semibold text-neutral-100">
+                              {String(label)}
+                            </p>
+                            <span
+                              className={`shrink-0 rounded-full border px-2 py-0.5 text-xs ${
+                                typedSchedule.due
+                                  ? "border-cyan-300/25 bg-cyan-300/10 text-cyan-100"
+                                  : "border-neutral-500/25 bg-neutral-500/10 text-neutral-400"
+                              }`}
+                            >
+                              {typedSchedule.due ? "Due" : "Not due"}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs text-neutral-500">
+                            {typedSchedule.window_start}-
+                            {typedSchedule.window_end} local
+                          </p>
+                          <p className="mt-1 line-clamp-2 text-xs leading-5 text-neutral-400">
+                            {typedSchedule.reason}
+                          </p>
+                          <p className="mt-1 text-xs text-neutral-600">
+                            Last run:{" "}
+                            {typedSchedule.last_run?.started_at
+                              ? formatDateTime(
+                                  typedSchedule.last_run.started_at,
+                                )
+                              : "Never"}
+                          </p>
+                        </div>
+                      );
+                    })}
+                    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="truncate text-sm font-semibold text-neutral-100">
+                          Prioritization Snapshot
+                        </p>
+                        <span
+                          className={`shrink-0 rounded-full border px-2 py-0.5 text-xs ${
+                            scheduledAgentsStatus.prioritization_snapshot_due
+                              ? "border-cyan-300/25 bg-cyan-300/10 text-cyan-100"
+                              : "border-neutral-500/25 bg-neutral-500/10 text-neutral-400"
+                          }`}
+                        >
+                          {scheduledAgentsStatus.prioritization_snapshot_due
+                            ? "Due"
+                            : "Current"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-neutral-500">
+                        Once per day
+                      </p>
+                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-neutral-400">
+                        Latest:{" "}
+                        {typeof scheduledAgentsStatus
+                          .last_prioritization_snapshot?.created_at === "string"
+                          ? formatDateTime(
+                              scheduledAgentsStatus.last_prioritization_snapshot
+                                .created_at,
+                            )
+                          : "No snapshot yet"}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-3 text-sm text-neutral-500">
+                    {scheduledAgentsStatusError ??
+                      "Scheduled agent status has not loaded yet."}
+                  </p>
+                )}
+              </article>
               {agentPrioritization ? (
                 <article className="rounded-xl border border-cyan-300/20 bg-cyan-300/10 p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
