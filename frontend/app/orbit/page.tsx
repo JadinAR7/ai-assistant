@@ -1,5 +1,6 @@
 import Link from "next/link";
 import OrbitBoard, {
+  type AgentDefinition,
   type DailyCloseout,
   type MajorEvent,
   type Milestone,
@@ -25,6 +26,7 @@ const READINESS_URL = "http://127.0.0.1:8000/orbit/readiness";
 const MORNING_BRIEFING_URL = "http://127.0.0.1:8000/orbit/morning-briefing";
 const DAILY_CLOSEOUT_URL = "http://127.0.0.1:8000/orbit/daily-closeout";
 const INBOX_TASKS_URL = "http://127.0.0.1:8000/orbit/inbox-tasks";
+const AGENTS_URL = "http://127.0.0.1:8000/agents";
 
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url, { cache: "no-store" });
@@ -47,6 +49,7 @@ async function getOrbitData() {
     inboxTasksResult,
     milestoneAdvisoriesResult,
     progressHistoryResult,
+    agentsResult,
   ] = await Promise.all([
     fetchJson<MajorEvent[]>(MAJOR_EVENTS_URL),
     fetchJson<Milestone[]>(MILESTONES_URL),
@@ -107,6 +110,15 @@ async function getOrbitData() {
         history: [],
         error: "Orbit milestone progress history could not be loaded.",
       })),
+    fetchJson<AgentDefinition[]>(AGENTS_URL)
+      .then((agents) => ({ agents, error: null }))
+      .catch((error: unknown) => ({
+        agents: [],
+        error:
+          error instanceof Error
+            ? error.message
+            : "Orbit agents could not be loaded.",
+      })),
   ]);
 
   const event = majorEvents.find(
@@ -152,6 +164,8 @@ async function getOrbitData() {
     milestoneTasksById,
     milestoneAdvisoriesById,
     latestProgressHistoryByMilestoneId,
+    agents: agentsResult.agents,
+    agentsError: agentsResult.error,
   };
 }
 
@@ -224,6 +238,8 @@ export default async function OrbitPage() {
       milestoneTasksById: {},
       milestoneAdvisoriesById: {},
       latestProgressHistoryByMilestoneId: {},
+      agents: [],
+      agentsError: null,
     };
     errorMessage =
       error instanceof Error
@@ -286,6 +302,8 @@ export default async function OrbitPage() {
           latestProgressHistoryByMilestoneId={
             orbitData.latestProgressHistoryByMilestoneId
           }
+          agents={orbitData.agents}
+          agentsError={orbitData.agentsError}
           errorMessage={errorMessage}
         />
       </div>

@@ -5,6 +5,30 @@ import sqlite3
 DB_PATH = Path(__file__).resolve().parents[1] / "assistant.db"
 
 
+INITIAL_AGENT_DEFINITIONS = [
+    (
+        "Morning Review Agent",
+        "morning_review",
+        "Generates the Orbit morning briefing and records the result.",
+    ),
+    (
+        "Evening Review Agent",
+        "evening_review",
+        "Generates the Orbit daily closeout and records the result.",
+    ),
+    (
+        "Executive Assistant Agent",
+        "executive_assistant",
+        "Summarizes open tasks, blockers, and milestone progress history without taking actions.",
+    ),
+    (
+        "Trading Coach Agent",
+        "trading_coach",
+        "Summarizes recent trade sessions and readiness evidence without scanner changes or trading signals.",
+    ),
+]
+
+
 def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -159,6 +183,35 @@ def init_orbit_db() -> None:
     """)
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS agent_definitions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            agent_type TEXT NOT NULL UNIQUE,
+            description TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT,
+            summary TEXT,
+            output_json TEXT,
+            error TEXT,
+            CHECK (status IN ('running', 'completed', 'failed')),
+            FOREIGN KEY (agent_id)
+                REFERENCES agent_definitions (id)
+                ON DELETE CASCADE
+        )
+    """)
+
+    cursor.execute("""
         CREATE TRIGGER IF NOT EXISTS update_major_events_updated_at
         AFTER UPDATE ON major_events
         FOR EACH ROW
@@ -190,6 +243,28 @@ def init_orbit_db() -> None:
             WHERE id = OLD.id;
         END
     """)
+
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS update_agent_definitions_updated_at
+        AFTER UPDATE ON agent_definitions
+        FOR EACH ROW
+        BEGIN
+            UPDATE agent_definitions
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = OLD.id;
+        END
+    """)
+
+    cursor.executemany(
+        """
+        INSERT INTO agent_definitions (name, agent_type, description, enabled)
+        VALUES (?, ?, ?, 1)
+        ON CONFLICT(agent_type) DO UPDATE SET
+            name = excluded.name,
+            description = excluded.description
+        """,
+        INITIAL_AGENT_DEFINITIONS,
+    )
 
     conn.commit()
     conn.close()
