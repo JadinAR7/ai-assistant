@@ -16,6 +16,7 @@ BACKEND_CHAT_URL = "http://127.0.0.1:8000/chat"
 BACKEND_SCAN_LATEST_URL = "http://127.0.0.1:8000/scan/latest"
 BACKEND_SCAN_FORCE_URL = "http://127.0.0.1:8000/scan/force"
 BACKEND_TTS_URL = "http://127.0.0.1:8000/tts/say"
+BACKEND_MORNING_CHECKIN_URL = "http://127.0.0.1:8000/agents/morning/check-in"
 
 ALLOWED_SENDER = "jadinrobinson05@hotmail.com"
 
@@ -249,6 +250,22 @@ def speak_text(text: str) -> str:
     return data.get("message", "TTS failed.")
 
 
+def morning_check_in() -> str:
+    response = requests.post(
+        BACKEND_MORNING_CHECKIN_URL,
+        json={
+            "source": "imessage",
+            "speak": False,
+        },
+        timeout=180,
+    )
+
+    response.raise_for_status()
+    data = response.json()
+    summary = str(data.get("summary") or "").strip()
+    return summary or "Morning check-in completed."
+
+
 # -------------------------
 # Command router
 # -------------------------
@@ -265,6 +282,7 @@ def route_message(text: str) -> str:
     if lower in ["help", "commands", "what can you do", "what can you do?"]:
         return (
             "Helix commands:\n"
+            "- Good morning Helix\n"
             "- What time is it?\n"
             "- What's the latest scan?\n"
             "- Scan MES\n"
@@ -292,6 +310,18 @@ def route_message(text: str) -> str:
             return "Tell me what to speak. Example: speak Market scan complete."
 
         return speak_text(text_to_speak)
+
+    # -------------------------
+    # Morning check-in intent
+    # -------------------------
+    morning_checkin_phrases = [
+        "good morning helix",
+        "morning helix",
+        "start my morning",
+    ]
+
+    if lower in morning_checkin_phrases:
+        return morning_check_in()
 
     # -------------------------
     # Time intent

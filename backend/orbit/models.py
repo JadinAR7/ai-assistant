@@ -318,3 +318,72 @@ class AgentDefinition(BaseModel):
     created_at: datetime
     updated_at: datetime
     last_run: Optional[AgentRun] = None
+
+
+class ScheduledAgentWindowStatus(BaseModel):
+    agent_type: str
+    window_start: str
+    window_end: str
+    due: bool
+    reason: str
+    last_run: Optional[AgentRun] = None
+
+
+class ScheduledAgentStatus(BaseModel):
+    current_local_time: datetime
+    scheduler_enabled: bool
+    scheduler_status: str
+    morning: ScheduledAgentWindowStatus
+    evening: ScheduledAgentWindowStatus
+    last_scheduled_morning_run: Optional[AgentRun] = None
+    last_scheduled_evening_run: Optional[AgentRun] = None
+    prioritization_snapshot_due: bool
+    last_prioritization_snapshot: Optional[dict] = None
+
+
+class ScheduledAgentAction(BaseModel):
+    schedule: str
+    status: str
+    agent_type: Optional[str] = None
+    reason: Optional[str] = None
+    agent_run_id: Optional[int] = None
+    result_status: Optional[str] = None
+    snapshot_date: Optional[str] = None
+
+
+class ScheduledAgentRunOnceResult(BaseModel):
+    checked_at: datetime
+    actions: list[ScheduledAgentAction] = Field(default_factory=list)
+    runs: list[AgentRun] = Field(default_factory=list)
+    status: ScheduledAgentStatus
+
+
+class MorningCheckInRequest(BaseModel):
+    source: Literal["ui", "imessage", "voice", "manual"] = "manual"
+    speak: bool = False
+
+
+class MorningCheckInStatus(BaseModel):
+    date: date
+    morning_acknowledged: bool
+    morning_acknowledged_at: Optional[datetime] = None
+    morning_fallback_sent: bool
+    morning_fallback_sent_at: Optional[datetime] = None
+    morning_agent_run_id: Optional[int] = None
+    delivery_channel: Optional[str] = None
+    current_local_time: datetime
+    cutoff_time: str
+    cutoff_due: bool
+
+
+class MorningCheckInResult(BaseModel):
+    success: bool
+    summary: Optional[str] = None
+    agent_run: Optional[AgentRun] = None
+    status: MorningCheckInStatus
+    delivery_channel: Optional[str] = None
+    tts_spoken: bool = False
+    fallback_sent: bool = False
+    reason: Optional[str] = None
+    delivery: Optional[dict] = None
+    actions_taken: list[str] = Field(default_factory=list)

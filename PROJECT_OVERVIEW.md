@@ -440,7 +440,7 @@ Purpose:
 * Define agents
 * Manually run agents
 * Log agent output
-* Create a stable foundation for future scheduled automation
+* Create a stable foundation for scheduled automation
 
 Agent tables:
 
@@ -451,6 +451,11 @@ Current routes:
 
 * `GET /agents`
 * `GET /agents/prioritize`
+* `GET /agents/morning/status`
+* `POST /agents/morning/check-in`
+* `POST /agents/morning/fallback-check`
+* `GET /agents/scheduled/status`
+* `POST /agents/scheduled/run-once`
 * `GET /agents/{agent_id}`
 * `POST /agents/{agent_id}/run`
 * `GET /agents/runs/recent`
@@ -466,7 +471,8 @@ Initial agents:
 
 Current behavior:
 
-* Manual run only
+* Agents can still be run manually
+* Scheduled Agent Runs v1 can check due scheduled agents manually through `POST /agents/scheduled/run-once`
 * Agents read existing Orbit data
 * Agents store summaries and structured output in `agent_runs`
 * Morning Review Agent calls/generates Morning Briefing
@@ -476,11 +482,15 @@ Current behavior:
 * Web Search Agent inspects top recommendations and strategic gaps, then creates a research plan for one target that may need current or external context
 * Readiness Advisory Agent suggests readiness score improvements from Orbit evidence
 * Agent Prioritization Layer v1 recommends which agent should run next based on Orbit state
+* Scheduled Agent Runs v1 schedules only Morning Review Agent, Evening Review Agent, and a daily Agent Prioritization snapshot
+* Scheduled Agent Runs v1 can be run manually via endpoint or by a future macOS LaunchAgent
+* Morning Check-In / Fallback Summary v1 lets Jadin initiate a morning check-in through UI, iMessage, manual calls, or a future voice path
+* Morning fallback sends the Morning Review summary by iMessage after the 6:30 AM local cutoff only when no check-in has been acknowledged
 
 Current restrictions:
 
 * Agents are read-only for now.
-* No scheduling yet.
+* Scheduling is limited to Morning Review Agent, Evening Review Agent, and a read-only prioritization snapshot.
 * No task creation yet.
 * No readiness updates yet.
 * No notifications yet.
@@ -490,10 +500,12 @@ Current restrictions:
 * Readiness Advisory Agent suggestions require manual approval before any readiness score can change.
 * Web Search Agent v1 does not browse the web. It outputs `research_target`, `reason`, `suggested_queries`, `sources_required`, `actions_taken: []`, and `web_search_performed: false`.
 * Actual cited web search is reserved for a later version.
-* Agent Prioritization Layer v1 is read-only and recommendation-only. It does not run agents, create tasks, update readiness, create reviews, send notifications, or schedule anything.
-* Agent execution remains manual only.
+* Agent Prioritization Layer v1 is read-only and recommendation-only. It does not run agents, create tasks, update readiness, create reviews, or send notifications.
+* Scheduled Agent Runs v1 does not install a LaunchAgent yet. Actual LaunchAgent install can come later.
+* Morning Check-In / Fallback Summary v1 does not implement microphone wake phrase detection or full conversational voice.
+* Morning Check-In only uses TTS when the endpoint is explicitly called with `speak=true`.
 
-Future scheduled or background automation should call `run_agent(agent_id)` rather than duplicating agent behavior.
+Scheduled or background automation should call `run_agent(agent_id)` rather than duplicating agent behavior.
 
 ---
 
@@ -574,12 +586,14 @@ Runbook:
 * iMessage delivery depends on macOS Messages and AppleScript availability.
 * TTS delivery depends on macOS `say`.
 * Speech input, wake phrase detection, and conversational voice mode are not implemented yet.
+* Morning Check-In / Fallback Summary v1 supports a future voice path through `speak=true`, but no microphone wake phrase or speech input has been implemented.
 * Orbit readiness scoring still requires manual judgment and Helix-assisted updates.
 * Orbit milestone progress remains manual unless Jadin explicitly applies the task-derived advisory.
 * Suggested task creation is user-approved only.
 * No autonomous task creation exists yet.
-* Agents are manual and read-only in v1.
-* Agents do not schedule themselves, create tasks, update readiness, send notifications, or modify scanner state.
+* Agents are read-only in v1.
+* Scheduled Agent Runs v1 is limited to Morning Review Agent, Evening Review Agent, and a daily prioritization snapshot.
+* Agents do not create tasks, update readiness, send notifications, or modify scanner state.
 * Task reminders are not connected yet.
 * Free-form task tags are not implemented yet. Milestone links are structured tags only.
 * News risk is useful but not yet a complete economic-calendar intelligence layer.

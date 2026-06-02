@@ -7,10 +7,12 @@ import OrbitBoard, {
   type Milestone,
   type MilestoneProgressAdvisory,
   type MilestoneProgressHistory,
+  type MorningCheckInStatus,
   type MorningBriefing,
   type OrbitReview,
   type ReadinessCategory,
   type RecommendationSet,
+  type ScheduledAgentStatus,
 } from "./OrbitBoard";
 import { type InboxTask } from "./InboxTaskControls";
 
@@ -31,6 +33,10 @@ const RECOMMENDATIONS_URL = "http://127.0.0.1:8000/orbit/recommendations";
 const INBOX_TASKS_URL = "http://127.0.0.1:8000/orbit/inbox-tasks";
 const AGENTS_URL = "http://127.0.0.1:8000/agents";
 const AGENT_PRIORITIZATION_URL = "http://127.0.0.1:8000/agents/prioritize";
+const SCHEDULED_AGENTS_STATUS_URL =
+  "http://127.0.0.1:8000/agents/scheduled/status";
+const MORNING_CHECKIN_STATUS_URL =
+  "http://127.0.0.1:8000/agents/morning/status";
 
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url, { cache: "no-store" });
@@ -56,6 +62,8 @@ async function getOrbitData() {
     progressHistoryResult,
     agentsResult,
     agentPrioritizationResult,
+    scheduledAgentsStatusResult,
+    morningCheckInStatusResult,
   ] = await Promise.all([
     fetchJson<MajorEvent[]>(MAJOR_EVENTS_URL),
     fetchJson<Milestone[]>(MILESTONES_URL),
@@ -143,6 +151,24 @@ async function getOrbitData() {
             ? error.message
             : "Agent prioritization could not be loaded.",
       })),
+    fetchJson<ScheduledAgentStatus>(SCHEDULED_AGENTS_STATUS_URL)
+      .then((status) => ({ status, error: null }))
+      .catch((error: unknown) => ({
+        status: null,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Scheduled agents status could not be loaded.",
+      })),
+    fetchJson<MorningCheckInStatus>(MORNING_CHECKIN_STATUS_URL)
+      .then((status) => ({ status, error: null }))
+      .catch((error: unknown) => ({
+        status: null,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Morning check-in status could not be loaded.",
+      })),
   ]);
 
   const event = majorEvents.find(
@@ -194,6 +220,10 @@ async function getOrbitData() {
     agentsError: agentsResult.error,
     agentPrioritization: agentPrioritizationResult.prioritization,
     agentPrioritizationError: agentPrioritizationResult.error,
+    scheduledAgentsStatus: scheduledAgentsStatusResult.status,
+    scheduledAgentsStatusError: scheduledAgentsStatusResult.error,
+    morningCheckInStatus: morningCheckInStatusResult.status,
+    morningCheckInStatusError: morningCheckInStatusResult.error,
   };
 }
 
@@ -272,6 +302,10 @@ export default async function OrbitPage() {
       agentsError: null,
       agentPrioritization: null,
       agentPrioritizationError: null,
+      scheduledAgentsStatus: null,
+      scheduledAgentsStatusError: null,
+      morningCheckInStatus: null,
+      morningCheckInStatusError: null,
     };
     errorMessage =
       error instanceof Error
@@ -340,6 +374,10 @@ export default async function OrbitPage() {
           agentsError={orbitData.agentsError}
           agentPrioritization={orbitData.agentPrioritization}
           agentPrioritizationError={orbitData.agentPrioritizationError}
+          scheduledAgentsStatus={orbitData.scheduledAgentsStatus}
+          scheduledAgentsStatusError={orbitData.scheduledAgentsStatusError}
+          morningCheckInStatus={orbitData.morningCheckInStatus}
+          morningCheckInStatusError={orbitData.morningCheckInStatusError}
           errorMessage={errorMessage}
         />
       </div>

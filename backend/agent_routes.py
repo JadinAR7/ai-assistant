@@ -1,7 +1,18 @@
 from fastapi import APIRouter, HTTPException, status
 
 import agent_service
-from orbit.models import AgentDefinition, AgentPrioritizationResult, AgentRun
+import morning_checkin
+import scheduled_agents
+from orbit.models import (
+    AgentDefinition,
+    AgentPrioritizationResult,
+    AgentRun,
+    MorningCheckInRequest,
+    MorningCheckInResult,
+    MorningCheckInStatus,
+    ScheduledAgentRunOnceResult,
+    ScheduledAgentStatus,
+)
 
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -27,6 +38,46 @@ def list_recent_agent_runs():
 @router.get("/prioritize", response_model=AgentPrioritizationResult)
 def prioritize_agents():
     return agent_service.prioritize_agents()
+
+
+@router.get("/scheduled/status", response_model=ScheduledAgentStatus)
+def get_scheduled_agent_status():
+    return scheduled_agents.get_status()
+
+
+@router.post("/scheduled/run-once", response_model=ScheduledAgentRunOnceResult)
+def run_scheduled_agents_once():
+    return scheduled_agents.run_due_once()
+
+
+@router.get("/morning/status", response_model=MorningCheckInStatus)
+def get_morning_checkin_status():
+    return morning_checkin.get_status()
+
+
+@router.post("/morning/check-in", response_model=MorningCheckInResult)
+def run_morning_checkin(request: MorningCheckInRequest):
+    try:
+        return morning_checkin.check_in(
+            source=request.source,
+            speak=request.speak,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post("/morning/fallback-check", response_model=MorningCheckInResult)
+def run_morning_fallback_check():
+    try:
+        return morning_checkin.fallback_check()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get("/{agent_id}", response_model=AgentDefinition)
