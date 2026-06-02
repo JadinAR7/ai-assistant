@@ -155,6 +155,10 @@ class StrategicGap(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class RecommendationTaskDraft(BaseModel):
+    title: str
+    description: Optional[str] = None
+    milestone_ids: list[int] = Field(default_factory=list)
 class Recommendation(BaseModel):
     id: str
     category: Literal[

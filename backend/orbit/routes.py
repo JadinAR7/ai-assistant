@@ -17,6 +17,7 @@ from .models import (
     MilestoneUpdate,
     ReadinessCategory,
     ReadinessCategoryUpdate,
+    RecommendationTaskDraft,
     RecommendationSet,
     Review,
     ReviewCreate,
@@ -223,6 +224,35 @@ def list_task_priorities():
 @router.get("/strategic-gaps", response_model=list[StrategicGap])
 def list_strategic_gaps():
     return service.list_strategic_gaps()
+
+
+@router.post(
+    "/recommendations/{recommendation_id}/task-draft",
+    response_model=RecommendationTaskDraft,
+)
+def get_recommendation_task_draft(recommendation_id: str):
+    record = service.get_recommendation_task_draft(recommendation_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Recommendation {recommendation_id} not found.",
+        )
+    return record
+
+
+@router.post(
+    "/recommendations/{recommendation_id}/create-task",
+    response_model=TaskWithMilestones,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_task_from_recommendation(recommendation_id: str):
+    record = service.create_task_from_recommendation(recommendation_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Recommendation {recommendation_id} not found.",
+        )
+    return record
 
 
 @router.get("/tasks/{task_id}", response_model=Task)

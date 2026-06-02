@@ -98,6 +98,10 @@ export type StrategicGap = {
   reasons: string[];
 };
 
+export type RecommendationTaskDraft = {
+  title: string;
+  description: string | null;
+  milestone_ids: number[];
 export type Recommendation = {
   id: string;
   category:
@@ -226,6 +230,7 @@ type Toast = {
   message: string;
   type: "success" | "error";
 };
+const CLOSEOUT_LIST_LIMIT = 3;
 
 function formatDate(value: string | null) {
   if (!value) {
@@ -261,6 +266,24 @@ function formatStatus(value: string) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function getExcerpt(value: string | null | undefined, limit = 160) {
+  if (!value) {
+    return "";
+  }
+
+  const compact = value.replace(/\s+/g, " ").trim();
+
+  if (compact.length <= limit) {
+    return compact;
+  }
+
+  return `${compact.slice(0, limit - 3).trim()}...`;
+}
+
+function getReviewTitle(review: OrbitReview) {
+  return review.title ?? formatStatus(review.review_type);
 }
 
 function getDaysRemaining(targetDate: string | null) {
@@ -309,6 +332,64 @@ function isTaskOpen(task: InboxTask) {
   return !["complete", "completed", "done", "cancelled"].includes(
     task.status.toLowerCase(),
   );
+}
+
+function getRecommendationId(gap: StrategicGap) {
+  return `strategic-gap-${gap.milestone_id}`;
+}
+
+function formatTaskSummary(task: MorningBriefingTask) {
+  const milestone = task.milestone_title ?? task.milestones?.[0]?.title;
+  return milestone ? `${task.title} (${milestone})` : task.title;
+}
+
+function formatProgressSummary(
+  progress: DailyCloseout["milestone_progress"][number],
+) {
+  const title = progress.milestone_title ?? `Milestone ${progress.milestone_id}`;
+  return `${title}: ${progress.previous_progress}% -> ${progress.new_progress}%`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getRecordField(
+  record: Record<string, unknown> | null | undefined,
+  field: string,
+) {
+  if (!record) {
+    return undefined;
+  }
+
+  return record[field];
+}
+
+function getTextField(
+  record: Record<string, unknown> | null | undefined,
+  field: string,
+) {
+  const value = getRecordField(record, field);
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function getScoreText(record: Record<string, unknown> | null | undefined) {
+  const value = getRecordField(record, "priority_score");
+
+  if (typeof value === "number" || typeof value === "string") {
+    return `P${value}`;
+  }
+
+  return null;
+}
+
+function formatExecutiveItem(
+  record: Record<string, unknown> | null | undefined,
+  fallback: string,
+) {
+  const title = getTextField(record, "title") ?? fallback;
+  const score = getScoreText(record);
+  return score ? `${title} (${score})` : title;
 }
 
 function ProgressBar({ value }: Readonly<{ value: number }>) {
@@ -372,12 +453,21 @@ export default function OrbitBoard({
   const [dailyCloseout, setDailyCloseout] = useState<DailyCloseout | null>(
     initialDailyCloseout,
   );
+  const [showFullCloseout, setShowFullCloseout] = useState(false);
+  const [showReviewHistory, setShowReviewHistory] = useState(false);
   const [closeoutRating, setCloseoutRating] = useState("");
   const [closeoutNotes, setCloseoutNotes] = useState("");
   const [loadingCloseout, setLoadingCloseout] = useState(false);
   const [savingCloseoutReview, setSavingCloseoutReview] = useState(false);
   const [agents, setAgents] = useState<AgentDefinition[]>(initialAgents);
   const [runningAgentId, setRunningAgentId] = useState<number | null>(null);
+  const [taskDraftsByRecommendationId, setTaskDraftsByRecommendationId] =
+    useState<Record<string, RecommendationTaskDraft>>({});
+  const [previewingRecommendationId, setPreviewingRecommendationId] =
+    useState<string | null>(null);
+  const [creatingRecommendationId, setCreatingRecommendationId] = useState<
+    string | null
+  >(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const daysRemaining = getDaysRemaining(event?.target_date ?? null);
   const progressPercentage = event?.progress_percent ?? 0;
@@ -385,6 +475,7 @@ export default function OrbitBoard({
   const priorityTasks = morningBriefing?.top_tasks.slice(0, 3) ?? [];
   const strategicGaps = morningBriefing?.strategic_gaps?.slice(0, 3) ?? [];
   const activeBlockers = morningBriefing?.current_blockers ?? [];
+  const mostRecentReview = reviews[0] ?? null;
   const topRecommendations =
     recommendations?.recommendations.slice(0, 3) ??
     morningBriefing?.recommendations?.slice(0, 3) ??
@@ -470,6 +561,7 @@ export default function OrbitBoard({
     }
 
     setDailyCloseout((await response.json()) as DailyCloseout);
+    setShowFullCloseout(false);
     setLoadingCloseout(false);
   }
 
@@ -539,6 +631,60 @@ export default function OrbitBoard({
       type: run.status === "completed" ? "success" : "error",
     });
     setRunningAgentId(null);
+    router.refresh();
+  }
+
+  async function previewRecommendationTask(gap: StrategicGap) {
+    const recommendationId = getRecommendationId(gap);
+    setPreviewingRecommendationId(recommendationId);
+    setToast(null);
+
+    const response = await fetch(
+      `${API_BASE}/orbit/recommendations/${recommendationId}/task-draft`,
+      { method: "POST" },
+    );
+
+    if (!response.ok) {
+      setToast({
+        message: "Could not preview task draft.",
+        type: "error",
+      });
+      setPreviewingRecommendationId(null);
+      return;
+    }
+
+    const draft = (await response.json()) as RecommendationTaskDraft;
+    setTaskDraftsByRecommendationId((current) => ({
+      ...current,
+      [recommendationId]: draft,
+    }));
+    setPreviewingRecommendationId(null);
+  }
+
+  async function createRecommendationTask(gap: StrategicGap) {
+    const recommendationId = getRecommendationId(gap);
+    setCreatingRecommendationId(recommendationId);
+    setToast(null);
+
+    const response = await fetch(
+      `${API_BASE}/orbit/recommendations/${recommendationId}/create-task`,
+      { method: "POST" },
+    );
+
+    if (!response.ok) {
+      setToast({
+        message: "Could not create recommended task.",
+        type: "error",
+      });
+      setCreatingRecommendationId(null);
+      return;
+    }
+
+    setToast({
+      message: "Recommended task created.",
+      type: "success",
+    });
+    setCreatingRecommendationId(null);
     router.refresh();
   }
 
@@ -680,31 +826,73 @@ export default function OrbitBoard({
           <MiniPanel title="Strategic Gaps">
             {strategicGaps.length > 0 ? (
               <div className="space-y-2">
-                {strategicGaps.map((gap) => (
-                  <div
-                    key={gap.milestone_id}
-                    className="rounded-lg bg-white/[0.03] px-3 py-2"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="min-w-0 truncate text-sm text-neutral-200">
-                        {gap.title}
-                      </span>
-                      <span className="shrink-0 rounded-full border border-amber-300/25 bg-amber-300/10 px-2 py-0.5 text-[11px] font-semibold text-amber-100">
-                        P{gap.priority_score}
-                      </span>
-                    </div>
-                    <div className="mt-1 flex flex-wrap gap-1.5">
-                      {getCompactGapReasons(gap.reasons).slice(0, 2).map((reason) => (
-                        <span
-                          key={reason}
-                          className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-400"
-                        >
-                          {reason}
+                {strategicGaps.map((gap) => {
+                  const recommendationId = getRecommendationId(gap);
+                  const draft = taskDraftsByRecommendationId[recommendationId];
+
+                  return (
+                    <div
+                      key={gap.milestone_id}
+                      className="rounded-lg bg-white/[0.03] px-3 py-2"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="min-w-0 truncate text-sm text-neutral-200">
+                          {gap.title}
                         </span>
-                      ))}
+                        <span className="shrink-0 rounded-full border border-amber-300/25 bg-amber-300/10 px-2 py-0.5 text-[11px] font-semibold text-amber-100">
+                          P{gap.priority_score}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        {getCompactGapReasons(gap.reasons).slice(0, 2).map((reason) => (
+                          <span
+                            key={reason}
+                            className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-400"
+                          >
+                            {reason}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => previewRecommendationTask(gap)}
+                          disabled={previewingRecommendationId === recommendationId}
+                          className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {previewingRecommendationId === recommendationId
+                            ? "Previewing..."
+                            : "Preview Task"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => createRecommendationTask(gap)}
+                          disabled={creatingRecommendationId === recommendationId}
+                          className="rounded-lg border border-emerald-300/25 bg-emerald-300/10 px-2 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {creatingRecommendationId === recommendationId
+                            ? "Creating..."
+                            : "Create Task"}
+                        </button>
+                      </div>
+                      {draft ? (
+                        <div className="mt-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                          <p className="text-xs font-semibold text-neutral-200">
+                            {draft.title}
+                          </p>
+                          {draft.description ? (
+                            <p className="mt-1 text-xs leading-5 text-neutral-400">
+                              {draft.description}
+                            </p>
+                          ) : null}
+                          <p className="mt-1 text-[11px] text-neutral-500">
+                            Milestone: {gap.title}
+                          </p>
+                        </div>
+                      ) : null}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <p className="text-sm text-neutral-500">No strategic gaps</p>
@@ -917,7 +1105,7 @@ export default function OrbitBoard({
 
             {dailyCloseout ? (
               <div className="space-y-3">
-                <div className="grid gap-2 sm:grid-cols-3">
+                <div className="grid gap-2 sm:grid-cols-4">
                   <div className="rounded-lg bg-white/[0.03] px-3 py-2">
                     <p className="text-lg font-semibold text-white">
                       {dailyCloseout.completed_today.length}
@@ -940,6 +1128,16 @@ export default function OrbitBoard({
                   </div>
                   <div className="rounded-lg bg-white/[0.03] px-3 py-2">
                     <p className="text-lg font-semibold text-white">
+                      {dailyCloseout.milestone_progress.length}
+                    </p>
+                    <p className="text-xs text-neutral-500">
+                      {dailyCloseout.milestone_progress.length === 0
+                        ? "No milestone changes"
+                        : "milestone changes"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-white/[0.03] px-3 py-2">
+                    <p className="text-lg font-semibold text-white">
                       {dailyCloseout.trade_summary.sessions_logged_today}
                     </p>
                     <p className="text-xs text-neutral-500">
@@ -950,9 +1148,123 @@ export default function OrbitBoard({
                   </div>
                 </div>
 
-                <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-black/20 p-3 text-sm leading-6 text-neutral-300">
-                  {dailyCloseout.closeout_text}
-                </pre>
+                <div className="grid gap-2 lg:grid-cols-2">
+                  <section className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                      Completed Today
+                    </h3>
+                    {dailyCloseout.completed_today.length > 0 ? (
+                      <ul className="mt-2 space-y-1">
+                        {dailyCloseout.completed_today
+                          .slice(0, CLOSEOUT_LIST_LIMIT)
+                          .map((task) => (
+                            <li
+                              key={task.id}
+                              className="truncate text-sm text-neutral-300"
+                            >
+                              {formatTaskSummary(task)}
+                            </li>
+                          ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-2 text-sm text-neutral-500">
+                        No tasks completed today.
+                      </p>
+                    )}
+                  </section>
+
+                  <section className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                      Still Open
+                    </h3>
+                    {dailyCloseout.open_tasks.length > 0 ? (
+                      <ul className="mt-2 space-y-1">
+                        {dailyCloseout.open_tasks
+                          .slice(0, CLOSEOUT_LIST_LIMIT)
+                          .map((task) => (
+                            <li
+                              key={task.id}
+                              className="truncate text-sm text-neutral-300"
+                            >
+                              {formatTaskSummary(task)}
+                            </li>
+                          ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-2 text-sm text-neutral-500">
+                        No open tasks remaining.
+                      </p>
+                    )}
+                  </section>
+
+                  <section className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                      Milestone Progress
+                    </h3>
+                    {dailyCloseout.milestone_progress.length > 0 ? (
+                      <ul className="mt-2 space-y-1">
+                        {dailyCloseout.milestone_progress
+                          .slice(0, CLOSEOUT_LIST_LIMIT)
+                          .map((progress) => (
+                            <li
+                              key={progress.id}
+                              className="truncate text-sm text-neutral-300"
+                              title={progress.reason ?? undefined}
+                            >
+                              {formatProgressSummary(progress)}
+                            </li>
+                          ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-2 text-sm text-neutral-500">
+                        No milestone progress changes.
+                      </p>
+                    )}
+                  </section>
+
+                  <section className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                      Trade Summary
+                    </h3>
+                    <p className="mt-2 text-sm text-neutral-300">
+                      {dailyCloseout.trade_summary.sessions_logged_today} session
+                      {dailyCloseout.trade_summary.sessions_logged_today === 1
+                        ? ""
+                        : "s"}{" "}
+                      today, PnL {dailyCloseout.trade_summary.total_pnl}.
+                    </p>
+                    <p className="mt-1 text-xs text-neutral-500">
+                      Rule adherence:{" "}
+                      {dailyCloseout.trade_summary.average_rule_adherence === null
+                        ? "not logged"
+                        : `${dailyCloseout.trade_summary.average_rule_adherence}%`}
+                    </p>
+                  </section>
+                </div>
+
+                <div className="rounded-lg border border-cyan-300/15 bg-cyan-300/5 px-3 py-2">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-cyan-200/80">
+                    Review Prompt
+                  </h3>
+                  <p className="mt-1 text-sm leading-6 text-neutral-200">
+                    {dailyCloseout.recommended_review_prompt}
+                  </p>
+                </div>
+
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setShowFullCloseout((current) => !current)}
+                    className="text-xs font-semibold text-neutral-400 underline underline-offset-4 hover:text-white"
+                  >
+                    {showFullCloseout ? "Hide full closeout" : "View full closeout"}
+                  </button>
+                  {showFullCloseout ? (
+                    <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-black/20 p-3 text-sm leading-6 text-neutral-300">
+                      {dailyCloseout.closeout_text}
+                    </pre>
+                  ) : null}
+                </div>
 
                 <div className="grid gap-2 sm:grid-cols-[8rem_1fr_auto]">
                   <input
@@ -988,36 +1300,69 @@ export default function OrbitBoard({
             )}
           </article>
 
-          {reviews.length > 0 ? (
-            reviews.map((review) => (
-              <article
-                key={review.id}
-                className="rounded-xl border border-white/10 bg-neutral-950/70 p-4"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h2 className="truncate text-sm font-semibold text-neutral-100">
-                      {review.title ?? formatStatus(review.review_type)}
-                    </h2>
-                    {review.summary ? (
-                      <p className="mt-1 text-sm leading-6 text-neutral-400">
-                        {review.summary}
-                      </p>
-                    ) : null}
-                  </div>
-                  <span className="shrink-0 text-xs text-neutral-500">
-                    {review.created_at
-                      ? formatDateTime(review.created_at)
-                      : formatStatus(review.review_type)}
-                  </span>
-                </div>
-              </article>
-            ))
-          ) : (
-            <div className="rounded-xl border border-white/10 bg-neutral-950/70 p-4 text-sm text-neutral-500">
-              {reviewsError ? "Reviews are unavailable right now." : "No recent reviews"}
+          <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold text-neutral-100">
+                  Review History
+                </h2>
+                <p className="mt-1 text-xs text-neutral-500">
+                  {reviewsError
+                    ? "Reviews are unavailable right now."
+                    : `${reviews.length} saved review${reviews.length === 1 ? "" : "s"}`}
+                  {mostRecentReview ? (
+                    <>
+                      {" | Latest: "}
+                      {getReviewTitle(mostRecentReview)}
+                      {mostRecentReview.created_at
+                        ? `, ${formatDateTime(mostRecentReview.created_at)}`
+                        : ""}
+                    </>
+                  ) : null}
+                </p>
+              </div>
+              {reviews.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setShowReviewHistory((current) => !current)}
+                  className="text-xs font-semibold text-neutral-400 underline underline-offset-4 hover:text-white"
+                >
+                  {showReviewHistory
+                    ? "Hide review history"
+                    : "Show review history"}
+                </button>
+              ) : null}
             </div>
-          )}
+
+            {showReviewHistory && reviews.length > 0 ? (
+              <div className="mt-3 space-y-2">
+                {reviews.map((review) => (
+                  <article
+                    key={review.id}
+                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <h3 className="truncate text-sm font-semibold text-neutral-100">
+                          {getReviewTitle(review)}
+                        </h3>
+                        {review.summary ? (
+                          <p className="mt-1 text-sm leading-6 text-neutral-400">
+                            {getExcerpt(review.summary)}
+                          </p>
+                        ) : null}
+                      </div>
+                      <span className="shrink-0 text-xs text-neutral-500">
+                        {review.created_at
+                          ? formatDateTime(review.created_at)
+                          : formatStatus(review.review_type)}
+                      </span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : null}
+          </section>
         </div>
       ) : null}
 
@@ -1068,6 +1413,23 @@ export default function OrbitBoard({
               const lastRun = agent.last_run;
               const latestSummary =
                 lastRun?.summary || lastRun?.error || "No runs logged yet.";
+              const output = lastRun?.output_json;
+              const executiveOutput =
+                agent.agent_type === "executive_assistant" && isRecord(output)
+                  ? output
+                  : null;
+              const priorityTask = getRecordField(
+                executiveOutput,
+                "highest_priority_task",
+              );
+              const strategicGap = getRecordField(
+                executiveOutput,
+                "highest_strategic_gap",
+              );
+              const topRecommendation = getRecordField(
+                executiveOutput,
+                "top_recommendation",
+              );
 
               return (
                 <article
@@ -1111,6 +1473,46 @@ export default function OrbitBoard({
                   <p className="mt-3 line-clamp-4 whitespace-pre-wrap text-sm leading-6 text-neutral-300">
                     {latestSummary}
                   </p>
+                  {executiveOutput ? (
+                    <div className="mt-3 grid gap-2 md:grid-cols-3">
+                      <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                          Highest Priority Task
+                        </p>
+                        <p className="mt-1 truncate text-sm text-neutral-200">
+                          {isRecord(priorityTask)
+                            ? formatExecutiveItem(
+                                priorityTask,
+                                "No active priority task",
+                              )
+                            : "No active priority task"}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                          Highest Strategic Gap
+                        </p>
+                        <p className="mt-1 truncate text-sm text-neutral-200">
+                          {isRecord(strategicGap)
+                            ? formatExecutiveItem(strategicGap, "No strategic gap")
+                            : "No strategic gap"}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                          Top Recommendation
+                        </p>
+                        <p className="mt-1 truncate text-sm text-neutral-200">
+                          {isRecord(topRecommendation)
+                            ? formatExecutiveItem(
+                                topRecommendation,
+                                "No recommendations",
+                              )
+                            : "No recommendations"}
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
                   {lastRun?.started_at ? (
                     <p className="mt-2 text-xs text-neutral-600">
                       Last run {formatDateTime(lastRun.started_at)}
