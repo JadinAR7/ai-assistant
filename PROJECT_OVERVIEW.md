@@ -146,6 +146,10 @@ Notifications remain intentionally gated. Smart scan notifications default disab
 
 Helix remains the central intelligence layer. Orbit stores structured planning and progress data. Scanner logic remains separate from Orbit.
 
+Helix Core has also been re-oriented around a compact home surface rather than a large dashboard. The home view now presents the Helix body as the primary assistant presence, with a compact Morning Briefing status line below it. That briefing is backed by real Orbit data rather than hardcoded focus or blocker content.
+
+Orbit has been cleaned into a minimalist operating board. It now supports day-to-day task capture, milestone tagging, task-derived progress advisory, and manual progress application without creating a separate planning assistant.
+
 ---
 
 # Completed Systems
@@ -172,6 +176,119 @@ Helix remains the central intelligence layer. Orbit stores structured planning a
 * macOS LaunchAgent service setup for backend, scanner, and CSV refresh
 * Orbit major events, milestones, goals, tasks, reviews, readiness, and trade-session APIs
 * Trade Journal session logging and readiness evidence foundation
+* Helix Core compact home surface with Orbit-backed Morning Briefing status
+* Orbit Operating Board with minimal Overview, Tasks, Milestones, Reviews, and Readiness tabs
+* Orbit Inbox controls for task capture, multiline task descriptions, status actions, and completed-task visibility
+* Milestone task links using structured many-to-many task/milestone tags
+* Milestone Progress Advisory with manual Apply suggested progress
+
+## Helix Core
+
+Helix Core is now a compact command surface rather than a stacked dashboard.
+
+Current capabilities:
+
+* Compact home layout with the Helix body as the main assistant presence
+* Morning Briefing status line below the Helix body
+* Module navigation kept compact below the briefing
+* Morning Briefing uses real Orbit-backed data
+* Helix can generate the briefing when Jadin asks for a morning briefing, daily briefing, or what to focus on today
+
+## Orbit Operating Board
+
+Orbit is now organized as a minimalist tab-based operating board instead of a large multi-panel dashboard.
+
+Tabs:
+
+* Overview
+* Tasks
+* Milestones
+* Reviews
+* Readiness
+
+Overview shows only the most important operating signals:
+
+* Corporate Escape countdown and progress
+* Suggested Next Action
+* Top priority tasks
+* Current blockers
+* Overall readiness
+
+The board uses real Orbit data and empty states. It should not fabricate blockers, weekly focus, priority tasks, readiness summaries, or suggested actions.
+
+## Orbit Inbox Controls
+
+Orbit Inbox controls are the current task capture and task management layer.
+
+Current capabilities:
+
+* Add task from the Orbit Tasks tab
+* Optional due date
+* Multiline descriptions, notes, and checklist-style text
+* Preserved line breaks in task row display
+* Status actions:
+  * Queue
+  * Start
+  * Complete
+* Open tasks show queued, open, and in-progress work
+* Completed tasks leave the active list immediately
+* Completed today is hidden behind a small toggle
+* Older completed tasks are hidden behind a separate toggle
+
+Completed tasks remain stored in the database. The UI hides older completed work by default so the active board stays clean.
+
+## Milestone Task Links
+
+Tasks remain in the Orbit Inbox. Milestones act as structured tags, not folders.
+
+Current capabilities:
+
+* Many-to-many task/milestone link table
+* One task can link to multiple milestones
+* One milestone can have multiple linked tasks
+* Duplicate task/milestone links are prevented
+* Task creation can optionally include milestone links
+* Task rows display linked milestone chips
+* Milestones show linked task counts
+* Milestones can expand to show linked tasks
+* Morning Briefing prioritizes open tasks linked to active or in-progress milestones above untagged Inbox tasks
+
+This keeps capture friction low while letting milestone work become visible in the daily operating loop.
+
+## Milestone Progress Advisory
+
+Milestone progress remains manual. Linked tasks now provide an advisory signal only.
+
+Current advisory fields:
+
+* Total linked tasks
+* Completed linked tasks
+* Open linked tasks
+* In-progress linked tasks
+* Queued linked tasks
+* Suggested task completion percent
+
+Suggested task completion percent is calculated from completed linked tasks divided by total linked tasks. Orbit does not automatically update milestone progress from this value.
+
+The Milestones tab can show:
+
+* Current milestone progress
+* Linked task completion count
+* Task-based progress suggestion
+* Manual Apply suggested progress button when the advisory differs from current progress
+
+Progress is applied only when Jadin explicitly presses Apply suggested progress.
+
+## Confirmed Orbit Flow
+
+The current working daily loop is:
+
+1. Task
+2. Milestone tag
+3. Morning Briefing priority
+4. Task completion
+5. Progress advisory
+6. Manual progress apply
 
 ## Scanner Architecture
 
@@ -463,20 +580,33 @@ These remain part of the Helix vision but are intentionally deferred until the s
 * Scanner alerts are chart-review notifications, not trade entries.
 * Execution confirmation is not complete.
 * Orbit readiness scoring still requires manual judgment and Helix-assisted updates.
+* Orbit milestone progress remains manual unless Jadin explicitly applies the task-derived advisory.
+* No agent automation exists yet.
+* No automatic Morning Briefing push exists yet.
+* Task reminders are not connected yet.
+* Free-form task tags are not implemented yet. Milestone links are structured tags only.
+* Auto-progress without approval is intentionally not implemented.
 * News risk is useful but not yet a complete economic-calendar intelligence layer.
 
 ---
 
 # Next Development Priorities
 
-1. Harden scanner status surfaces and expose clearer frontend views for liquidity draw, behavior classification, alert eligibility, and notification status.
-2. Improve CSV refresh observability and make stale-data limitations more visible in the frontend.
-3. Refine Opportunity Watch language so compression, expansion, reversal, and no-opportunity states are easier to act on.
-4. Build the 1M execution confirmation layer without weakening the current source-of-truth rules.
-5. Add stronger news-event handling and explicit high-impact event gating.
-6. Expand Trade Journal analytics and connect trade-session evidence to Orbit readiness.
-7. Improve notification controls in the frontend while keeping smart notifications disabled by default.
-8. Add richer scan-history review tools for end-of-day and end-of-week trading review.
+1. Build the future agent layer under Helix, starting with:
+   * Morning Review Agent
+   * Executive Assistant Agent
+   * Trading Coach Agent
+2. Add automatic Morning Briefing push or scheduled briefing delivery while keeping Jadin in control.
+3. Add task reminder support connected to Orbit tasks.
+4. Expand Orbit review workflows so daily and weekly reviews can summarize tasks, blockers, milestone progress, and readiness changes.
+5. Harden scanner status surfaces and expose clearer frontend views for liquidity draw, behavior classification, alert eligibility, and notification status.
+6. Improve CSV refresh observability and make stale-data limitations more visible in the frontend.
+7. Refine Opportunity Watch language so compression, expansion, reversal, and no-opportunity states are easier to act on.
+8. Build the 1M execution confirmation layer without weakening the current source-of-truth rules.
+9. Add stronger news-event handling and explicit high-impact event gating.
+10. Expand Trade Journal analytics and connect trade-session evidence to Orbit readiness.
+11. Improve notification controls in the frontend while keeping smart notifications disabled by default.
+12. Add richer scan-history review tools for end-of-day and end-of-week trading review.
 
 ---
 

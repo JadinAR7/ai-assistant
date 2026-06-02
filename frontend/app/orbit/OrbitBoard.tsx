@@ -1,8 +1,11 @@
 "use client";
 
 import { type ReactNode, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import InboxTaskControls, { type InboxTask } from "./InboxTaskControls";
 
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 const CORPORATE_ESCAPE_TITLE = "Corporate Escape";
 const INBOX_MILESTONE_TITLE = "Inbox / General";
 
@@ -25,6 +28,17 @@ export type Milestone = {
   target_value: number | null;
   current_value: number | null;
   due_date: string | null;
+};
+
+export type MilestoneProgressAdvisory = {
+  milestone_id: number;
+  total_linked_tasks: number;
+  completed_linked_tasks: number;
+  open_linked_tasks: number;
+  in_progress_linked_tasks: number;
+  queued_linked_tasks: number;
+  suggested_task_completion_percent: number | null;
+  reason: string | null;
 };
 
 export type OrbitReview = {
@@ -74,6 +88,7 @@ type OrbitBoardProps = Readonly<{
   inboxTasks: InboxTask[];
   inboxTasksError: string | null;
   milestoneTasksById: Record<number, InboxTask[]>;
+  milestoneAdvisoriesById: Record<number, MilestoneProgressAdvisory>;
   errorMessage: string | null;
 }>;
 
@@ -194,10 +209,17 @@ export default function OrbitBoard({
   inboxTasks,
   inboxTasksError,
   milestoneTasksById,
+  milestoneAdvisoriesById,
   errorMessage,
 }: OrbitBoardProps) {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<Tab>("Overview");
   const [expandedMilestoneIds, setExpandedMilestoneIds] = useState<number[]>([]);
+  const [applyingMilestoneId, setApplyingMilestoneId] = useState<number | null>(
+    null,
+  );
+  const [progressMessage, setProgressMessage] = useState<string | null>(null);
+  const [progressError, setProgressError] = useState<string | null>(null);
   const daysRemaining = getDaysRemaining(event?.target_date ?? null);
   const progressPercentage = event?.progress_percent ?? 0;
   const overallReadiness = getOverallReadiness(readiness);
@@ -219,6 +241,33 @@ export default function OrbitBoard({
       ),
     [milestones],
   );
+
+  async function applySuggestedProgress(
+    milestoneId: number,
+    progressPercent: number,
+  ) {
+    setApplyingMilestoneId(milestoneId);
+    setProgressError(null);
+    setProgressMessage(null);
+
+    const response = await fetch(`${API_BASE}/orbit/milestones/${milestoneId}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ progress_percent: progressPercent }),
+    });
+
+    if (!response.ok) {
+      setProgressError("Could not apply suggested progress.");
+      setApplyingMilestoneId(null);
+      return;
+    }
+
+    setProgressMessage("Suggested progress applied.");
+    setApplyingMilestoneId(null);
+    router.refresh();
+  }
 
   return (
     <section className="rounded-2xl border border-white/10 bg-neutral-900/80 p-4 shadow-2xl shadow-black/30">
@@ -356,10 +405,26 @@ export default function OrbitBoard({
 
       {activeTab === "Milestones" ? (
         <div className="space-y-2">
+          {progressError ? (
+            <div className="rounded-xl border border-red-500/20 bg-red-950/20 p-3 text-sm text-red-100">
+              {progressError}
+            </div>
+          ) : null}
+          {progressMessage ? (
+            <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3 text-sm text-emerald-100">
+              {progressMessage}
+            </div>
+          ) : null}
           {activeMilestones.length > 0 ? (
             activeMilestones.map((milestone) => {
               const linkedTasks = milestoneTasksById[milestone.id] ?? [];
               const openLinkedTasks = linkedTasks.filter(isTaskOpen);
+              const advisory = milestoneAdvisoriesById[milestone.id];
+              const suggestedPercent =
+                advisory?.suggested_task_completion_percent ?? null;
+              const showSuggestedPercent =
+                suggestedPercent !== null &&
+                suggestedPercent !== milestone.progress_percent;
               const expanded = expandedMilestoneIds.includes(milestone.id);
 
               return (
@@ -373,7 +438,8 @@ export default function OrbitBoard({
                         {milestone.title}
                       </h2>
                       <p className="mt-1 text-xs text-neutral-500">
-                        {openLinkedTasks.length} open / {linkedTasks.length} total tasks
+                        Tasks: {advisory?.completed_linked_tasks ?? 0} complete /{" "}
+                        {advisory?.total_linked_tasks ?? linkedTasks.length} total
                       </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
@@ -404,6 +470,36 @@ export default function OrbitBoard({
                     <span>{milestone.progress_percent}%</span>
                   </div>
                   <ProgressBar value={milestone.progress_percent} />
+                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-500">
+                    <span>{openLinkedTasks.length} open</span>
+                    <span>Current: {milestone.progress_percent}%</span>
+                    <span>
+                      Task-based suggestion:{" "}
+                      {suggestedPercent === null ? "--" : `${suggestedPercent}%`}
+                    </span>
+                    {showSuggestedPercent ? (
+                      <span className="text-cyan-200">
+                        Suggested from tasks: {suggestedPercent}%
+                      </span>
+                    ) : null}
+                    {suggestedPercent === null && advisory?.reason ? (
+                      <span>{advisory.reason}</span>
+                    ) : null}
+                    {showSuggestedPercent ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          applySuggestedProgress(milestone.id, suggestedPercent)
+                        }
+                        disabled={applyingMilestoneId === milestone.id}
+                        className="rounded-lg border border-cyan-300/25 bg-cyan-300/10 px-2 py-1 text-xs font-semibold text-cyan-100 hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {applyingMilestoneId === milestone.id
+                          ? "Applying..."
+                          : "Apply suggested progress"}
+                      </button>
+                    ) : null}
+                  </div>
                   {expanded ? (
                     <div className="mt-3 space-y-1.5">
                       {linkedTasks.map((task) => (

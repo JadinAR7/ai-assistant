@@ -331,6 +331,53 @@ def list_tasks_linked_to_milestone(milestone_id: int) -> list[dict[str, Any]]:
     return [_with_linked_milestones(dict(row)) for row in rows]
 
 
+def get_milestone_progress_advisory(milestone_id: int) -> dict[str, Any] | None:
+    if get_record("milestones", milestone_id) is None:
+        return None
+
+    tasks = list_tasks_linked_to_milestone(milestone_id)
+    total_linked_tasks = len(tasks)
+    completed_linked_tasks = sum(1 for task in tasks if not _is_open(task))
+    in_progress_linked_tasks = sum(
+        1
+        for task in tasks
+        if str(task.get("status") or "").casefold() == "in_progress"
+    )
+    queued_linked_tasks = sum(
+        1
+        for task in tasks
+        if str(task.get("status") or "").casefold() == "queued"
+    )
+    open_linked_tasks = total_linked_tasks - completed_linked_tasks
+    suggested_percent = (
+        round((completed_linked_tasks / total_linked_tasks) * 100)
+        if total_linked_tasks > 0
+        else None
+    )
+
+    return {
+        "milestone_id": milestone_id,
+        "total_linked_tasks": total_linked_tasks,
+        "completed_linked_tasks": completed_linked_tasks,
+        "open_linked_tasks": open_linked_tasks,
+        "in_progress_linked_tasks": in_progress_linked_tasks,
+        "queued_linked_tasks": queued_linked_tasks,
+        "suggested_task_completion_percent": suggested_percent,
+        "reason": None
+        if total_linked_tasks > 0
+        else "No linked tasks yet.",
+    }
+
+
+def list_milestone_progress_advisories() -> list[dict[str, Any]]:
+    return [
+        advisory
+        for milestone in list_records("milestones")
+        if (advisory := get_milestone_progress_advisory(int(milestone["id"])))
+        is not None
+    ]
+
+
 def _summarize_linked_milestone(milestone: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": milestone.get("id"),
@@ -652,25 +699,29 @@ def generate_morning_briefing() -> dict[str, Any]:
         for milestone in milestones
         if active_event_id is None or milestone.get("major_event_id") == active_event_id
     ]
-    priority_milestones = [
-        _summary(
+    priority_milestones = []
+    for milestone in sorted(
+        [
+            milestone
+            for milestone in event_milestones
+            if str(milestone.get("status") or "").casefold()
+            in {"active", "in_progress"}
+            and _is_open(milestone)
+        ],
+        key=lambda milestone: (
+            int(milestone.get("progress_percent") or 0),
+            _parse_date(milestone.get("due_date")) or date.max,
+            int(milestone.get("id") or 0),
+        ),
+    )[:3]:
+        summary = _summary(
             milestone,
             ["id", "title", "status", "progress_percent", "due_date"],
         )
-        for milestone in sorted(
-            [
-                milestone
-                for milestone in event_milestones
-                if str(milestone.get("status") or "").casefold() in {"active", "in_progress"}
-                and _is_open(milestone)
-            ],
-            key=lambda milestone: (
-                int(milestone.get("progress_percent") or 0),
-                _parse_date(milestone.get("due_date")) or date.max,
-                int(milestone.get("id") or 0),
-            ),
-        )[:3]
-    ]
+        summary["progress_advisory"] = get_milestone_progress_advisory(
+            int(milestone["id"]),
+        )
+        priority_milestones.append(summary)
 
     goals_by_id = {goal.get("id"): goal for goal in goals}
     milestones_by_id = {milestone.get("id"): milestone for milestone in milestones}
@@ -762,12 +813,29 @@ def generate_morning_briefing() -> dict[str, Any]:
     if overdue_tasks:
         current_blockers.append(f"{len(overdue_tasks)} overdue task(s) need attention.")
 
+    stalled_milestones_with_completed_tasks = [
+        milestone
+        for milestone in event_milestones
+        if _is_open(milestone)
+        and str(milestone.get("status") or "").casefold() in {"active", "in_progress"}
+        and int(milestone.get("progress_percent") or 0) == 0
+        and (
+            advisory := get_milestone_progress_advisory(int(milestone["id"]))
+        ) is not None
+        and int(advisory.get("completed_linked_tasks") or 0) > 0
+    ]
+    if stalled_milestones_with_completed_tasks:
+        current_blockers.append(
+            "Milestone has completed linked tasks but progress is still 0%."
+        )
+
     stalled_milestones = [
         milestone
         for milestone in event_milestones
         if _is_open(milestone)
         and str(milestone.get("status") or "").casefold() in {"active", "in_progress"}
         and int(milestone.get("progress_percent") or 0) == 0
+        and milestone not in stalled_milestones_with_completed_tasks
     ]
     if stalled_milestones:
         current_blockers.append(

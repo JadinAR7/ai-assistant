@@ -128,6 +128,17 @@ class TaskMilestoneLink(BaseModel):
     created_at: datetime
 
 
+class MilestoneProgressAdvisory(BaseModel):
+    milestone_id: int
+    total_linked_tasks: int
+    completed_linked_tasks: int
+    open_linked_tasks: int
+    in_progress_linked_tasks: int
+    queued_linked_tasks: int
+    suggested_task_completion_percent: Optional[int] = None
+    reason: Optional[str] = None
+
+
 class InboxTaskCreate(BaseModel):
     title: str
     description: Optional[str] = None

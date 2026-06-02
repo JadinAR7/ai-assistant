@@ -11,6 +11,7 @@ from .models import (
     MajorEventUpdate,
     Milestone,
     MilestoneCreate,
+    MilestoneProgressAdvisory,
     MilestoneUpdate,
     ReadinessCategory,
     ReadinessCategoryUpdate,
@@ -89,6 +90,11 @@ def list_milestones():
     return service.list_records("milestones")
 
 
+@router.get("/milestones/progress-advisory", response_model=list[MilestoneProgressAdvisory])
+def list_milestone_progress_advisories():
+    return service.list_milestone_progress_advisories()
+
+
 @router.get("/milestones/{milestone_id}", response_model=Milestone)
 def get_milestone(milestone_id: int):
     record = service.get_record("milestones", milestone_id)
@@ -100,6 +106,17 @@ def get_milestone(milestone_id: int):
 @router.patch("/milestones/{milestone_id}", response_model=Milestone)
 def update_milestone(milestone_id: int, payload: MilestoneUpdate):
     record = service.update_milestone(milestone_id, payload)
+    if record is None:
+        raise _not_found("Milestone", milestone_id)
+    return record
+
+
+@router.get(
+    "/milestones/{milestone_id}/progress-advisory",
+    response_model=MilestoneProgressAdvisory,
+)
+def get_milestone_progress_advisory(milestone_id: int):
+    record = service.get_milestone_progress_advisory(milestone_id)
     if record is None:
         raise _not_found("Milestone", milestone_id)
     return record
