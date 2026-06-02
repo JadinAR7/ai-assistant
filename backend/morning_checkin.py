@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-import subprocess
+import re
 from datetime import date, datetime, time as datetime_time, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 import agent_service
 from notification_config import get_default_imessage_recipient
+from tts import format_text_for_speech, speak_text
 
 
 STATUS_FILE = Path(__file__).resolve().parent / ".morning_checkin_status.json"
@@ -123,9 +124,103 @@ def _summary_from_run(run: dict[str, Any]) -> str:
     return "Morning review is available, but no summary text was returned."
 
 
-def _speak_summary(summary: str) -> bool:
-    subprocess.run(["say", summary[:500]], check=True)
-    return True
+def _sentence_case(value: str) -> str:
+    value = value.strip().rstrip(".")
+    if not value:
+        return value
+    return value[0].lower() + value[1:]
+
+
+def _extract_line_value(summary: str, label: str) -> str | None:
+    pattern = re.compile(rf"^{re.escape(label)}:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+    match = pattern.search(summary)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _first_item_after_heading(summary: str, heading: str) -> str | None:
+    lines = summary.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().lower() != f"{heading.lower()}:":
+            continue
+        for next_line in lines[index + 1 :]:
+            cleaned = next_line.strip()
+            if not cleaned:
+                continue
+            if cleaned.endswith(":") and not cleaned.startswith(("-", "*")):
+                return None
+            cleaned = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s*", "", cleaned).strip()
+            if cleaned:
+                return cleaned
+        return None
+    return None
+
+
+def _clean_morning_task_for_speech(task: str) -> str:
+    task = re.sub(r"\s*\(P\d+\)\s*", " ", task).strip()
+    if " - " in task:
+        task_text, context = [part.strip() for part in task.split(" - ", 1)]
+        if context and context.lower() not in task_text.lower():
+            task = f"{task_text} for {context}"
+        else:
+            task = task_text
+    task = re.sub(
+        r"\bCreate first review checklist for Build trading review cadence\b",
+        "create the first review checklist for your trading review cadence",
+        task,
+        flags=re.IGNORECASE,
+    )
+    task = re.sub(r"\bCreate first task supporting\b", "create the first task for", task)
+    return _sentence_case(task)
+
+
+def format_morning_summary_for_speech(summary: str) -> str:
+    parts: list[str] = ["Good morning."]
+
+    corporate_match = re.search(
+        r"Corporate Escape is\s+(\d+(?:\.\d+)?)%\s+complete",
+        summary,
+        re.IGNORECASE,
+    )
+    if corporate_match:
+        parts.append(
+            f"Corporate Escape is {corporate_match.group(1)} percent complete."
+        )
+
+    readiness = _extract_line_value(summary, "Readiness")
+    if readiness:
+        readiness = re.sub(r"(\d+(?:\.\d+)?)\s*%", r"\1 percent", readiness)
+        parts.append(f"Overall readiness is {_sentence_case(readiness)}.")
+
+    top_task = _extract_line_value(summary, "Top Priority Task")
+    if top_task:
+        parts.append(f"Your top priority is to {_clean_morning_task_for_speech(top_task)}.")
+
+    gap = _first_item_after_heading(summary, "Strategic Gaps")
+    if gap:
+        gap = re.sub(r"\s*\(P\d+\)\s*", "", gap).strip()
+        parts.append(f"The first strategic gap is {_clean_morning_task_for_speech(gap)}.")
+
+    next_action = _extract_line_value(summary, "Next action")
+    if next_action:
+        parts.append(f"Next, {_clean_morning_task_for_speech(next_action)}.")
+
+    return format_text_for_speech(" ".join(parts))
+
+
+def _should_speak(source: Source, speak: bool | None) -> bool:
+    if speak is not None:
+        return speak
+    return source == "voice"
+
+
+def _delivery_channel(source: Source, should_speak: bool) -> str:
+    if not should_speak:
+        return source
+    if source == "voice":
+        return "tts"
+    return f"{source}+tts"
 
 
 def _send_imessage_summary(summary: str) -> dict[str, Any]:
@@ -155,12 +250,13 @@ def get_status() -> dict[str, Any]:
     }
 
 
-def check_in(source: Source = "manual", speak: bool = False) -> dict[str, Any]:
+def check_in(source: Source = "manual", speak: bool | None = None) -> dict[str, Any]:
     now = _now_local()
     run = ensure_morning_review_output(now)
     summary = _summary_from_run(run)
     day_state = _get_day_state(now)
-    channel = "tts" if source == "voice" and speak else source
+    should_speak = _should_speak(source, speak)
+    channel = _delivery_channel(source, should_speak)
 
     day_state.update(
         {
@@ -171,10 +267,20 @@ def check_in(source: Source = "manual", speak: bool = False) -> dict[str, Any]:
         }
     )
 
-    tts_spoken = False
-    if speak:
-        _speak_summary(summary)
-        tts_spoken = True
+    spoken = False
+    spoken_text = None
+    original_text = None
+    tts_success = False
+    tts_error = None
+    if should_speak:
+        try:
+            original_text = summary
+            speech_summary = format_morning_summary_for_speech(summary)
+            spoken_text = speak_text(speech_summary)
+            spoken = True
+            tts_success = True
+        except Exception as exc:
+            tts_error = f"{type(exc).__name__}: {exc}"
 
     _save_day_state(day_state)
 
@@ -184,7 +290,12 @@ def check_in(source: Source = "manual", speak: bool = False) -> dict[str, Any]:
         "agent_run": run,
         "status": get_status(),
         "delivery_channel": channel,
-        "tts_spoken": tts_spoken,
+        "spoken": spoken,
+        "spoken_text": spoken_text,
+        "original_text": original_text,
+        "tts_success": tts_success,
+        "tts_error": tts_error,
+        "tts_spoken": spoken,
         "fallback_sent": False,
         "actions_taken": [],
     }

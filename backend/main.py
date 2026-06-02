@@ -1084,30 +1084,45 @@ class TTSRequest(BaseModel):
 
 
 def _speak_text(text: str) -> str:
-    import subprocess
+    from tts import speak_text
 
-    spoken_text = text.strip()
+    return speak_text(text)
 
-    if not spoken_text:
-        raise ValueError("No text provided.")
 
-    # Keep it reasonable so the Mac doesn't start reading a dissertation.
-    if len(spoken_text) > 500:
-        spoken_text = spoken_text[:500] + "..."
+@app.get("/tts/voices")
+def tts_voices():
+    from tts import list_macos_voices
 
-    subprocess.Popen(
-        ["say", spoken_text],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        voices = list_macos_voices()
+    except Exception as e:
+        return {
+            "success": False,
+            "voices": [],
+            "error": f"Could not load macOS voices: {type(e).__name__}",
+        }
+    return {
+        "success": True,
+        "voices": voices,
+    }
 
-    return spoken_text
+
+@app.get("/tts/config")
+def tts_config():
+    from tts import get_tts_config
+
+    return {
+        "success": True,
+        **get_tts_config(),
+    }
 
 
 @app.post("/tts/say")
 def tts_say(request: TTSRequest):
     try:
-        spoken_text = _speak_text(request.text)
+        from tts import speak_text_with_metadata
+
+        speech = speak_text_with_metadata(request.text)
     except ValueError as e:
         return {
             "success": False,
@@ -1119,7 +1134,11 @@ def tts_say(request: TTSRequest):
         return {
             "success": True,
             "message": "TTS started.",
-            "spoken_text": spoken_text,
+            "original_text": speech["original_text"],
+            "formatted_text": speech["formatted_text"],
+            "spoken_text": speech["spoken_text"],
+            "voice": speech["voice"],
+            "rate": speech["rate"],
         }
 
 
@@ -1139,6 +1158,7 @@ def notify_test_tts(message: str | None = None):
     return {
         "success": True,
         "message": "Manual TTS notification test started.",
+        "original_text": text,
         "spoken_text": spoken_text,
     }
 

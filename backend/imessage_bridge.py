@@ -250,12 +250,12 @@ def speak_text(text: str) -> str:
     return data.get("message", "TTS failed.")
 
 
-def morning_check_in() -> str:
+def morning_check_in(speak: bool = False) -> str:
     response = requests.post(
         BACKEND_MORNING_CHECKIN_URL,
         json={
             "source": "imessage",
-            "speak": False,
+            "speak": speak,
         },
         timeout=180,
     )
@@ -263,6 +263,13 @@ def morning_check_in() -> str:
     response.raise_for_status()
     data = response.json()
     summary = str(data.get("summary") or "").strip()
+    if speak:
+        if data.get("tts_success"):
+            return "Morning summary spoken."
+        tts_error = str(data.get("tts_error") or "").strip()
+        if tts_error:
+            return f"Morning summary generated, but TTS failed: {tts_error}"
+        return "Morning summary generated, but TTS did not start."
     return summary or "Morning check-in completed."
 
 
@@ -288,6 +295,7 @@ def route_message(text: str) -> str:
             "- Scan MES\n"
             "- Say Helix is online\n"
             "- Speak market scan complete\n"
+            "- Say morning summary\n"
             "- Help\n\n"
             "You can also ask regular questions."
         )
@@ -295,6 +303,9 @@ def route_message(text: str) -> str:
     # -------------------------
     # TTS intent
     # -------------------------
+    if lower in ["say morning summary", "speak morning summary"]:
+        return morning_check_in(speak=True)
+
     if lower.startswith("say "):
         text_to_speak = clean[4:].strip()
 
