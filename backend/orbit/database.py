@@ -78,6 +78,22 @@ def init_orbit_db() -> None:
     """)
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS task_milestone_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL,
+            milestone_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (task_id, milestone_id),
+            FOREIGN KEY (task_id)
+                REFERENCES tasks (id)
+                ON DELETE CASCADE,
+            FOREIGN KEY (milestone_id)
+                REFERENCES milestones (id)
+                ON DELETE CASCADE
+        )
+    """)
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS reviews (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT,

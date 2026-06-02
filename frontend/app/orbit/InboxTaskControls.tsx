@@ -14,12 +14,22 @@ export type InboxTask = {
   status: string;
   due_date: string | null;
   completed_at: string | null;
+  milestones?: LinkedMilestone[];
+};
+
+export type LinkedMilestone = {
+  id: number;
+  title: string;
+  status: string;
+  progress_percent: number;
 };
 
 function isCompleted(task: InboxTask) {
-  return ["complete", "completed", "done", "cancelled"].includes(
-    task.status.toLowerCase(),
-  );
+  return ["complete", "completed", "done", "cancelled"].includes(getStatus(task));
+}
+
+function getStatus(task: InboxTask) {
+  return task.status.toLowerCase();
 }
 
 function formatStatus(value: string) {
@@ -69,22 +79,45 @@ function getCompletedDateKey(task: InboxTask) {
   return getLocalDateKey(date);
 }
 
+function getStatusPillClasses(status: string) {
+  switch (status.toLowerCase()) {
+    case "in_progress":
+      return "border-cyan-300/25 bg-cyan-300/10 text-cyan-100";
+    case "open":
+      return "border-blue-300/25 bg-blue-300/10 text-blue-100";
+    case "queued":
+      return "border-violet-300/25 bg-violet-300/10 text-violet-100";
+    case "completed":
+    case "complete":
+    case "done":
+      return "border-emerald-300/25 bg-emerald-300/10 text-emerald-100";
+    default:
+      return "border-white/10 bg-white/5 text-neutral-300";
+  }
+}
+
 export default function InboxTaskControls({
   initialTasks,
+  milestones,
 }: Readonly<{
   initialTasks: InboxTask[];
+  milestones: LinkedMilestone[];
 }>) {
   const router = useRouter();
   const [tasks, setTasks] = useState(initialTasks);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const [selectedMilestoneIds, setSelectedMilestoneIds] = useState<number[]>([]);
   const [showCompletedToday, setShowCompletedToday] = useState(false);
   const [showOlderCompleted, setShowOlderCompleted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const openTasks = useMemo(() => tasks.filter((task) => !isCompleted(task)), [tasks]);
+  const openTasks = useMemo(
+    () => tasks.filter((task) => !isCompleted(task)),
+    [tasks],
+  );
   const completedTasks = useMemo(
     () => tasks.filter((task) => isCompleted(task)),
     [tasks],
@@ -140,6 +173,7 @@ export default function InboxTaskControls({
         title: cleanTitle,
         description: description.trim() || null,
         due_date: dueDate || null,
+        milestone_ids: selectedMilestoneIds,
       }),
     });
 
@@ -151,11 +185,13 @@ export default function InboxTaskControls({
     setTitle("");
     setDescription("");
     setDueDate("");
+    setSelectedMilestoneIds([]);
     await reloadTasks();
   }
 
-  async function completeTask(task: InboxTask) {
+  async function updateTaskStatus(task: InboxTask, status: string) {
     setError(null);
+    const isCompleting = status === "completed";
 
     const response = await fetch(`${API_BASE}/orbit/tasks/${task.id}`, {
       method: "PATCH",
@@ -163,13 +199,13 @@ export default function InboxTaskControls({
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        status: "completed",
-        completed_at: new Date().toISOString(),
+        status,
+        completed_at: isCompleting ? new Date().toISOString() : null,
       }),
     });
 
     if (!response.ok) {
-      setError("Could not complete task.");
+      setError("Could not update task.");
       return;
     }
 
@@ -184,42 +220,92 @@ export default function InboxTaskControls({
     completed?: boolean;
   }>) {
     const formattedDueDate = formatDate(task.due_date);
+    const status = getStatus(task);
+    const linkedMilestones = task.milestones ?? [];
 
     return (
-      <article className="rounded-xl border border-white/10 bg-neutral-950 p-3">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold leading-5 text-neutral-100">
+      <article className="rounded-xl border border-white/10 bg-neutral-950/80 px-3 py-2.5">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-semibold leading-5 text-neutral-100">
               {task.title}
             </h3>
             {task.description ? (
-              <p className="mt-1 text-xs leading-5 text-neutral-400">
+              <p className="mt-1 whitespace-pre-line text-xs leading-5 text-neutral-400">
                 {task.description}
               </p>
             ) : null}
-            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-neutral-500">
-              <span>{formatStatus(task.status)}</span>
+            {linkedMilestones.length > 0 ? (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {linkedMilestones.map((milestone) => (
+                  <span
+                    key={milestone.id}
+                    className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[11px] font-semibold text-cyan-100"
+                  >
+                    {milestone.title}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-neutral-500">
               {formattedDueDate ? <span>Due {formattedDueDate}</span> : null}
+              <span
+                className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${getStatusPillClasses(task.status)}`}
+              >
+                {formatStatus(task.status)}
+              </span>
             </div>
           </div>
 
           {!completed ? (
-            <button
-              type="button"
-              onClick={() => completeTask(task)}
-              disabled={isPending}
-              className="shrink-0 rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-2 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Complete
-            </button>
+            <div className="flex shrink-0 flex-wrap gap-1.5">
+              {status !== "queued" ? (
+                <button
+                  type="button"
+                  onClick={() => updateTaskStatus(task, "queued")}
+                  disabled={isPending}
+                  className="rounded-lg border border-white/10 px-2 py-1 text-xs font-semibold text-neutral-300 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Queue
+                </button>
+              ) : null}
+
+              {status !== "in_progress" ? (
+                <button
+                  type="button"
+                  onClick={() => updateTaskStatus(task, "in_progress")}
+                  disabled={isPending}
+                  className="rounded-lg border border-cyan-300/25 bg-cyan-300/10 px-2 py-1 text-xs font-semibold text-cyan-100 hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Start
+                </button>
+              ) : null}
+
+              <button
+                type="button"
+                onClick={() => updateTaskStatus(task, "completed")}
+                disabled={isPending}
+                className="rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-2 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Complete
+              </button>
+            </div>
           ) : null}
         </div>
       </article>
     );
   }
 
+  function toggleMilestone(milestoneId: number) {
+    setSelectedMilestoneIds((current) =>
+      current.includes(milestoneId)
+        ? current.filter((id) => id !== milestoneId)
+        : [...current, milestoneId],
+    );
+  }
+
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <form onSubmit={createTask} className="space-y-2">
         <input
           value={title}
@@ -228,26 +314,49 @@ export default function InboxTaskControls({
           className="w-full rounded-xl border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-500 focus:border-blue-400/50"
         />
         <div className="grid gap-2 sm:grid-cols-[1fr_132px_auto]">
-          <input
+          <textarea
             value={description}
             onChange={(event) => setDescription(event.target.value)}
-            placeholder="Description"
-            className="min-w-0 rounded-xl border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-500 focus:border-blue-400/50"
+            placeholder="Description, notes, or checklist"
+            rows={2}
+            className="min-h-20 min-w-0 resize-y rounded-xl border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-500 focus:border-blue-400/50"
           />
           <input
             type="date"
             value={dueDate}
             onChange={(event) => setDueDate(event.target.value)}
-            className="rounded-xl border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-400/50"
+            className="h-10 rounded-xl border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-400/50"
           />
           <button
             type="submit"
             disabled={isPending}
-            className="rounded-xl bg-blue-500 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-60"
+            className="h-10 rounded-xl bg-blue-500 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-60"
           >
             Add
           </button>
         </div>
+        {milestones.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5">
+            {milestones.map((milestone) => {
+              const selected = selectedMilestoneIds.includes(milestone.id);
+
+              return (
+                <button
+                  key={milestone.id}
+                  type="button"
+                  onClick={() => toggleMilestone(milestone.id)}
+                  className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition ${
+                    selected
+                      ? "border-cyan-300/50 bg-cyan-300/15 text-cyan-100"
+                      : "border-white/10 bg-white/[0.03] text-neutral-500 hover:border-white/20 hover:text-white"
+                  }`}
+                >
+                  {milestone.title}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
       </form>
 
       {error ? (
@@ -256,17 +365,26 @@ export default function InboxTaskControls({
         </div>
       ) : null}
 
-      {openTasks.length > 0 ? (
-        <div className="space-y-2">
-          {openTasks.map((task) => (
-            <TaskRow key={task.id} task={task} />
-          ))}
+      <section className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+            Open Tasks
+          </h2>
+          <span className="text-xs text-neutral-600">{openTasks.length}</span>
         </div>
-      ) : (
-        <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
-          No open inbox tasks
-        </div>
-      )}
+
+        {openTasks.length > 0 ? (
+          <div className="space-y-2">
+            {openTasks.map((task) => (
+              <TaskRow key={task.id} task={task} />
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
+            No open inbox tasks
+          </div>
+        )}
+      </section>
 
       <div className="flex flex-wrap gap-3">
         <button
@@ -291,31 +409,53 @@ export default function InboxTaskControls({
       </div>
 
       {showCompletedToday ? (
-        completedToday.length > 0 ? (
-          <div className="space-y-2">
-            {completedToday.map((task) => (
-              <TaskRow key={task.id} task={task} completed />
-            ))}
+        <section className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Completed Today
+            </h2>
+            <span className="text-xs text-neutral-600">
+              {completedToday.length}
+            </span>
           </div>
-        ) : (
-          <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
-            No completed tasks
-          </div>
-        )
+
+          {completedToday.length > 0 ? (
+            <div className="space-y-2">
+              {completedToday.map((task) => (
+                <TaskRow key={task.id} task={task} completed />
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
+              No completed tasks
+            </div>
+          )}
+        </section>
       ) : null}
 
       {showOlderCompleted ? (
-        olderCompleted.length > 0 ? (
-          <div className="space-y-2">
-            {olderCompleted.map((task) => (
-              <TaskRow key={task.id} task={task} completed />
-            ))}
+        <section className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Older Completed
+            </h2>
+            <span className="text-xs text-neutral-600">
+              {olderCompleted.length}
+            </span>
           </div>
-        ) : (
-          <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
-            No completed tasks
-          </div>
-        )
+
+          {olderCompleted.length > 0 ? (
+            <div className="space-y-2">
+              {olderCompleted.map((task) => (
+                <TaskRow key={task.id} task={task} completed />
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-white/10 bg-neutral-950 p-4 text-sm text-neutral-400">
+              No completed tasks
+            </div>
+          )}
+        </section>
       ) : null}
     </div>
   );

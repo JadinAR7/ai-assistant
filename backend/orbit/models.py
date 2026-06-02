@@ -110,11 +110,41 @@ class Task(TaskBase):
     id: int
 
 
+class LinkedMilestone(BaseModel):
+    id: int
+    title: str
+    status: str
+    progress_percent: int
+
+
+class TaskWithMilestones(Task):
+    milestones: list[LinkedMilestone] = Field(default_factory=list)
+
+
+class TaskMilestoneLink(BaseModel):
+    id: int
+    task_id: int
+    milestone_id: int
+    created_at: datetime
+
+
+class MilestoneProgressAdvisory(BaseModel):
+    milestone_id: int
+    total_linked_tasks: int
+    completed_linked_tasks: int
+    open_linked_tasks: int
+    in_progress_linked_tasks: int
+    queued_linked_tasks: int
+    suggested_task_completion_percent: Optional[int] = None
+    reason: Optional[str] = None
+
+
 class InboxTaskCreate(BaseModel):
     title: str
     description: Optional[str] = None
     status: str = "queued"
     due_date: Optional[date] = None
+    milestone_ids: list[int] = Field(default_factory=list)
 
 
 class ReviewBase(BaseModel):

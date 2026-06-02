@@ -2,6 +2,7 @@ import Link from "next/link";
 import OrbitBoard, {
   type MajorEvent,
   type Milestone,
+  type MilestoneProgressAdvisory,
   type MorningBriefing,
   type OrbitReview,
   type ReadinessCategory,
@@ -13,6 +14,8 @@ export const dynamic = "force-dynamic";
 const CORPORATE_ESCAPE_TITLE = "Corporate Escape";
 const MAJOR_EVENTS_URL = "http://127.0.0.1:8000/orbit/major-events";
 const MILESTONES_URL = "http://127.0.0.1:8000/orbit/milestones";
+const MILESTONE_ADVISORIES_URL =
+  "http://127.0.0.1:8000/orbit/milestones/progress-advisory";
 const REVIEWS_URL = "http://127.0.0.1:8000/orbit/reviews";
 const READINESS_URL = "http://127.0.0.1:8000/orbit/readiness";
 const MORNING_BRIEFING_URL = "http://127.0.0.1:8000/orbit/morning-briefing";
@@ -36,6 +39,7 @@ async function getOrbitData() {
     readinessResult,
     briefingResult,
     inboxTasksResult,
+    milestoneAdvisoriesResult,
   ] = await Promise.all([
     fetchJson<MajorEvent[]>(MAJOR_EVENTS_URL),
     fetchJson<Milestone[]>(MILESTONES_URL),
@@ -75,17 +79,31 @@ async function getOrbitData() {
             ? error.message
             : "Orbit inbox tasks could not be loaded.",
       })),
+    fetchJson<MilestoneProgressAdvisory[]>(MILESTONE_ADVISORIES_URL)
+      .then((advisories) => ({ advisories, error: null }))
+      .catch(() => ({
+        advisories: [],
+        error: "Orbit milestone progress advisories could not be loaded.",
+      })),
   ]);
 
   const event = majorEvents.find(
     (majorEvent) => majorEvent.title === CORPORATE_ESCAPE_TITLE,
   );
+  const eventMilestones = event
+    ? milestones.filter((milestone) => milestone.major_event_id === event.id)
+    : [];
+  const milestoneTasksById = await getMilestoneTasksById(eventMilestones);
+  const milestoneAdvisoriesById = Object.fromEntries(
+    milestoneAdvisoriesResult.advisories.map((advisory) => [
+      advisory.milestone_id,
+      advisory,
+    ]),
+  ) as Record<number, MilestoneProgressAdvisory>;
 
   return {
     event,
-    milestones: event
-      ? milestones.filter((milestone) => milestone.major_event_id === event.id)
-      : [],
+    milestones: eventMilestones,
     reviews: getLatestReviews(reviewsResult.reviews),
     reviewsError: reviewsResult.error,
     readiness: event
@@ -98,7 +116,26 @@ async function getOrbitData() {
     morningBriefingError: briefingResult.error,
     inboxTasks: inboxTasksResult.inboxTasks,
     inboxTasksError: inboxTasksResult.error,
+    milestoneTasksById,
+    milestoneAdvisoriesById,
   };
+}
+
+async function getMilestoneTasksById(milestones: Milestone[]) {
+  const entries = await Promise.all(
+    milestones.map(async (milestone) => {
+      try {
+        const tasks = await fetchJson<InboxTask[]>(
+          `${MILESTONES_URL}/${milestone.id}/tasks`,
+        );
+        return [milestone.id, tasks] as const;
+      } catch {
+        return [milestone.id, []] as const;
+      }
+    }),
+  );
+
+  return Object.fromEntries(entries) as Record<number, InboxTask[]>;
 }
 
 function getLatestReviews(reviews: OrbitReview[]) {
@@ -148,6 +185,8 @@ export default async function OrbitPage() {
       morningBriefingError: null,
       inboxTasks: [],
       inboxTasksError: null,
+      milestoneTasksById: {},
+      milestoneAdvisoriesById: {},
     };
     errorMessage =
       error instanceof Error
@@ -203,6 +242,8 @@ export default async function OrbitPage() {
           morningBriefingError={orbitData.morningBriefingError}
           inboxTasks={orbitData.inboxTasks}
           inboxTasksError={orbitData.inboxTasksError}
+          milestoneTasksById={orbitData.milestoneTasksById}
+          milestoneAdvisoriesById={orbitData.milestoneAdvisoriesById}
           errorMessage={errorMessage}
         />
       </div>

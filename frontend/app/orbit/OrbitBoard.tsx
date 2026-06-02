@@ -1,9 +1,13 @@
 "use client";
 
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import InboxTaskControls, { type InboxTask } from "./InboxTaskControls";
 
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 const CORPORATE_ESCAPE_TITLE = "Corporate Escape";
+const INBOX_MILESTONE_TITLE = "Inbox / General";
 
 export type MajorEvent = {
   id: number;
@@ -24,6 +28,17 @@ export type Milestone = {
   target_value: number | null;
   current_value: number | null;
   due_date: string | null;
+};
+
+export type MilestoneProgressAdvisory = {
+  milestone_id: number;
+  total_linked_tasks: number;
+  completed_linked_tasks: number;
+  open_linked_tasks: number;
+  in_progress_linked_tasks: number;
+  queued_linked_tasks: number;
+  suggested_task_completion_percent: number | null;
+  reason: string | null;
 };
 
 export type OrbitReview = {
@@ -51,6 +66,7 @@ export type MorningBriefingTask = {
   status: string;
   due_date: string | null;
   goal_id: number;
+  milestone_title?: string | null;
 };
 
 export type MorningBriefing = {
@@ -71,6 +87,8 @@ type OrbitBoardProps = Readonly<{
   morningBriefingError: string | null;
   inboxTasks: InboxTask[];
   inboxTasksError: string | null;
+  milestoneTasksById: Record<number, InboxTask[]>;
+  milestoneAdvisoriesById: Record<number, MilestoneProgressAdvisory>;
   errorMessage: string | null;
 }>;
 
@@ -82,6 +100,10 @@ const tabs = [
   "Readiness",
 ] as const;
 type Tab = (typeof tabs)[number];
+type Toast = {
+  message: string;
+  type: "success" | "error";
+};
 
 function formatDate(value: string | null) {
   if (!value) {
@@ -143,6 +165,12 @@ function getOverallReadiness(readiness: ReadinessCategory[]) {
   return Math.round(total / readiness.length);
 }
 
+function isTaskOpen(task: InboxTask) {
+  return !["complete", "completed", "done", "cancelled"].includes(
+    task.status.toLowerCase(),
+  );
+}
+
 function ProgressBar({ value }: Readonly<{ value: number }>) {
   const clampedValue = Math.min(Math.max(value, 0), 100);
 
@@ -184,14 +212,25 @@ export default function OrbitBoard({
   morningBriefingError,
   inboxTasks,
   inboxTasksError,
+  milestoneTasksById,
+  milestoneAdvisoriesById,
   errorMessage,
 }: OrbitBoardProps) {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<Tab>("Overview");
+  const [expandedMilestoneIds, setExpandedMilestoneIds] = useState<number[]>([]);
+  const [applyingMilestoneId, setApplyingMilestoneId] = useState<number | null>(
+    null,
+  );
+  const [toast, setToast] = useState<Toast | null>(null);
   const daysRemaining = getDaysRemaining(event?.target_date ?? null);
   const progressPercentage = event?.progress_percent ?? 0;
   const overallReadiness = getOverallReadiness(readiness);
   const priorityTasks = morningBriefing?.top_tasks.slice(0, 3) ?? [];
   const activeBlockers = morningBriefing?.current_blockers ?? [];
+  const tagMilestones = milestones.filter(
+    (milestone) => milestone.title !== INBOX_MILESTONE_TITLE,
+  );
   const suggestedNextAction =
     morningBriefing?.suggested_next_action &&
     morningBriefing.suggested_next_action !== "No suggested action yet"
@@ -206,8 +245,65 @@ export default function OrbitBoard({
     [milestones],
   );
 
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setToast(null);
+    }, 4000);
+
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
+
+  async function applySuggestedProgress(
+    milestoneId: number,
+    progressPercent: number,
+  ) {
+    setApplyingMilestoneId(milestoneId);
+    setToast(null);
+
+    const response = await fetch(`${API_BASE}/orbit/milestones/${milestoneId}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ progress_percent: progressPercent }),
+    });
+
+    if (!response.ok) {
+      setToast({
+        message: "Could not apply suggested progress.",
+        type: "error",
+      });
+      setApplyingMilestoneId(null);
+      return;
+    }
+
+    setToast({
+      message: "Suggested progress applied.",
+      type: "success",
+    });
+    setApplyingMilestoneId(null);
+    router.refresh();
+  }
+
   return (
-    <section className="rounded-2xl border border-white/10 bg-neutral-900/80 p-4 shadow-2xl shadow-black/30">
+    <section className="relative rounded-2xl border border-white/10 bg-neutral-900/80 p-4 shadow-2xl shadow-black/30">
+      {toast ? (
+        <div
+          className={`absolute right-4 top-4 z-30 max-w-72 rounded-xl border px-3 py-2 text-sm shadow-2xl backdrop-blur ${
+            toast.type === "success"
+              ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-100 shadow-emerald-950/30"
+              : "border-red-400/25 bg-red-500/10 text-red-100 shadow-red-950/30"
+          }`}
+          role="status"
+        >
+          {toast.message}
+        </div>
+      ) : null}
+
       <div className="mb-4 flex flex-wrap gap-2">
         {tabs.map((tab) => (
           <button
@@ -282,7 +378,7 @@ export default function OrbitBoard({
                       {task.title}
                     </span>
                     <span className="shrink-0 text-xs text-neutral-500">
-                      {formatStatus(task.status)}
+                      {task.milestone_title ?? formatStatus(task.status)}
                     </span>
                   </div>
                 ))}
@@ -332,7 +428,10 @@ export default function OrbitBoard({
               Inbox tasks are unavailable right now.
             </p>
           ) : (
-            <InboxTaskControls initialTasks={inboxTasks} />
+            <InboxTaskControls
+              initialTasks={inboxTasks}
+              milestones={tagMilestones}
+            />
           )}
         </div>
       ) : null}
@@ -340,33 +439,110 @@ export default function OrbitBoard({
       {activeTab === "Milestones" ? (
         <div className="space-y-2">
           {activeMilestones.length > 0 ? (
-            activeMilestones.map((milestone) => (
-              <article
-                key={milestone.id}
-                className="rounded-xl border border-white/10 bg-neutral-950/70 p-4"
-              >
-                <div className="mb-3 flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h2 className="truncate text-sm font-semibold text-neutral-100">
-                      {milestone.title}
-                    </h2>
-                    {milestone.due_date ? (
+            activeMilestones.map((milestone) => {
+              const linkedTasks = milestoneTasksById[milestone.id] ?? [];
+              const openLinkedTasks = linkedTasks.filter(isTaskOpen);
+              const advisory = milestoneAdvisoriesById[milestone.id];
+              const suggestedPercent =
+                advisory?.suggested_task_completion_percent ?? null;
+              const showSuggestedPercent =
+                suggestedPercent !== null &&
+                suggestedPercent !== milestone.progress_percent;
+              const expanded = expandedMilestoneIds.includes(milestone.id);
+
+              return (
+                <article
+                  key={milestone.id}
+                  className="rounded-xl border border-white/10 bg-neutral-950/70 p-4"
+                >
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h2 className="truncate text-sm font-semibold text-neutral-100">
+                        {milestone.title}
+                      </h2>
                       <p className="mt-1 text-xs text-neutral-500">
-                        Due {formatDate(milestone.due_date)}
+                        Tasks: {advisory?.completed_linked_tasks ?? 0} complete /{" "}
+                        {advisory?.total_linked_tasks ?? linkedTasks.length} total
                       </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-1 text-xs text-cyan-100">
+                        {formatStatus(milestone.status)}
+                      </span>
+                      {linkedTasks.length > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedMilestoneIds((current) =>
+                              expanded
+                                ? current.filter((id) => id !== milestone.id)
+                                : [...current, milestone.id],
+                            )
+                          }
+                          className="text-xs font-semibold text-neutral-400 underline underline-offset-4 hover:text-white"
+                        >
+                          {expanded ? "Hide" : "Tasks"}
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="mb-2 flex justify-between text-xs text-neutral-500">
+                    <span>
+                      {milestone.due_date ? `Due ${formatDate(milestone.due_date)}` : "Progress"}
+                    </span>
+                    <span>{milestone.progress_percent}%</span>
+                  </div>
+                  <ProgressBar value={milestone.progress_percent} />
+                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-500">
+                    <span>{openLinkedTasks.length} open</span>
+                    <span>Current: {milestone.progress_percent}%</span>
+                    <span>
+                      Task-based suggestion:{" "}
+                      {suggestedPercent === null ? "--" : `${suggestedPercent}%`}
+                    </span>
+                    {showSuggestedPercent ? (
+                      <span className="text-cyan-200">
+                        Suggested from tasks: {suggestedPercent}%
+                      </span>
+                    ) : null}
+                    {suggestedPercent === null && advisory?.reason ? (
+                      <span>{advisory.reason}</span>
+                    ) : null}
+                    {showSuggestedPercent ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          applySuggestedProgress(milestone.id, suggestedPercent)
+                        }
+                        disabled={applyingMilestoneId === milestone.id}
+                        className="rounded-lg border border-cyan-300/25 bg-cyan-300/10 px-2 py-1 text-xs font-semibold text-cyan-100 hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {applyingMilestoneId === milestone.id
+                          ? "Applying..."
+                          : "Apply suggested progress"}
+                      </button>
                     ) : null}
                   </div>
-                  <span className="shrink-0 rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-1 text-xs text-cyan-100">
-                    {formatStatus(milestone.status)}
-                  </span>
-                </div>
-                <div className="mb-2 flex justify-between text-xs text-neutral-500">
-                  <span>Progress</span>
-                  <span>{milestone.progress_percent}%</span>
-                </div>
-                <ProgressBar value={milestone.progress_percent} />
-              </article>
-            ))
+                  {expanded ? (
+                    <div className="mt-3 space-y-1.5">
+                      {linkedTasks.map((task) => (
+                        <div
+                          key={task.id}
+                          className="flex items-center justify-between gap-3 rounded-lg bg-white/[0.03] px-3 py-2"
+                        >
+                          <span className="min-w-0 truncate text-sm text-neutral-300">
+                            {task.title}
+                          </span>
+                          <span className="shrink-0 text-xs text-neutral-500">
+                            {formatStatus(task.status)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })
           ) : (
             <div className="rounded-xl border border-white/10 bg-neutral-950/70 p-4 text-sm text-neutral-500">
               {event

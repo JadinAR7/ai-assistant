@@ -11,6 +11,7 @@ from .models import (
     MajorEventUpdate,
     Milestone,
     MilestoneCreate,
+    MilestoneProgressAdvisory,
     MilestoneUpdate,
     ReadinessCategory,
     ReadinessCategoryUpdate,
@@ -18,7 +19,9 @@ from .models import (
     ReviewCreate,
     Task,
     TaskCreate,
+    TaskMilestoneLink,
     TaskUpdate,
+    TaskWithMilestones,
     TradeSessionCreate,
     TradeSessionRead,
     TradeSessionUpdate,
@@ -87,6 +90,11 @@ def list_milestones():
     return service.list_records("milestones")
 
 
+@router.get("/milestones/progress-advisory", response_model=list[MilestoneProgressAdvisory])
+def list_milestone_progress_advisories():
+    return service.list_milestone_progress_advisories()
+
+
 @router.get("/milestones/{milestone_id}", response_model=Milestone)
 def get_milestone(milestone_id: int):
     record = service.get_record("milestones", milestone_id)
@@ -98,6 +106,17 @@ def get_milestone(milestone_id: int):
 @router.patch("/milestones/{milestone_id}", response_model=Milestone)
 def update_milestone(milestone_id: int, payload: MilestoneUpdate):
     record = service.update_milestone(milestone_id, payload)
+    if record is None:
+        raise _not_found("Milestone", milestone_id)
+    return record
+
+
+@router.get(
+    "/milestones/{milestone_id}/progress-advisory",
+    response_model=MilestoneProgressAdvisory,
+)
+def get_milestone_progress_advisory(milestone_id: int):
+    record = service.get_milestone_progress_advisory(milestone_id)
     if record is None:
         raise _not_found("Milestone", milestone_id)
     return record
@@ -146,12 +165,12 @@ def create_task(payload: TaskCreate):
     return service.create_task(payload)
 
 
-@router.get("/inbox-tasks", response_model=list[Task])
+@router.get("/inbox-tasks", response_model=list[TaskWithMilestones])
 def list_inbox_tasks():
     return service.list_inbox_tasks()
 
 
-@router.post("/inbox-tasks", response_model=Task, status_code=status.HTTP_201_CREATED)
+@router.post("/inbox-tasks", response_model=TaskWithMilestones, status_code=status.HTTP_201_CREATED)
 def create_inbox_task(payload: InboxTaskCreate):
     return service.create_inbox_task(payload)
 
@@ -175,6 +194,44 @@ def update_task(task_id: int, payload: TaskUpdate):
     if record is None:
         raise _not_found("Task", task_id)
     return record
+
+
+@router.post(
+    "/tasks/{task_id}/milestones/{milestone_id}",
+    response_model=TaskMilestoneLink,
+    status_code=status.HTTP_201_CREATED,
+)
+def link_task_to_milestone(task_id: int, milestone_id: int):
+    record = service.link_task_to_milestone(task_id, milestone_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task or milestone not found.",
+        )
+    return record
+
+
+@router.delete(
+    "/tasks/{task_id}/milestones/{milestone_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def unlink_task_from_milestone(task_id: int, milestone_id: int):
+    if not service.unlink_task_from_milestone(task_id, milestone_id):
+        raise _not_found("Task milestone link", milestone_id)
+
+
+@router.get("/tasks/{task_id}/milestones", response_model=list[Milestone])
+def list_milestones_linked_to_task(task_id: int):
+    if service.get_record("tasks", task_id) is None:
+        raise _not_found("Task", task_id)
+    return service.list_milestones_linked_to_task(task_id)
+
+
+@router.get("/milestones/{milestone_id}/tasks", response_model=list[TaskWithMilestones])
+def list_tasks_linked_to_milestone(milestone_id: int):
+    if service.get_record("milestones", milestone_id) is None:
+        raise _not_found("Milestone", milestone_id)
+    return service.list_tasks_linked_to_milestone(milestone_id)
 
 
 @router.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)

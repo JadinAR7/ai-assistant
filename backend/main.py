@@ -159,16 +159,24 @@ Inputs:
 - description optional
 - goal_id optional
 - due_date optional
+- milestone_id optional
+- milestone_title optional
 
 Rules:
 - Use create_orbit_task when Jadin says "add task", "create task", "save task", "capture task", or "add to Orbit inbox".
 - Use underscores instead of spaces in title and description values.
 - If the task belongs to an existing goal, include goal_id.
+- If Jadin asks to add the task to a named milestone, pass milestone_title when the milestone name is clear.
+- Milestone links are structured tags; do not move the task out of the Inbox goal just because a milestone is named.
 - If no goal is named, omit goal_id and the task will go to the Orbit Inbox goal.
+- If the milestone is unclear, omit milestone_title and create a normal Inbox task.
 
 Example:
 User: Add task: review Orbit inbox tonight.
 TOOL: create_orbit_task title=review_Orbit_inbox_tonight
+
+User: Add task build revenue checklist to Define income replacement target.
+TOOL: create_orbit_task title=build_revenue_checklist milestone_title=Define_income_replacement_target
 
 - complete_orbit_task: marks an Orbit task completed by task ID or title
 
