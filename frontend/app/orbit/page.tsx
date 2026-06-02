@@ -1,8 +1,10 @@
 import Link from "next/link";
 import OrbitBoard, {
+  type DailyCloseout,
   type MajorEvent,
   type Milestone,
   type MilestoneProgressAdvisory,
+  type MilestoneProgressHistory,
   type MorningBriefing,
   type OrbitReview,
   type ReadinessCategory,
@@ -16,9 +18,12 @@ const MAJOR_EVENTS_URL = "http://127.0.0.1:8000/orbit/major-events";
 const MILESTONES_URL = "http://127.0.0.1:8000/orbit/milestones";
 const MILESTONE_ADVISORIES_URL =
   "http://127.0.0.1:8000/orbit/milestones/progress-advisory";
+const RECENT_PROGRESS_HISTORY_URL =
+  "http://127.0.0.1:8000/orbit/progress-history/recent";
 const REVIEWS_URL = "http://127.0.0.1:8000/orbit/reviews";
 const READINESS_URL = "http://127.0.0.1:8000/orbit/readiness";
 const MORNING_BRIEFING_URL = "http://127.0.0.1:8000/orbit/morning-briefing";
+const DAILY_CLOSEOUT_URL = "http://127.0.0.1:8000/orbit/daily-closeout";
 const INBOX_TASKS_URL = "http://127.0.0.1:8000/orbit/inbox-tasks";
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -38,8 +43,10 @@ async function getOrbitData() {
     reviewsResult,
     readinessResult,
     briefingResult,
+    dailyCloseoutResult,
     inboxTasksResult,
     milestoneAdvisoriesResult,
+    progressHistoryResult,
   ] = await Promise.all([
     fetchJson<MajorEvent[]>(MAJOR_EVENTS_URL),
     fetchJson<Milestone[]>(MILESTONES_URL),
@@ -70,6 +77,15 @@ async function getOrbitData() {
             ? error.message
             : "Orbit briefing could not be loaded.",
       })),
+    fetchJson<DailyCloseout>(DAILY_CLOSEOUT_URL)
+      .then((closeout) => ({ closeout, error: null }))
+      .catch((error: unknown) => ({
+        closeout: null,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Orbit closeout could not be loaded.",
+      })),
     fetchJson<InboxTask[]>(INBOX_TASKS_URL)
       .then((inboxTasks) => ({ inboxTasks, error: null }))
       .catch((error: unknown) => ({
@@ -84,6 +100,12 @@ async function getOrbitData() {
       .catch(() => ({
         advisories: [],
         error: "Orbit milestone progress advisories could not be loaded.",
+      })),
+    fetchJson<MilestoneProgressHistory[]>(RECENT_PROGRESS_HISTORY_URL)
+      .then((history) => ({ history, error: null }))
+      .catch(() => ({
+        history: [],
+        error: "Orbit milestone progress history could not be loaded.",
       })),
   ]);
 
@@ -100,6 +122,15 @@ async function getOrbitData() {
       advisory,
     ]),
   ) as Record<number, MilestoneProgressAdvisory>;
+  const eventMilestoneIds = new Set(eventMilestones.map((milestone) => milestone.id));
+  const latestProgressHistoryByMilestoneId = progressHistoryResult.history
+    .filter((history) => eventMilestoneIds.has(history.milestone_id))
+    .reduce<Record<number, MilestoneProgressHistory>>((latestById, history) => {
+      if (!latestById[history.milestone_id]) {
+        latestById[history.milestone_id] = history;
+      }
+      return latestById;
+    }, {});
 
   return {
     event,
@@ -114,10 +145,13 @@ async function getOrbitData() {
     readinessError: readinessResult.error,
     morningBriefing: briefingResult.briefing,
     morningBriefingError: briefingResult.error,
+    dailyCloseout: dailyCloseoutResult.closeout,
+    dailyCloseoutError: dailyCloseoutResult.error,
     inboxTasks: inboxTasksResult.inboxTasks,
     inboxTasksError: inboxTasksResult.error,
     milestoneTasksById,
     milestoneAdvisoriesById,
+    latestProgressHistoryByMilestoneId,
   };
 }
 
@@ -183,10 +217,13 @@ export default async function OrbitPage() {
       readinessError: null,
       morningBriefing: null,
       morningBriefingError: null,
+      dailyCloseout: null,
+      dailyCloseoutError: null,
       inboxTasks: [],
       inboxTasksError: null,
       milestoneTasksById: {},
       milestoneAdvisoriesById: {},
+      latestProgressHistoryByMilestoneId: {},
     };
     errorMessage =
       error instanceof Error
@@ -240,10 +277,15 @@ export default async function OrbitPage() {
           readinessError={orbitData.readinessError}
           morningBriefing={orbitData.morningBriefing}
           morningBriefingError={orbitData.morningBriefingError}
+          dailyCloseout={orbitData.dailyCloseout}
+          dailyCloseoutError={orbitData.dailyCloseoutError}
           inboxTasks={orbitData.inboxTasks}
           inboxTasksError={orbitData.inboxTasksError}
           milestoneTasksById={orbitData.milestoneTasksById}
           milestoneAdvisoriesById={orbitData.milestoneAdvisoriesById}
+          latestProgressHistoryByMilestoneId={
+            orbitData.latestProgressHistoryByMilestoneId
+          }
           errorMessage={errorMessage}
         />
       </div>

@@ -401,6 +401,24 @@ Example:
 User: Good morning.
 TOOL: generate_morning_briefing
 
+- generate_daily_closeout: creates a compact Orbit-backed end-of-day closeout from today's completed tasks, open tasks, milestone progress changes, readiness, today's trade sessions, and recent reviews
+
+Use generate_daily_closeout when Jadin says:
+- daily closeout
+- end of day review
+- close out my day
+- how did today go
+- similar evening review or daily closeout language
+
+When responding after generate_daily_closeout:
+- Keep the answer short and direct.
+- Prefer the closeout_text from the tool result.
+- Do not dump raw JSON unless Jadin explicitly asks for raw data.
+
+Example:
+User: Close out my day.
+TOOL: generate_daily_closeout
+
 - generate_orbit_focus: creates a Helix planning workflow answer from active major events, incomplete tasks, milestones, and latest reviews
 
 Use generate_orbit_focus when Jadin asks:

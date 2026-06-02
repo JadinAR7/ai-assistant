@@ -853,6 +853,7 @@ def update_orbit_milestone_progress(
     milestone_id: str | int | None = None,
     progress_percent: str | int | None = None,
     status: str | None = None,
+    reason: str | None = None,
 ):
     parsed_milestone_id, error = _parse_required_int(milestone_id, "milestone_id")
     if error:
@@ -863,7 +864,12 @@ def update_orbit_milestone_progress(
         return {"success": False, "error": error}
 
     try:
-        payload = {"progress_percent": parsed_progress}
+        payload = {
+            "progress_percent": parsed_progress,
+            "progress_update_source": "helix_tool",
+        }
+        if reason:
+            payload["progress_update_reason"] = _orbit_text(reason)
         if status:
             payload["status"] = status
 
@@ -1664,6 +1670,16 @@ def generate_morning_briefing():
         return {
             "success": False,
             "error": f"Unable to generate morning briefing: {e}",
+        }
+
+
+def generate_daily_closeout():
+    try:
+        return orbit_service.generate_daily_closeout()
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Unable to generate daily closeout: {e}",
         }
 
 
@@ -5215,6 +5231,7 @@ TOOLS = {
     "update_readiness_category": update_readiness_category,
     "suggest_trading_readiness_update": suggest_trading_readiness_update,
     "generate_morning_briefing": generate_morning_briefing,
+    "generate_daily_closeout": generate_daily_closeout,
     "generate_orbit_daily_summary": generate_orbit_daily_summary,
     "generate_orbit_focus": generate_orbit_focus,
 

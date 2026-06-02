@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from datetime import date, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .database import get_connection, init_orbit_db
 from .models import (
@@ -81,6 +82,8 @@ TABLE_COLUMNS = {
 ORBIT_CORPORATE_ESCAPE_TITLE = "Corporate Escape"
 ORBIT_INBOX_MILESTONE_TITLE = "Inbox / General"
 ORBIT_INBOX_GOAL_TITLE = "Inbox"
+MILESTONE_PROGRESS_SOURCES = {"manual", "task_advisory", "helix_tool", "system"}
+ORBIT_LOCAL_TIMEZONE = ZoneInfo("America/Denver")
 
 
 def _serialize_value(value: Any) -> Any:
@@ -220,8 +223,141 @@ def create_milestone(payload: MilestoneCreate) -> dict[str, Any]:
     return _create_record("milestones", _model_data(payload))
 
 
+def _normalize_progress_source(value: Any) -> str:
+    source = str(value or "manual").casefold()
+    if source not in MILESTONE_PROGRESS_SOURCES:
+        return "manual"
+    return source
+
+
+def create_milestone_progress_history(
+    milestone_id: int,
+    previous_progress: int,
+    new_progress: int,
+    source: str = "manual",
+    reason: str | None = None,
+) -> dict[str, Any]:
+    init_orbit_db()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO milestone_progress_history (
+            milestone_id,
+            previous_progress,
+            new_progress,
+            change_amount,
+            reason,
+            source
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            milestone_id,
+            previous_progress,
+            new_progress,
+            new_progress - previous_progress,
+            reason,
+            _normalize_progress_source(source),
+        ),
+    )
+    history_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    return get_milestone_progress_history_record(int(history_id))
+
+
+def get_milestone_progress_history_record(record_id: int) -> dict[str, Any] | None:
+    init_orbit_db()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT milestone_progress_history.*, milestones.title AS milestone_title
+        FROM milestone_progress_history
+        JOIN milestones ON milestones.id = milestone_progress_history.milestone_id
+        WHERE milestone_progress_history.id = ?
+        """,
+        (record_id,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    return _row_to_dict(row)
+
+
+def list_milestone_progress_history(milestone_id: int) -> list[dict[str, Any]]:
+    init_orbit_db()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT milestone_progress_history.*, milestones.title AS milestone_title
+        FROM milestone_progress_history
+        JOIN milestones ON milestones.id = milestone_progress_history.milestone_id
+        WHERE milestone_progress_history.milestone_id = ?
+        ORDER BY milestone_progress_history.created_at DESC, milestone_progress_history.id DESC
+        """,
+        (milestone_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def list_recent_milestone_progress_history(limit: int = 20) -> list[dict[str, Any]]:
+    """Recent progress events for closeouts and future review agents."""
+    init_orbit_db()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT milestone_progress_history.*, milestones.title AS milestone_title
+        FROM milestone_progress_history
+        JOIN milestones ON milestones.id = milestone_progress_history.milestone_id
+        ORDER BY milestone_progress_history.created_at DESC, milestone_progress_history.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
 def update_milestone(record_id: int, payload: MilestoneUpdate) -> dict[str, Any] | None:
-    return _update_record("milestones", record_id, _model_data(payload, exclude_unset=True))
+    existing = get_record("milestones", record_id)
+    if existing is None:
+        return None
+
+    data = _model_data(payload, exclude_unset=True)
+    source = _normalize_progress_source(data.pop("progress_update_source", None))
+    reason = data.pop("progress_update_reason", None)
+    previous_progress = int(existing.get("progress_percent") or 0)
+    updated = _update_record("milestones", record_id, data)
+
+    if updated is None:
+        return None
+
+    if "progress_percent" in data:
+        new_progress = int(updated.get("progress_percent") or 0)
+        if new_progress != previous_progress:
+            create_milestone_progress_history(
+                milestone_id=record_id,
+                previous_progress=previous_progress,
+                new_progress=new_progress,
+                source=source,
+                reason=reason,
+            )
+
+    return updated
 
 
 def create_goal(payload: GoalCreate) -> dict[str, Any]:
@@ -602,6 +738,56 @@ def _latest_records(records: list[dict[str, Any]], limit: int) -> list[dict[str,
     )[:limit]
 
 
+def _is_today(value: str | None, today: date) -> bool:
+    parsed_date = _parse_date(value)
+    return parsed_date == today
+
+
+def _parse_datetime(value: str | None, assume_naive_utc: bool = False) -> datetime | None:
+    if not value:
+        return None
+
+    normalized = value.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+
+    if parsed.tzinfo is None and assume_naive_utc:
+        return parsed.replace(tzinfo=timezone.utc)
+
+    return parsed
+
+
+def _is_local_day(
+    value: str | None,
+    local_day: date,
+    assume_naive_utc: bool = False,
+) -> bool:
+    parsed = _parse_datetime(value, assume_naive_utc=assume_naive_utc)
+    if parsed is None:
+        return False
+
+    if parsed.tzinfo is None:
+        return parsed.date() == local_day
+
+    return parsed.astimezone(ORBIT_LOCAL_TIMEZONE).date() == local_day
+
+
+def _excerpt(value: str | None, limit: int = 150) -> str | None:
+    if not value:
+        return None
+
+    compact = " ".join(value.split())
+    if len(compact) <= limit:
+        return compact
+
+    return compact[: limit - 3].rstrip() + "..."
+
+
 def _format_briefing_text(
     major_event: dict[str, Any] | None,
     readiness: dict[str, Any],
@@ -885,3 +1071,233 @@ def generate_morning_briefing() -> dict[str, Any]:
         "recent_trade_sessions": recent_trade_sessions,
         "briefing_text": briefing_text,
     }
+
+
+def _format_daily_closeout_text(
+    completed_today: list[dict[str, Any]],
+    open_tasks: list[dict[str, Any]],
+    milestone_progress: list[dict[str, Any]],
+    readiness: dict[str, Any],
+    trade_summary: dict[str, Any],
+    recent_reviews: list[dict[str, Any]],
+    recommended_review_prompt: str,
+) -> str:
+    completed_lines = [
+        f"- {task.get('title')}"
+        + (f" ({task.get('milestone_title')})" if task.get("milestone_title") else "")
+        for task in completed_today[:5]
+    ] or ["- No tasks completed today"]
+    open_lines = [
+        f"- {task.get('title')}"
+        + (f" ({task.get('milestone_title')})" if task.get("milestone_title") else "")
+        for task in open_tasks[:5]
+    ] or ["- No open tasks remaining"]
+    milestone_lines = [
+        (
+            f"- {milestone.get('milestone_title')}: "
+            f"{milestone.get('previous_progress')}% -> {milestone.get('new_progress')}% "
+            f"({milestone.get('source')})"
+            + (f" — {milestone.get('reason')}" if milestone.get("reason") else "")
+        )
+        for milestone in milestone_progress[:5]
+    ] or ["- No milestone progress changes available"]
+    trade_lines = [
+        f"- {session.get('symbol')}: PnL {session.get('pnl')}, grade {session.get('session_grade') or 'not graded'}"
+        for session in trade_summary.get("sessions", [])[:5]
+    ] or ["- No trade sessions logged today"]
+    review_lines = [
+        f"- {review.get('title') or review.get('review_type')}: {review.get('summary') or 'No summary'}"
+        for review in recent_reviews[:3]
+    ] or ["- No recent reviews"]
+
+    return (
+        "Daily Closeout\n\n"
+        f"Readiness: {readiness.get('overall')}% overall.\n\n"
+        "Completed today:\n"
+        + "\n".join(completed_lines)
+        + "\n\nStill open:\n"
+        + "\n".join(open_lines)
+        + "\n\nMilestone progress:\n"
+        + "\n".join(milestone_lines)
+        + "\n\nTrade sessions:\n"
+        + "\n".join(trade_lines)
+        + "\n\nRecent reviews:\n"
+        + "\n".join(review_lines)
+        + f"\n\nReview prompt: {recommended_review_prompt}"
+    )
+
+
+def generate_daily_closeout() -> dict[str, Any]:
+    """Build an Orbit closeout. A future Evening Review Agent can call this unchanged."""
+    init_orbit_db()
+
+    today = datetime.now(ORBIT_LOCAL_TIMEZONE).date()
+    generated_at = datetime.now(timezone.utc).isoformat()
+
+    tasks = list_records("tasks")
+    milestones = list_records("milestones")
+    reviews = list_records("reviews")
+    readiness_categories = get_readiness_categories()
+    trade_sessions = list_trade_sessions()
+
+    linked_milestones_by_task_id = {
+        task.get("id"): list_milestones_linked_to_task(int(task.get("id")))
+        for task in tasks
+    }
+
+    def task_summary(task: dict[str, Any]) -> dict[str, Any]:
+        linked_milestones = [
+            _summarize_linked_milestone(milestone)
+            for milestone in linked_milestones_by_task_id.get(task.get("id"), [])
+        ]
+        summary = _summary(
+            task,
+            ["id", "title", "description", "status", "due_date", "completed_at", "goal_id"],
+        )
+        summary["milestones"] = linked_milestones
+        summary["milestone_title"] = (
+            linked_milestones[0].get("title") if linked_milestones else None
+        )
+        return summary
+
+    completed_today = [
+        task_summary(task)
+        for task in tasks
+        if not _is_open(task) and _is_today(task.get("completed_at"), today)
+    ]
+    open_tasks = [
+        task_summary(task)
+        for task in sorted(
+            [task for task in tasks if _is_open(task)],
+            key=lambda task: (
+                _parse_date(task.get("due_date")) or date.max,
+                int(task.get("id") or 0),
+            ),
+        )
+    ]
+
+    milestone_progress = [
+        _summary(
+            history,
+            [
+                "id",
+                "milestone_id",
+                "milestone_title",
+                "previous_progress",
+                "new_progress",
+                "change_amount",
+                "source",
+                "reason",
+                "created_at",
+            ],
+        )
+        for history in list_recent_milestone_progress_history(limit=50)
+        if _is_local_day(history.get("created_at"), today, assume_naive_utc=True)
+    ]
+
+    readiness_overall = (
+        round(
+            sum(int(category.get("current_score") or 0) for category in readiness_categories)
+            / len(readiness_categories)
+        )
+        if readiness_categories
+        else 0
+    )
+    readiness = {
+        "overall": readiness_overall,
+        "categories": [
+            _summary(
+                category,
+                ["id", "category_name", "current_score", "target_score", "notes", "last_updated"],
+            )
+            for category in readiness_categories
+        ],
+    }
+
+    todays_trade_sessions = [
+        session
+        for session in trade_sessions
+        if _is_today(session.get("session_date"), today)
+    ]
+    pnl_total = sum(float(session.get("pnl") or 0) for session in todays_trade_sessions)
+    trade_summary = {
+        "sessions_logged_today": len(todays_trade_sessions),
+        "total_pnl": pnl_total,
+        "average_rule_adherence": (
+            round(
+                sum(int(session.get("rule_adherence") or 0) for session in todays_trade_sessions)
+                / len([session for session in todays_trade_sessions if session.get("rule_adherence") is not None])
+            )
+            if any(session.get("rule_adherence") is not None for session in todays_trade_sessions)
+            else None
+        ),
+        "sessions": [
+            _summary(
+                session,
+                [
+                    "id",
+                    "session_date",
+                    "symbol",
+                    "pnl",
+                    "notes",
+                    "rule_adherence",
+                    "confidence",
+                    "session_grade",
+                    "created_at",
+                ],
+            )
+            for session in todays_trade_sessions
+        ],
+    }
+
+    recent_reviews = [
+        {
+            **_summary(
+                review,
+                ["id", "title", "review_type", "rating", "created_at"],
+            ),
+            "summary": _excerpt(review.get("summary")),
+        }
+        for review in _latest_records(reviews, 3)
+    ]
+    recommended_review_prompt = (
+        "What did today complete, what still needs tomorrow's attention, "
+        "and what should Helix watch for in the next morning briefing?"
+    )
+    closeout_text = _format_daily_closeout_text(
+        completed_today=completed_today,
+        open_tasks=open_tasks,
+        milestone_progress=milestone_progress,
+        readiness=readiness,
+        trade_summary=trade_summary,
+        recent_reviews=recent_reviews,
+        recommended_review_prompt=recommended_review_prompt,
+    )
+
+    return {
+        "success": True,
+        "generated_at": generated_at,
+        "completed_today": completed_today,
+        "open_tasks": open_tasks,
+        "milestone_progress": milestone_progress,
+        "readiness": readiness,
+        "trade_summary": trade_summary,
+        "recommended_review_prompt": recommended_review_prompt,
+        "closeout_text": closeout_text,
+    }
+
+
+def create_daily_closeout_review(payload: Any) -> dict[str, Any]:
+    closeout = generate_daily_closeout()
+    data = _model_data(payload)
+    user_summary = (data.get("summary") or "").strip()
+    summary = closeout["closeout_text"]
+    if user_summary:
+        summary = f"{summary}\n\nUser notes: {user_summary}"
+
+    return create_review({
+        "title": f"Daily Closeout - {datetime.now().date().isoformat()}",
+        "review_type": "daily_closeout",
+        "summary": summary,
+        "rating": data.get("rating"),
+    })

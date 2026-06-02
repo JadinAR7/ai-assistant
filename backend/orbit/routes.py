@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, status
 
 from . import service
 from .models import (
+    DailyCloseoutReviewCreate,
     Goal,
     GoalCreate,
     GoalUpdate,
@@ -12,6 +13,7 @@ from .models import (
     Milestone,
     MilestoneCreate,
     MilestoneProgressAdvisory,
+    MilestoneProgressHistory,
     MilestoneUpdate,
     ReadinessCategory,
     ReadinessCategoryUpdate,
@@ -39,6 +41,16 @@ def orbit_health_check():
 @router.get("/morning-briefing")
 def get_morning_briefing():
     return service.generate_morning_briefing()
+
+
+@router.get("/daily-closeout")
+def get_daily_closeout():
+    return service.generate_daily_closeout()
+
+
+@router.post("/daily-closeout/review", response_model=Review, status_code=status.HTTP_201_CREATED)
+def create_daily_closeout_review(payload: DailyCloseoutReviewCreate):
+    return service.create_daily_closeout_review(payload)
 
 
 def _not_found(name: str, record_id: int) -> HTTPException:
@@ -95,6 +107,11 @@ def list_milestone_progress_advisories():
     return service.list_milestone_progress_advisories()
 
 
+@router.get("/progress-history/recent", response_model=list[MilestoneProgressHistory])
+def list_recent_progress_history():
+    return service.list_recent_milestone_progress_history()
+
+
 @router.get("/milestones/{milestone_id}", response_model=Milestone)
 def get_milestone(milestone_id: int):
     record = service.get_record("milestones", milestone_id)
@@ -120,6 +137,16 @@ def get_milestone_progress_advisory(milestone_id: int):
     if record is None:
         raise _not_found("Milestone", milestone_id)
     return record
+
+
+@router.get(
+    "/milestones/{milestone_id}/progress-history",
+    response_model=list[MilestoneProgressHistory],
+)
+def list_milestone_progress_history(milestone_id: int):
+    if service.get_record("milestones", milestone_id) is None:
+        raise _not_found("Milestone", milestone_id)
+    return service.list_milestone_progress_history(milestone_id)
 
 
 @router.delete("/milestones/{milestone_id}", status_code=status.HTTP_204_NO_CONTENT)
