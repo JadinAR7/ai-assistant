@@ -9,6 +9,7 @@ import OrbitBoard, {
   type MorningBriefing,
   type OrbitReview,
   type ReadinessCategory,
+  type RecommendationSet,
 } from "./OrbitBoard";
 import { type InboxTask } from "./InboxTaskControls";
 
@@ -25,6 +26,7 @@ const REVIEWS_URL = "http://127.0.0.1:8000/orbit/reviews";
 const READINESS_URL = "http://127.0.0.1:8000/orbit/readiness";
 const MORNING_BRIEFING_URL = "http://127.0.0.1:8000/orbit/morning-briefing";
 const DAILY_CLOSEOUT_URL = "http://127.0.0.1:8000/orbit/daily-closeout";
+const RECOMMENDATIONS_URL = "http://127.0.0.1:8000/orbit/recommendations";
 const INBOX_TASKS_URL = "http://127.0.0.1:8000/orbit/inbox-tasks";
 const AGENTS_URL = "http://127.0.0.1:8000/agents";
 
@@ -46,6 +48,7 @@ async function getOrbitData() {
     readinessResult,
     briefingResult,
     dailyCloseoutResult,
+    recommendationsResult,
     inboxTasksResult,
     milestoneAdvisoriesResult,
     progressHistoryResult,
@@ -88,6 +91,15 @@ async function getOrbitData() {
           error instanceof Error
             ? error.message
             : "Orbit closeout could not be loaded.",
+      })),
+    fetchJson<RecommendationSet>(RECOMMENDATIONS_URL)
+      .then((recommendations) => ({ recommendations, error: null }))
+      .catch((error: unknown) => ({
+        recommendations: null,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Orbit recommendations could not be loaded.",
       })),
     fetchJson<InboxTask[]>(INBOX_TASKS_URL)
       .then((inboxTasks) => ({ inboxTasks, error: null }))
@@ -159,6 +171,8 @@ async function getOrbitData() {
     morningBriefingError: briefingResult.error,
     dailyCloseout: dailyCloseoutResult.closeout,
     dailyCloseoutError: dailyCloseoutResult.error,
+    recommendations: recommendationsResult.recommendations,
+    recommendationsError: recommendationsResult.error,
     inboxTasks: inboxTasksResult.inboxTasks,
     inboxTasksError: inboxTasksResult.error,
     milestoneTasksById,
@@ -233,6 +247,8 @@ export default async function OrbitPage() {
       morningBriefingError: null,
       dailyCloseout: null,
       dailyCloseoutError: null,
+      recommendations: null,
+      recommendationsError: null,
       inboxTasks: [],
       inboxTasksError: null,
       milestoneTasksById: {},
@@ -295,6 +311,8 @@ export default async function OrbitPage() {
           morningBriefingError={orbitData.morningBriefingError}
           dailyCloseout={orbitData.dailyCloseout}
           dailyCloseoutError={orbitData.dailyCloseoutError}
+          recommendations={orbitData.recommendations}
+          recommendationsError={orbitData.recommendationsError}
           inboxTasks={orbitData.inboxTasks}
           inboxTasksError={orbitData.inboxTasksError}
           milestoneTasksById={orbitData.milestoneTasksById}
