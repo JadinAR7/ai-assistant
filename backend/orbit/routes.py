@@ -19,9 +19,11 @@ from .models import (
     ReadinessCategoryUpdate,
     Review,
     ReviewCreate,
+    StrategicGap,
     Task,
     TaskCreate,
     TaskMilestoneLink,
+    TaskPriority,
     TaskUpdate,
     TaskWithMilestones,
     TradeSessionCreate,
@@ -205,6 +207,16 @@ def create_inbox_task(payload: InboxTaskCreate):
 @router.get("/tasks", response_model=list[Task])
 def list_tasks():
     return service.list_records("tasks")
+
+
+@router.get("/task-priorities", response_model=list[TaskPriority])
+def list_task_priorities():
+    return service.list_task_priorities()
+
+
+@router.get("/strategic-gaps", response_model=list[StrategicGap])
+def list_strategic_gaps():
+    return service.list_strategic_gaps()
 
 
 @router.get("/tasks/{task_id}", response_model=Task)

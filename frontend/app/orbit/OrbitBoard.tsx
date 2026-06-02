@@ -80,6 +80,8 @@ export type MorningBriefingTask = {
   due_date: string | null;
   completed_at?: string | null;
   goal_id: number;
+  priority_score?: number;
+  priority_factors?: string[];
   milestones?: Array<{
     id: number;
     title: string;
@@ -89,9 +91,17 @@ export type MorningBriefingTask = {
   milestone_title?: string | null;
 };
 
+export type StrategicGap = {
+  milestone_id: number;
+  title: string;
+  priority_score: number;
+  reasons: string[];
+};
+
 export type MorningBriefing = {
   success: boolean;
   top_tasks: MorningBriefingTask[];
+  strategic_gaps?: StrategicGap[];
   current_blockers: string[];
   suggested_next_action: string;
 };
@@ -101,6 +111,7 @@ export type DailyCloseout = {
   generated_at: string;
   completed_today: MorningBriefingTask[];
   open_tasks: MorningBriefingTask[];
+  strategic_gaps?: StrategicGap[];
   milestone_progress: Array<{
     id: number;
     milestone_id: number;
@@ -250,6 +261,24 @@ function getOverallReadiness(readiness: ReadinessCategory[]) {
   return Math.round(total / readiness.length);
 }
 
+function getCompactGapReasons(reasons: string[]) {
+  const preferred = [
+    "No linked tasks",
+    "Progress remains 0%",
+    "Progress <= 10%",
+    "No recent progress activity",
+    "No linked open tasks",
+    "Active milestone",
+    "In progress milestone",
+  ];
+  const ordered = preferred.filter((reason) => reasons.includes(reason));
+
+  return [
+    ...ordered,
+    ...reasons.filter((reason) => !ordered.includes(reason)),
+  ];
+}
+
 function isTaskOpen(task: InboxTask) {
   return !["complete", "completed", "done", "cancelled"].includes(
     task.status.toLowerCase(),
@@ -326,6 +355,7 @@ export default function OrbitBoard({
   const progressPercentage = event?.progress_percent ?? 0;
   const overallReadiness = getOverallReadiness(readiness);
   const priorityTasks = morningBriefing?.top_tasks.slice(0, 3) ?? [];
+  const strategicGaps = morningBriefing?.strategic_gaps?.slice(0, 3) ?? [];
   const activeBlockers = morningBriefing?.current_blockers ?? [];
   const tagMilestones = milestones.filter(
     (milestone) => milestone.title !== INBOX_MILESTONE_TITLE,
@@ -568,14 +598,53 @@ export default function OrbitBoard({
                     <span className="min-w-0 truncate text-sm text-neutral-200">
                       {task.title}
                     </span>
-                    <span className="shrink-0 text-xs text-neutral-500">
-                      {task.milestone_title ?? formatStatus(task.status)}
-                    </span>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[11px] font-semibold text-cyan-100">
+                        P{task.priority_score ?? 0}
+                      </span>
+                      <span className="text-xs text-neutral-500">
+                        {task.milestone_title ?? formatStatus(task.status)}
+                      </span>
+                    </div>
                   </div>
                 ))}
               </div>
             ) : (
               <p className="text-sm text-neutral-500">No priority tasks</p>
+            )}
+          </MiniPanel>
+
+          <MiniPanel title="Strategic Gaps">
+            {strategicGaps.length > 0 ? (
+              <div className="space-y-2">
+                {strategicGaps.map((gap) => (
+                  <div
+                    key={gap.milestone_id}
+                    className="rounded-lg bg-white/[0.03] px-3 py-2"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="min-w-0 truncate text-sm text-neutral-200">
+                        {gap.title}
+                      </span>
+                      <span className="shrink-0 rounded-full border border-amber-300/25 bg-amber-300/10 px-2 py-0.5 text-[11px] font-semibold text-amber-100">
+                        P{gap.priority_score}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      {getCompactGapReasons(gap.reasons).slice(0, 2).map((reason) => (
+                        <span
+                          key={reason}
+                          className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-400"
+                        >
+                          {reason}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-neutral-500">No strategic gaps</p>
             )}
           </MiniPanel>
 

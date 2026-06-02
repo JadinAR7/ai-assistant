@@ -1708,9 +1708,25 @@ def generate_orbit_daily_summary():
                         _orbit_summary(task, ["id", "title", "status", "completed_at"])
                     )
             else:
+                prioritized_task = orbit_service._with_linked_milestones(task)
                 open_tasks.append(
-                    _orbit_summary(task, ["id", "title", "status", "due_date"])
+                    _orbit_summary(
+                        prioritized_task,
+                        [
+                            "id",
+                            "title",
+                            "status",
+                            "due_date",
+                            "priority_score",
+                            "priority_factors",
+                        ],
+                    )
                 )
+
+        open_tasks = sorted(
+            open_tasks,
+            key=orbit_service._priority_sort_key,
+        )
 
         key_milestones = [
             _orbit_summary(
@@ -1736,7 +1752,7 @@ def generate_orbit_daily_summary():
             for task in completed_today[:5]
         ] or ["- None logged today"]
         open_lines = [
-            f"- {task.get('title')}"
+            f"- {task.get('title')} (P{task.get('priority_score')})"
             for task in open_tasks[:5]
         ] or ["- No priority tasks"]
         milestone_lines = [

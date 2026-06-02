@@ -185,36 +185,86 @@ def _complete_agent_run(
 def _summarize_executive_assistant() -> tuple[str, dict[str, Any]]:
     briefing = orbit_service.generate_morning_briefing()
     open_tasks = [
-        task
+        orbit_service._with_linked_milestones(task)
         for task in orbit_service.list_records("tasks")
         if orbit_service._is_open(task)
     ]
+    priority_tasks = sorted(open_tasks, key=orbit_service._priority_sort_key)
     progress_history = orbit_service.list_recent_milestone_progress_history(limit=10)
     blockers = briefing.get("current_blockers") or []
+    strategic_gaps = orbit_service.list_strategic_gaps()
+    highest_priority_task = priority_tasks[0] if priority_tasks else None
+    highest_strategic_gap = strategic_gaps[0] if strategic_gaps else None
+    highest_priority_milestone = None
+    if highest_priority_task:
+        linked_milestones = highest_priority_task.get("milestones") or []
+        if linked_milestones:
+            highest_priority_milestone = linked_milestones[0]
+    if highest_priority_milestone is None:
+        priority_milestones = briefing.get("priority_milestones") or []
+        highest_priority_milestone = priority_milestones[0] if priority_milestones else None
     top_open_tasks = [
         {
             "id": task.get("id"),
             "title": task.get("title"),
             "status": task.get("status"),
             "due_date": task.get("due_date"),
+            "priority_score": task.get("priority_score"),
+            "priority_factors": task.get("priority_factors") or [],
         }
-        for task in sorted(
-            open_tasks,
-            key=lambda task: (
-                orbit_service._parse_date(task.get("due_date")) or datetime.max.date(),
-                int(task.get("id") or 0),
-            ),
-        )[:10]
+        for task in priority_tasks[:10]
     ]
 
+    highest_task_title = (
+        highest_priority_task.get("title") if highest_priority_task else "none"
+    )
+    highest_task_score = (
+        f" (P{highest_priority_task.get('priority_score')})"
+        if highest_priority_task
+        else ""
+    )
+    highest_milestone_title = (
+        highest_priority_milestone.get("title")
+        if highest_priority_milestone
+        else "none"
+    )
+    highest_gap_title = (
+        highest_strategic_gap.get("title") if highest_strategic_gap else "none"
+    )
+    highest_gap_score = (
+        f" (P{highest_strategic_gap.get('priority_score')})"
+        if highest_strategic_gap
+        else ""
+    )
+
     summary = (
-        f"{len(open_tasks)} open task(s), {len(blockers)} blocker(s), "
-        f"and {len(progress_history)} recent milestone progress event(s) reviewed. "
+        f"Highest priority task: "
+        f"{highest_task_title}{highest_task_score}. "
+        f"Highest strategic gap: {highest_gap_title}{highest_gap_score}. "
+        f"Highest priority milestone: {highest_milestone_title}. "
+        f"Top blockers: {blockers[0] if blockers else 'none'}. "
+        f"{len(open_tasks)} open task(s) and {len(progress_history)} recent milestone progress event(s) reviewed. "
         f"Next action: {briefing.get('suggested_next_action')}"
     )
     output = {
         "open_task_count": len(open_tasks),
+        "highest_priority_task": (
+            {
+                "id": highest_priority_task.get("id"),
+                "title": highest_priority_task.get("title"),
+                "status": highest_priority_task.get("status"),
+                "due_date": highest_priority_task.get("due_date"),
+                "priority_score": highest_priority_task.get("priority_score"),
+                "priority_factors": highest_priority_task.get("priority_factors") or [],
+            }
+            if highest_priority_task
+            else None
+        ),
+        "highest_priority_milestone": highest_priority_milestone,
+        "highest_strategic_gap": highest_strategic_gap,
+        "strategic_gaps": strategic_gaps[:10],
         "top_open_tasks": top_open_tasks,
+        "top_blockers": blockers[:5],
         "blockers": blockers,
         "milestone_progress_history": progress_history,
         "suggested_next_action": briefing.get("suggested_next_action"),

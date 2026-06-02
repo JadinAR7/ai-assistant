@@ -15,6 +15,8 @@ export type InboxTask = {
   due_date: string | null;
   completed_at: string | null;
   milestones?: LinkedMilestone[];
+  priority_score?: number;
+  priority_factors?: string[];
 };
 
 export type LinkedMilestone = {
@@ -96,6 +98,22 @@ function getStatusPillClasses(status: string) {
   }
 }
 
+function getPriorityBadgeClasses(score = 0) {
+  if (score >= 90) {
+    return "border-rose-300/30 bg-rose-300/10 text-rose-100";
+  }
+
+  if (score >= 60) {
+    return "border-amber-300/30 bg-amber-300/10 text-amber-100";
+  }
+
+  if (score > 0) {
+    return "border-cyan-300/25 bg-cyan-300/10 text-cyan-100";
+  }
+
+  return "border-white/10 bg-white/5 text-neutral-400";
+}
+
 export default function InboxTaskControls({
   initialTasks,
   milestones,
@@ -115,7 +133,18 @@ export default function InboxTaskControls({
   const [isPending, startTransition] = useTransition();
 
   const openTasks = useMemo(
-    () => tasks.filter((task) => !isCompleted(task)),
+    () =>
+      tasks
+        .filter((task) => !isCompleted(task))
+        .sort((left, right) => {
+          const scoreDelta =
+            (right.priority_score ?? 0) - (left.priority_score ?? 0);
+          if (scoreDelta !== 0) {
+            return scoreDelta;
+          }
+
+          return left.id - right.id;
+        }),
     [tasks],
   );
   const completedTasks = useMemo(
@@ -248,6 +277,12 @@ export default function InboxTaskControls({
               </div>
             ) : null}
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-neutral-500">
+              <span
+                title={(task.priority_factors ?? []).join(", ") || "No priority factors"}
+                className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${getPriorityBadgeClasses(task.priority_score)}`}
+              >
+                P{task.priority_score ?? 0}
+              </span>
               {formattedDueDate ? <span>Due {formattedDueDate}</span> : null}
               <span
                 className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${getStatusPillClasses(task.status)}`}
