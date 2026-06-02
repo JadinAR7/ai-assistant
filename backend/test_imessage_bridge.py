@@ -41,6 +41,28 @@ class IMessageRoutingTests(unittest.TestCase):
         self.assertEqual(reply, "Morning summary.")
         check_in.assert_called_once_with()
 
+    def test_say_morning_summary_routes_to_spoken_morning_checkin(self):
+        with patch.object(
+            imessage_bridge,
+            "morning_check_in",
+            return_value="Morning summary spoken.",
+        ) as check_in:
+            reply = imessage_bridge.route_message("say morning summary")
+
+        self.assertEqual(reply, "Morning summary spoken.")
+        check_in.assert_called_once_with(speak=True)
+
+    def test_speak_morning_summary_routes_to_spoken_morning_checkin(self):
+        with patch.object(
+            imessage_bridge,
+            "morning_check_in",
+            return_value="Morning summary spoken.",
+        ) as check_in:
+            reply = imessage_bridge.route_message("Helix speak morning summary")
+
+        self.assertEqual(reply, "Morning summary spoken.")
+        check_in.assert_called_once_with(speak=True)
+
     def test_start_my_morning_routes_to_morning_checkin_after_wake_prefix(self):
         with patch.object(
             imessage_bridge,

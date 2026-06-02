@@ -360,7 +360,7 @@ class ScheduledAgentRunOnceResult(BaseModel):
 
 class MorningCheckInRequest(BaseModel):
     source: Literal["ui", "imessage", "voice", "manual"] = "manual"
-    speak: bool = False
+    speak: Optional[bool] = None
 
 
 class MorningCheckInStatus(BaseModel):
@@ -382,6 +382,11 @@ class MorningCheckInResult(BaseModel):
     agent_run: Optional[AgentRun] = None
     status: MorningCheckInStatus
     delivery_channel: Optional[str] = None
+    spoken: bool = False
+    spoken_text: Optional[str] = None
+    original_text: Optional[str] = None
+    tts_success: bool = False
+    tts_error: Optional[str] = None
     tts_spoken: bool = False
     fallback_sent: bool = False
     reason: Optional[str] = None
