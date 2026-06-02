@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import InboxTaskControls, { type InboxTask } from "./InboxTaskControls";
 
@@ -100,6 +100,10 @@ const tabs = [
   "Readiness",
 ] as const;
 type Tab = (typeof tabs)[number];
+type Toast = {
+  message: string;
+  type: "success" | "error";
+};
 
 function formatDate(value: string | null) {
   if (!value) {
@@ -218,8 +222,7 @@ export default function OrbitBoard({
   const [applyingMilestoneId, setApplyingMilestoneId] = useState<number | null>(
     null,
   );
-  const [progressMessage, setProgressMessage] = useState<string | null>(null);
-  const [progressError, setProgressError] = useState<string | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
   const daysRemaining = getDaysRemaining(event?.target_date ?? null);
   const progressPercentage = event?.progress_percent ?? 0;
   const overallReadiness = getOverallReadiness(readiness);
@@ -242,13 +245,24 @@ export default function OrbitBoard({
     [milestones],
   );
 
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setToast(null);
+    }, 4000);
+
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
+
   async function applySuggestedProgress(
     milestoneId: number,
     progressPercent: number,
   ) {
     setApplyingMilestoneId(milestoneId);
-    setProgressError(null);
-    setProgressMessage(null);
+    setToast(null);
 
     const response = await fetch(`${API_BASE}/orbit/milestones/${milestoneId}`, {
       method: "PATCH",
@@ -259,18 +273,37 @@ export default function OrbitBoard({
     });
 
     if (!response.ok) {
-      setProgressError("Could not apply suggested progress.");
+      setToast({
+        message: "Could not apply suggested progress.",
+        type: "error",
+      });
       setApplyingMilestoneId(null);
       return;
     }
 
-    setProgressMessage("Suggested progress applied.");
+    setToast({
+      message: "Suggested progress applied.",
+      type: "success",
+    });
     setApplyingMilestoneId(null);
     router.refresh();
   }
 
   return (
-    <section className="rounded-2xl border border-white/10 bg-neutral-900/80 p-4 shadow-2xl shadow-black/30">
+    <section className="relative rounded-2xl border border-white/10 bg-neutral-900/80 p-4 shadow-2xl shadow-black/30">
+      {toast ? (
+        <div
+          className={`absolute right-4 top-4 z-30 max-w-72 rounded-xl border px-3 py-2 text-sm shadow-2xl backdrop-blur ${
+            toast.type === "success"
+              ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-100 shadow-emerald-950/30"
+              : "border-red-400/25 bg-red-500/10 text-red-100 shadow-red-950/30"
+          }`}
+          role="status"
+        >
+          {toast.message}
+        </div>
+      ) : null}
+
       <div className="mb-4 flex flex-wrap gap-2">
         {tabs.map((tab) => (
           <button
@@ -405,16 +438,6 @@ export default function OrbitBoard({
 
       {activeTab === "Milestones" ? (
         <div className="space-y-2">
-          {progressError ? (
-            <div className="rounded-xl border border-red-500/20 bg-red-950/20 p-3 text-sm text-red-100">
-              {progressError}
-            </div>
-          ) : null}
-          {progressMessage ? (
-            <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3 text-sm text-emerald-100">
-              {progressMessage}
-            </div>
-          ) : null}
           {activeMilestones.length > 0 ? (
             activeMilestones.map((milestone) => {
               const linkedTasks = milestoneTasksById[milestone.id] ?? [];
