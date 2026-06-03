@@ -13,9 +13,9 @@ This document is the source of truth for the current implementation before the n
 Helix today is:
 
 * **AI Assistant**: a FastAPI-backed chat assistant with local Ollama model fallback, tool execution, image/chart analysis, history, and Command Center UI.
-* **Orbit Life Operating System**: a structured SQLite-backed system for major events, milestones, goals, tasks, reviews, readiness, schedule blocks, progress history, recommendations, trade-session records, and agent run records.
+* **Orbit Life Operating System**: a structured SQLite-backed system for major events, milestones, goals, tasks, reviews, readiness, schedule blocks, progress history, recommendations, trade-session records, Trade Journal records, and agent run records.
 * **Agent Framework**: a read-only/recommendation-first agent layer with manual runs, scheduled runs, prioritization, stored outputs, and Morning Check-In workflow.
-* **Trading Assistant**: a TradingView/CSV-based scanner and analysis stack for MES/MNQ/NQ/ES context, liquidity, behavior classification, alert eligibility, CSV freshness, and gated notifications.
+* **Trading Assistant**: a TradingView/CSV-based scanner and analysis stack for MES/MNQ/NQ/ES context, liquidity, behavior classification, alert eligibility, CSV freshness, gated notifications, and Trade Journal data capture.
 * **Scheduling Platform**: Orbit Schedule Blocks v1, Schedule Board v1, and Schedule Intelligence v1 for read-only day density, free-time windows, overloaded-day detection, and placement recommendations.
 * **Voice-enabled Assistant**: macOS `say` TTS, configurable voice profiles, TTS routing, speech formatting, manual Voice Trigger prototype, Wake Phrase Listener v1, Morning Briefing condenser, and iMessage-backed morning fallback delivery.
 
@@ -81,6 +81,7 @@ Orbit is the source of truth for:
 * Progress history
 * Recommendations and strategic gaps
 * Agent definitions and agent run records
+* Trade Journal entries
 
 ### User
 
@@ -105,9 +106,10 @@ Primary modules:
 * `backend/main.py`: FastAPI app, `/chat`, deterministic Command Router v1 entry point, scanner routes, CSV refresh routes, TTS, notification tests, history, and tool logs.
 * `backend/chat_intents.py`: deterministic Command Center intent routing before LLM fallback.
 * `backend/tools.py`: Helix tool layer for Orbit, trading, web/search helpers, reminders, file tools, and TradingView workflows.
-* `backend/orbit/database.py`: Orbit schema, initial agent definitions, and migrations-on-init style schema maintenance.
-* `backend/orbit/service.py`: Orbit data access, calculated progress, recommendations, priority scoring, morning briefing, daily closeout, schedule blocks, Schedule Intelligence v1, and readiness logic.
-* `backend/orbit/routes.py`: Orbit API surface, including schedule intelligence.
+* `backend/orbit/database.py`: Orbit schema, initial agent definitions, Trade Journal tables, and migrations-on-init style schema maintenance.
+* `backend/orbit/service.py`: Orbit data access, calculated progress, recommendations, priority scoring, morning briefing, daily closeout, schedule blocks, Schedule Intelligence v1, Trade Journal CRUD, import-save behavior, and readiness logic.
+* `backend/orbit/routes.py`: Orbit API surface, including schedule intelligence and Trade Journal endpoints.
+* `backend/orbit/trade_journal_import.py`: deterministic Trade Journal PDF import parser for Performance PDFs, Orders PDFs, preview generation, and draft enrichment.
 * `backend/agent_service.py`: agent definitions, manual runs, stored outputs, agent prioritization, Web Search Agent output, and Readiness Advisory output.
 * `backend/agent_routes.py`: agent API surface.
 * `backend/scheduled_agents.py`: scheduled Morning Review, Evening Review, daily prioritization snapshot, and morning fallback check loop.
@@ -140,7 +142,7 @@ Primary surfaces:
 * `/`: Helix Core home surface with navigation and current Orbit morning status.
 * `/command-center`: Helix Command Center chat, tool mode selection, image/chart upload, scanner status, latest scan, force scan, history reset, and history display.
 * `/orbit`: Orbit Operating Board with Major Events, calculated progress, milestones, Inbox tasks, recommendations, readiness, Schedule Board, Morning Check-In, Scheduled Agent status, agent prioritization, and manual agent runs.
-* `/trade-journal`: basic Trade Journal/trade-session display surface.
+* `/trade-journal`: Trade Journal data-capture surface with manual entry, PDF import preview, import draft review, list/detail/edit/delete workflows, and attachment path capture.
 * `/orbit/trade-journal`: Orbit-linked trade journal route.
 * `/ascend`: future-facing Ascend/training/readiness concept surface.
 
@@ -149,6 +151,7 @@ Current frontend capabilities:
 * Command Center calls `/chat`, scanner endpoints, image analysis, reset, and history.
 * Orbit page preloads major events, milestones, reviews, readiness, morning briefing, daily closeout, recommendations, inbox tasks, progress advisory/history, agents, agent prioritization, scheduled-agent status, Morning Check-In status, schedule blocks, and schedule intelligence.
 * Schedule Board v1 supports fixed and flexible schedule blocks, week navigation, date-aware placement, recurring day-of-week display, specific-date blocks, active/archive state, editing, deletion, category/priority metadata, subtle current-day column highlighting, and compact Schedule Intelligence display.
+* Trade Journal supports manual create/edit/delete/detail, import preview, step-by-step imported draft review, and save-from-import confirmation.
 * Agent views expose Morning Check-In, scheduled-agent checks, prioritization, manual agent runs, Web Search Agent output, Readiness Advisory suggestions, and recent run summaries.
 
 ## Voice
@@ -209,6 +212,8 @@ The following major feature milestones are complete as of this overview:
 * Schedule Blocks v1
 * Schedule Board v1
 * Schedule Intelligence v1
+* Trade Journal v1
+* Trade Journal PDF Import v1
 * Command Router v1
 * Voice Trigger Prototype
 * Wake Phrase Listener v1
@@ -340,6 +345,78 @@ Current behavior:
 * Feeds Command Router schedule intents such as free-time, packed-schedule, and next-scheduling questions.
 
 Schedule Intelligence v1 does not auto-place blocks, move blocks, modify calendar state, send notifications, or perform conflict resolution.
+
+## Trade Journal v1
+
+Trade Journal v1 is implemented as a data-capture foundation for future trading intelligence.
+
+Current behavior:
+
+* Trade Journal page exists at `/trade-journal`.
+* Manual journal entry supports create, edit, delete, and detail view workflows.
+* Journal entries capture trade information, trade context, narrative, review notes, and attachment paths.
+* Trade information includes symbol, direction, entry, stop, take profit, exit, result, contracts, and session.
+* Trade context includes HTF bias, draw on liquidity, reaction zone, behavior tags, and execution tags.
+* Narrative and review fields preserve Jadin's own reasoning, intent, liquidity target, what went well, what went wrong, and lesson learned.
+* Attachment path fields support screenshot and CSV references.
+
+Trade Journal v1 is intentionally data capture only. It does not provide AI coaching, pattern discovery, automatic scanner refinement, or performance analytics yet.
+
+## Trade Journal PDF Import v1
+
+Trade Journal PDF Import v1 is implemented as a deterministic preview-and-confirm workflow.
+
+Current behavior:
+
+* Performance PDF import is supported.
+* Orders PDF import is supported.
+* Combined Performance PDF plus Orders PDF import is supported.
+* Import preview returns daily summary, trade drafts, unmatched orders, warnings, and source file metadata.
+* Import preview does not save journal entries.
+* Save-from-import only creates journal entries from user-confirmed drafts.
+* Manual entry remains preserved alongside import workflows.
+
+Parser behavior:
+
+* Performance PDF acts as the trade source.
+* Orders PDF acts as execution, order, and stop enrichment.
+* Performance parser extracts daily summary, individual trades, direction, entry/exit, PnL, duration, contracts, and session inference.
+* Orders parser extracts filled orders, canceled stop orders, limit entry/exit, market entry/exit, and related order IDs.
+* Short direction for trades is inferred by comparing buy and sell timestamps, which fixed the Trade 3 short-direction issue.
+* Parser failures return warnings instead of crashing where possible.
+
+Real PDF parser validation:
+
+* Parser was fixed against actual extracted PDF text from `Performance.20260603.051807.pdf` and `Orders.20260603.051923.pdf`.
+* Backend fixtures were added from real extracted PDF text:
+  * `backend/tests/fixtures/performance_20260603.txt`
+  * `backend/tests/fixtures/orders_20260603.txt`
+* Parser test file:
+  * `backend/tests/test_trade_journal_import.py`
+
+Import UX refinement:
+
+* Trade Journal has a mode switch for Import Trades and Manual Entry.
+* Import Trades is the default mode.
+* Manual form is hidden during the import workflow.
+* Imported drafts use a step-by-step review queue.
+* Only one active draft is shown at a time.
+* User can Save Draft, Skip Draft, or go to Previous Draft.
+* Saving advances to the next pending draft.
+* Skipped drafts are not saved.
+* Completion state appears after all drafts are saved or skipped.
+
+Future source-of-truth role:
+
+Trade Journal will become the primary dataset for:
+
+* Trading Model Refinement
+* Scanner Refinement
+* Presence Modes
+* Narrative-Based Trading Analysis
+* Pattern Discovery
+* Trading Coach v2
+* Performance Analytics
 
 ---
 
@@ -526,6 +603,11 @@ Operational note: backend restart is required after Command Router changes becau
 * `GET /orbit/trade-sessions`
 * `POST /orbit/trade-sessions`
 * `GET/PATCH/DELETE /orbit/trade-sessions/{trade_session_id}`
+* `GET /orbit/trade-journal`
+* `POST /orbit/trade-journal`
+* `GET/PATCH/DELETE /orbit/trade-journal/{journal_entry_id}`
+* `POST /orbit/trade-journal/import-pdf`
+* `POST /orbit/trade-journal/import-pdf/save`
 
 ## Agents
 
@@ -708,6 +790,38 @@ Rules:
 
 ---
 
+# Trade Journal Data Foundation
+
+Trade Journal is the durable trading dataset layer for future Helix trading intelligence. It currently captures raw trade records, imported trade drafts, order enrichment, narrative, context, review fields, and attachment paths.
+
+Current role:
+
+* Preserve Jadin's manual strategy context and narrative after each trade.
+* Convert broker Performance and Orders PDFs into user-confirmed journal entries.
+* Keep imported trades in preview/draft form until Jadin explicitly saves them.
+* Store execution facts and user reasoning without coaching or model interpretation.
+
+Future role:
+
+Trade Journal will become the primary source for:
+
+* Trading Model Refinement
+* Scanner Refinement
+* Presence Modes
+* Narrative-Based Trading Analysis
+* Pattern Discovery
+* Trading Coach v2
+* Performance Analytics
+
+Current boundaries:
+
+* Trade Journal data is not yet used for automatic scanner changes.
+* Trade Journal data is not yet used for AI coaching.
+* Trade Journal data is not yet used for automatic pattern discovery.
+* Screenshot, PDF, and CSV artifacts are referenced through paths but are not yet learned from directly by a model.
+
+---
+
 # Current Limitations
 
 ## Orbit and Scheduling
@@ -717,16 +831,19 @@ Rules:
 * Conflict detection is not implemented.
 * Protected time, recovery buffers, and workload balancing are not implemented.
 * Auto Schedule Placement is not implemented.
-* Full Trade Journal v1 is not implemented. Basic trade-session records and display surfaces exist, but full journaling workflows, analytics, and readiness evidence generation are not complete.
 
 ## Trading
 
 * Scanner still uses interval-based logic.
 * Trading model refinement is not complete.
 * Scanner refinement is not complete.
+* No AI coaching is implemented from Trade Journal data yet.
 * Pattern Discovery is not implemented.
+* No automatic scanner refinement is implemented from Trade Journal data yet.
 * Advanced Trade Coach is not implemented.
 * Narrative Scanner is not implemented.
+* No direct screenshot/PDF/CSV model learning is implemented yet.
+* User still provides strategy context and narrative manually after import.
 * Scanner alerts are chart-review notifications, not trade entries.
 
 ## Agents
@@ -748,20 +865,19 @@ Rules:
 
 # Current Roadmap
 
-Completed roadmap items removed from active priority lists include Agent Foundation v1, Web Search Agent v1 scaffolding, Readiness Advisory Agent v1, Agent Prioritization, Scheduled Agent Runs, Morning Check-In/Fallback Summary, Major Events Management v1, Calculated Major Event Progress, Schedule Blocks v1, Schedule Board v1, Schedule Intelligence v1, Command Router v1, Voice Trigger Prototype, Wake Phrase Listener v1, TTS Routing, Morning Briefing Condenser, and Service Management / LaunchAgent support.
+Completed roadmap items removed from active priority lists include Agent Foundation v1, Web Search Agent v1 scaffolding, Readiness Advisory Agent v1, Agent Prioritization, Scheduled Agent Runs, Morning Check-In/Fallback Summary, Major Events Management v1, Calculated Major Event Progress, Schedule Blocks v1, Schedule Board v1, Schedule Intelligence v1, Trade Journal v1, Trade Journal PDF Import v1, Command Router v1, Voice Trigger Prototype, Wake Phrase Listener v1, TTS Routing, Morning Briefing Condenser, and Service Management / LaunchAgent support.
 
 ## Next Major Development Priorities
 
 Priority order:
 
-1. Trade Journal v1
-2. Trading Model Refinement
-3. Scanner Refinement
-4. Presence Modes
-5. Narrative-Based Trading Analysis
-6. Use Orbit for one week
-7. Collect friction points
-8. Schedule Intelligence v2
+1. Trading Model Refinement
+2. Scanner Refinement
+3. Presence Modes
+4. Narrative-Based Scanner
+5. Pattern Discovery
+6. Trading Coach v2
+7. Schedule Intelligence v2
 
 ## Schedule Intelligence v2 (Future)
 
@@ -773,11 +889,11 @@ Planned features:
 * Protected time blocks
 * Family time planning
 * Reading time planning
-* Recovery / buffer time
+* Recovery/buffer time
 * Schedule compression warnings
 * Daily workload balancing
 * Calendar notifications
-* Google Calendar integration (future)
+* Google Calendar integration later
 
 Status: Not started.
 
@@ -787,15 +903,20 @@ Purpose:
 
 Improve Helix's understanding of Jadin's actual trading model rather than generic ICT concepts.
 
-Planned work:
+Completed:
 
+* Schedule Intelligence v1
 * Trade Journal v1
+* Trade Journal PDF Import v1
+
+Next:
+
 * Trading Model Refinement
 * Scanner Refinement
 * Presence Modes
-* Narrative-Based Analysis
-* Trading Coach v2
+* Narrative-Based Scanner
 * Pattern Discovery
+* Trading Coach v2
 * Performance Analytics
 * Automated Journal Insights
 
