@@ -71,6 +71,7 @@ Orbit is the source of truth for:
 * Tasks
 * Goals
 * Milestones
+* Schedule blocks
 * Reviews
 * Trade sessions
 * Readiness tracking
@@ -149,6 +150,20 @@ The trading system has moved beyond basic scan summaries. It performs multi-time
 Notifications remain intentionally gated. Smart scan notifications default disabled and only deliver when the scanner has already determined notification eligibility. Manual notification test endpoints exist so TTS and iMessage delivery can be verified without fabricating a real Medium or High trading alert.
 
 Helix remains the central intelligence layer. Orbit stores structured planning, progress, trade-session, readiness, and agent-run data. Scanner logic remains separate from Orbit.
+
+## Orbit Schedule Blocks v1
+
+Orbit supports fixed and flexible schedule blocks as a planning data foundation for organizing Jadin's day around boxing, family time, reading, work, trading, leisure, personal routines, and milestone tasks.
+
+Schedule blocks include title, fixed/flexible type, category, optional day and time fields, optional flexible duration, recurrence, priority, notes, active status, and timestamps. Fixed blocks require day, start time, and end time. Flexible blocks require duration in minutes.
+
+Schedule Blocks v1 intentionally does not perform auto-scheduling, automatic placement, or conflict detection. Those behaviors are planned for a later scheduling layer.
+
+## Orbit Major Events Management v1
+
+Major Events are manageable Orbit records rather than a hardcoded Corporate Escape-only view. Jadin can create, edit, select, and archive major events such as Corporate Escape, boxing goals, trading capital goals, business launches, and real estate goals.
+
+The Orbit Overview shows the selected primary major event. When multiple active events exist, Orbit defaults to the first active event for now and exposes a compact selector. Milestone links remain tied to their major event records, and archived events are preserved rather than cascade-deleted.
 
 ---
 

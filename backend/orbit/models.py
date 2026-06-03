@@ -1,14 +1,95 @@
 from datetime import date, datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+BlockType = Literal["fixed", "flexible"]
+ScheduleBlockCategory = Literal[
+    "boxing",
+    "family",
+    "reading",
+    "work",
+    "trading",
+    "milestone",
+    "leisure",
+    "personal",
+    "other",
+]
+DayOfWeek = Literal[
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+]
+ScheduleBlockPriority = Literal["low", "medium", "high"]
+MajorEventStatus = Literal["active", "paused", "completed", "archived"]
+
+
+class ScheduleBlockBase(BaseModel):
+    title: str
+    block_type: BlockType
+    category: ScheduleBlockCategory
+    day_of_week: Optional[DayOfWeek] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    duration_minutes: Optional[int] = Field(default=None, gt=0)
+    recurrence: Optional[str] = None
+    priority: ScheduleBlockPriority = "medium"
+    notes: Optional[str] = None
+    active: bool = True
+
+    @model_validator(mode="after")
+    def validate_block_requirements(self):
+        if self.block_type == "fixed":
+            missing = [
+                field
+                for field in ["day_of_week", "start_time", "end_time"]
+                if getattr(self, field) in (None, "")
+            ]
+            if missing:
+                raise ValueError(
+                    "Fixed schedule blocks require day_of_week, start_time, and end_time."
+                )
+
+        if self.block_type == "flexible" and self.duration_minutes is None:
+            raise ValueError("Flexible schedule blocks require duration_minutes.")
+
+        return self
+
+
+class ScheduleBlockCreate(ScheduleBlockBase):
+    pass
+
+
+class ScheduleBlockUpdate(BaseModel):
+    title: Optional[str] = None
+    block_type: Optional[BlockType] = None
+    category: Optional[ScheduleBlockCategory] = None
+    day_of_week: Optional[DayOfWeek] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    duration_minutes: Optional[int] = Field(default=None, gt=0)
+    recurrence: Optional[str] = None
+    priority: Optional[ScheduleBlockPriority] = None
+    notes: Optional[str] = None
+    active: Optional[bool] = None
+
+
+class ScheduleBlock(ScheduleBlockBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
 
 
 class MajorEventBase(BaseModel):
     title: str
     description: Optional[str] = None
     target_date: Optional[date] = None
-    status: str = "not_started"
+    status: MajorEventStatus = "active"
     progress_percent: int = Field(default=0, ge=0, le=100)
 
 
@@ -20,7 +101,7 @@ class MajorEventUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     target_date: Optional[date] = None
-    status: Optional[str] = None
+    status: Optional[MajorEventStatus] = None
     progress_percent: Optional[int] = Field(default=None, ge=0, le=100)
 
 

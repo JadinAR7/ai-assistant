@@ -12,13 +12,13 @@ import OrbitBoard, {
   type OrbitReview,
   type ReadinessCategory,
   type RecommendationSet,
+  type ScheduleBlock,
   type ScheduledAgentStatus,
 } from "./OrbitBoard";
 import { type InboxTask } from "./InboxTaskControls";
 
 export const dynamic = "force-dynamic";
 
-const CORPORATE_ESCAPE_TITLE = "Corporate Escape";
 const MAJOR_EVENTS_URL = "http://127.0.0.1:8000/orbit/major-events";
 const MILESTONES_URL = "http://127.0.0.1:8000/orbit/milestones";
 const MILESTONE_ADVISORIES_URL =
@@ -31,6 +31,7 @@ const MORNING_BRIEFING_URL = "http://127.0.0.1:8000/orbit/morning-briefing";
 const DAILY_CLOSEOUT_URL = "http://127.0.0.1:8000/orbit/daily-closeout";
 const RECOMMENDATIONS_URL = "http://127.0.0.1:8000/orbit/recommendations";
 const INBOX_TASKS_URL = "http://127.0.0.1:8000/orbit/inbox-tasks";
+const SCHEDULE_BLOCKS_URL = "http://127.0.0.1:8000/orbit/schedule-blocks";
 const AGENTS_URL = "http://127.0.0.1:8000/agents";
 const AGENT_PRIORITIZATION_URL = "http://127.0.0.1:8000/agents/prioritize";
 const SCHEDULED_AGENTS_STATUS_URL =
@@ -64,6 +65,7 @@ async function getOrbitData() {
     agentPrioritizationResult,
     scheduledAgentsStatusResult,
     morningCheckInStatusResult,
+    scheduleBlocksResult,
   ] = await Promise.all([
     fetchJson<MajorEvent[]>(MAJOR_EVENTS_URL),
     fetchJson<Milestone[]>(MILESTONES_URL),
@@ -169,24 +171,26 @@ async function getOrbitData() {
             ? error.message
             : "Morning check-in status could not be loaded.",
       })),
+    fetchJson<ScheduleBlock[]>(SCHEDULE_BLOCKS_URL)
+      .then((scheduleBlocks) => ({ scheduleBlocks, error: null }))
+      .catch((error: unknown) => ({
+        scheduleBlocks: [],
+        error:
+          error instanceof Error
+            ? error.message
+            : "Schedule blocks could not be loaded.",
+      })),
   ]);
 
-  const event = majorEvents.find(
-    (majorEvent) => majorEvent.title === CORPORATE_ESCAPE_TITLE,
-  );
-  const eventMilestones = event
-    ? milestones.filter((milestone) => milestone.major_event_id === event.id)
-    : [];
-  const milestoneTasksById = await getMilestoneTasksById(eventMilestones);
+  const event = getPrimaryMajorEvent(majorEvents);
+  const milestoneTasksById = await getMilestoneTasksById(milestones);
   const milestoneAdvisoriesById = Object.fromEntries(
     milestoneAdvisoriesResult.advisories.map((advisory) => [
       advisory.milestone_id,
       advisory,
     ]),
   ) as Record<number, MilestoneProgressAdvisory>;
-  const eventMilestoneIds = new Set(eventMilestones.map((milestone) => milestone.id));
   const latestProgressHistoryByMilestoneId = progressHistoryResult.history
-    .filter((history) => eventMilestoneIds.has(history.milestone_id))
     .reduce<Record<number, MilestoneProgressHistory>>((latestById, history) => {
       if (!latestById[history.milestone_id]) {
         latestById[history.milestone_id] = history;
@@ -195,15 +199,12 @@ async function getOrbitData() {
     }, {});
 
   return {
+    majorEvents,
     event,
-    milestones: eventMilestones,
+    milestones,
     reviews: getLatestReviews(reviewsResult.reviews),
     reviewsError: reviewsResult.error,
-    readiness: event
-      ? readinessResult.readiness.filter(
-          (category) => category.major_event_id === event.id,
-        )
-      : readinessResult.readiness,
+    readiness: readinessResult.readiness,
     readinessError: readinessResult.error,
     morningBriefing: briefingResult.briefing,
     morningBriefingError: briefingResult.error,
@@ -224,7 +225,17 @@ async function getOrbitData() {
     scheduledAgentsStatusError: scheduledAgentsStatusResult.error,
     morningCheckInStatus: morningCheckInStatusResult.status,
     morningCheckInStatusError: morningCheckInStatusResult.error,
+    scheduleBlocks: scheduleBlocksResult.scheduleBlocks,
+    scheduleBlocksError: scheduleBlocksResult.error,
   };
+}
+
+function getPrimaryMajorEvent(majorEvents: MajorEvent[]): MajorEvent | undefined {
+  return (
+    majorEvents.find((majorEvent) => majorEvent.status === "active") ??
+    majorEvents.find((majorEvent) => majorEvent.status !== "archived") ??
+    majorEvents[0]
+  );
 }
 
 async function getMilestoneTasksById(milestones: Milestone[]) {
@@ -281,6 +292,7 @@ export default async function OrbitPage() {
     orbitData = await getOrbitData();
   } catch (error) {
     orbitData = {
+      majorEvents: [],
       event: undefined,
       milestones: [],
       reviews: [],
@@ -306,6 +318,8 @@ export default async function OrbitPage() {
       scheduledAgentsStatusError: null,
       morningCheckInStatus: null,
       morningCheckInStatusError: null,
+      scheduleBlocks: [],
+      scheduleBlocksError: null,
     };
     errorMessage =
       error instanceof Error
@@ -351,6 +365,7 @@ export default async function OrbitPage() {
 
       <div className="mx-auto max-w-6xl px-4 py-4">
         <OrbitBoard
+          majorEvents={orbitData.majorEvents}
           event={orbitData.event}
           milestones={orbitData.milestones}
           reviews={orbitData.reviews}
@@ -378,6 +393,8 @@ export default async function OrbitPage() {
           scheduledAgentsStatusError={orbitData.scheduledAgentsStatusError}
           morningCheckInStatus={orbitData.morningCheckInStatus}
           morningCheckInStatusError={orbitData.morningCheckInStatusError}
+          scheduleBlocks={orbitData.scheduleBlocks}
+          scheduleBlocksError={orbitData.scheduleBlocksError}
           errorMessage={errorMessage}
         />
       </div>

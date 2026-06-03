@@ -15,6 +15,8 @@ from .models import (
     ReadinessCategoryUpdate,
     RecommendationTaskDraft,
     ReviewCreate,
+    ScheduleBlockCreate,
+    ScheduleBlockUpdate,
     TaskCreate,
     TaskUpdate,
     TradeSessionCreate,
@@ -76,6 +78,19 @@ TABLE_COLUMNS = {
         "rule_adherence",
         "confidence",
         "session_grade",
+    ],
+    "schedule_blocks": [
+        "title",
+        "block_type",
+        "category",
+        "day_of_week",
+        "start_time",
+        "end_time",
+        "duration_minutes",
+        "recurrence",
+        "priority",
+        "notes",
+        "active",
     ],
 }
 
@@ -202,6 +217,24 @@ def delete_record(table: str, record_id: int) -> bool:
     return deleted
 
 
+def _validate_schedule_block_data(data: dict[str, Any]) -> None:
+    block_type = data.get("block_type")
+
+    if block_type == "fixed":
+        missing = [
+            field
+            for field in ["day_of_week", "start_time", "end_time"]
+            if data.get(field) in (None, "")
+        ]
+        if missing:
+            raise ValueError(
+                "Fixed schedule blocks require day_of_week, start_time, and end_time."
+            )
+
+    if block_type == "flexible" and data.get("duration_minutes") is None:
+        raise ValueError("Flexible schedule blocks require duration_minutes.")
+
+
 def _list_records_ordered(table: str, order_by: str) -> list[dict[str, Any]]:
     init_orbit_db()
 
@@ -218,8 +251,29 @@ def create_major_event(payload: MajorEventCreate) -> dict[str, Any]:
     return _create_record("major_events", _model_data(payload))
 
 
+def list_major_events() -> list[dict[str, Any]]:
+    return _list_records_ordered(
+        "major_events",
+        """
+        CASE status
+            WHEN 'active' THEN 1
+            WHEN 'paused' THEN 2
+            WHEN 'completed' THEN 3
+            WHEN 'archived' THEN 4
+            ELSE 5
+        END,
+        id
+        """,
+    )
+
+
 def update_major_event(record_id: int, payload: MajorEventUpdate) -> dict[str, Any] | None:
     return _update_record("major_events", record_id, _model_data(payload, exclude_unset=True))
+
+
+def archive_major_event(record_id: int) -> dict[str, Any] | None:
+    payload = MajorEventUpdate(status="archived")
+    return update_major_event(record_id, payload)
 
 
 def create_milestone(payload: MilestoneCreate) -> dict[str, Any]:
@@ -377,6 +431,48 @@ def create_task(payload: TaskCreate) -> dict[str, Any]:
 
 def update_task(record_id: int, payload: TaskUpdate) -> dict[str, Any] | None:
     return _update_record("tasks", record_id, _model_data(payload, exclude_unset=True))
+
+
+def list_schedule_blocks() -> list[dict[str, Any]]:
+    return _list_records_ordered(
+        "schedule_blocks",
+        """
+        active DESC,
+        CASE day_of_week
+            WHEN 'monday' THEN 1
+            WHEN 'tuesday' THEN 2
+            WHEN 'wednesday' THEN 3
+            WHEN 'thursday' THEN 4
+            WHEN 'friday' THEN 5
+            WHEN 'saturday' THEN 6
+            WHEN 'sunday' THEN 7
+            ELSE 8
+        END,
+        category,
+        start_time,
+        id
+        """,
+    )
+
+
+def create_schedule_block(payload: ScheduleBlockCreate) -> dict[str, Any]:
+    data = _model_data(payload)
+    _validate_schedule_block_data(data)
+    return _create_record("schedule_blocks", data)
+
+
+def update_schedule_block(
+    record_id: int,
+    payload: ScheduleBlockUpdate,
+) -> dict[str, Any] | None:
+    existing = get_record("schedule_blocks", record_id)
+    if existing is None:
+        return None
+
+    data = _model_data(payload, exclude_unset=True)
+    merged = {**existing, **data}
+    _validate_schedule_block_data(merged)
+    return _update_record("schedule_blocks", record_id, data)
 
 
 def link_task_to_milestone(task_id: int, milestone_id: int) -> dict[str, Any] | None:
