@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from news_risk import build_news_risk_summary, format_news_risk_section
 from notification_config import get_default_imessage_recipient
 from presence import get_presence
+from scanner_settings import DEFAULT_SCANNER_SYMBOL, get_default_scanner_symbol, normalize_scanner_symbol
 from tools import (
     analyze_tradingview,
     capture_tradingview,
@@ -21,7 +22,7 @@ from tools import (
 # -------------------------
 # Scan configuration
 # -------------------------
-SYMBOL = "MES"
+SYMBOL = DEFAULT_SCANNER_SYMBOL
 SCAN_TIMEFRAME = "15M"
 SCHEDULED_SCAN_TIMEFRAMES = ["4H", "1H", "15M", "5M"]
 SCAN_INTERVAL_SECONDS = 5 * 60
@@ -155,8 +156,9 @@ def _default_screenshot_cleanup_result() -> dict:
     }
 
 
-def cleanup_scan_screenshots() -> dict:
+def cleanup_scan_screenshots(symbol: str = SYMBOL) -> dict:
     result = _default_screenshot_cleanup_result()
+    symbol = normalize_scanner_symbol(symbol)
 
     try:
         if not SCAN_SCREENSHOTS_DIR.exists():
@@ -164,7 +166,7 @@ def cleanup_scan_screenshots() -> dict:
 
         screenshot_files = [
             path
-            for path in SCAN_SCREENSHOTS_DIR.glob(f"{SYMBOL}_*.png")
+            for path in SCAN_SCREENSHOTS_DIR.glob(f"{symbol}_*.png")
             if path.is_file()
         ]
 
@@ -199,10 +201,12 @@ def _build_timeframe_capture_from_result(timeframe: str, result: dict) -> dict:
 
 def _capture_timeframe_context(
     *,
+    symbol: str,
     timeframe: str,
     prompt: str,
 ) -> dict:
-    capture_result = capture_tradingview(symbol=SYMBOL, timeframe=timeframe)
+    symbol = normalize_scanner_symbol(symbol)
+    capture_result = capture_tradingview(symbol=symbol, timeframe=timeframe)
 
     if not capture_result.get("success"):
         return {
@@ -219,7 +223,7 @@ def _capture_timeframe_context(
     visual_extraction = extract_tradingview_visuals_from_path(
         image_path=screenshot_path,
         prompt=prompt,
-        symbol=SYMBOL,
+        symbol=symbol,
         source=f"scheduled {timeframe} TradingView capture",
     )
 
@@ -236,12 +240,14 @@ def _capture_timeframe_context(
 
 def collect_scheduled_timeframe_captures(
     *,
+    symbol: str = SYMBOL,
     primary_timeframe: str,
     primary_result: dict,
     session_label: str,
 ) -> dict:
+    symbol = normalize_scanner_symbol(symbol)
     prompt = (
-        f"Scheduled {SYMBOL} scan during {session_label}. "
+        f"Scheduled {symbol} scan during {session_label}. "
         "Extract visible user markings only."
     )
     captures = {}
@@ -256,6 +262,7 @@ def collect_scheduled_timeframe_captures(
 
         try:
             captures[timeframe] = _capture_timeframe_context(
+                symbol=symbol,
                 timeframe=timeframe,
                 prompt=prompt,
             )
@@ -2604,6 +2611,321 @@ def attach_opportunity_watch(record: dict) -> None:
 
 
 # -------------------------
+# Narrative scanner state
+# -------------------------
+NARRATIVE_PHASES = {
+    "no_clear_narrative",
+    "draw_identified",
+    "approaching_reaction_zone",
+    "interacting_with_reaction_zone",
+    "behavior_forming",
+    "structure_confirming",
+    "execution_watch",
+    "continuation_confirmed",
+    "narrative_invalidated",
+}
+
+
+def _format_narrative_draw(primary_draw: dict | None) -> str:
+    if not primary_draw:
+        return "None identified"
+
+    label = primary_draw.get("label") or "Primary draw"
+    price = _fmt_draw_price(primary_draw.get("price"))
+    if price == "unknown":
+        return str(label)
+
+    return f"{label} at {price}"
+
+
+def _reaction_zone_details(record: dict, reaction_zone_status: str) -> dict:
+    behavior = record.get("behavior_classification") or {}
+    behavior_zone = str(behavior.get("reaction_zone") or "").strip()
+    active_zone = (
+        ((record.get("csv_analysis") or {}).get("analysis") or {})
+        .get("zone_ranking", {})
+        .get("active_zone")
+        or {}
+    )
+
+    zone_label = behavior_zone if behavior_zone and behavior_zone.lower() != "unclear" else ""
+    if not zone_label and active_zone:
+        zone_label = _format_reaction_zone(active_zone)
+    if not zone_label:
+        zone_label = "Unclear"
+
+    timeframe = str(active_zone.get("timeframe") or "").upper()
+    if not timeframe:
+        zone_lower = zone_label.lower()
+        if "4h" in zone_lower or "4hr" in zone_lower:
+            timeframe = "4H"
+        elif "1h" in zone_lower or "1hr" in zone_lower:
+            timeframe = "1H"
+        elif "15m" in zone_lower or "15min" in zone_lower:
+            timeframe = "15M"
+        elif "5m" in zone_lower or "5min" in zone_lower:
+            timeframe = "5M"
+        elif zone_label != "Unclear":
+            timeframe = "HTF"
+        else:
+            timeframe = "unclear"
+
+    zone_type = str(active_zone.get("type") or "").strip()
+    if not zone_type:
+        zone_type = "FVG" if "fvg" in zone_label.lower() else "reaction_zone"
+
+    return {
+        "htf_reaction_zone": zone_label,
+        "reaction_zone_timeframe": timeframe,
+        "reaction_zone_type": zone_type,
+        "reaction_zone_status": reaction_zone_status,
+    }
+
+
+def _structure_confirmation_state(record: dict) -> str:
+    behavior = record.get("behavior_classification") or {}
+    structure = str(behavior.get("structure_confirmation") or "5M unclear").strip()
+    return structure or "5M unclear"
+
+
+def _has_structure_confirmation(record: dict) -> bool:
+    return "5m confirms" in _structure_confirmation_state(record).lower()
+
+
+def _has_continuation_confirmation(record: dict) -> bool:
+    behavior = record.get("behavior_classification") or {}
+    expansion_match = behavior.get("expansion_pattern_match") or {}
+    classification = str(behavior.get("classification") or "unknown").lower()
+    confidence = str(behavior.get("confidence") or "low").lower()
+
+    return bool(
+        classification == "bullish_continuation_expansion"
+        and expansion_match.get("matched")
+        and confidence in {"medium", "high"}
+    )
+
+
+def _has_invalidation_evidence(record: dict) -> bool:
+    behavior = record.get("behavior_classification") or {}
+    if record.get("invalidation_evidence") or behavior.get("invalidation_evidence"):
+        return True
+
+    text_parts = []
+    for key in ["evidence", "missing_confirmation", "data_limitations"]:
+        value = behavior.get(key) or []
+        if isinstance(value, list):
+            text_parts.extend(str(item) for item in value)
+        else:
+            text_parts.append(str(value))
+
+    text = " ".join(text_parts).lower()
+    invalidation_terms = [
+        "draw failed",
+        "failed draw",
+        "opposite reclaim",
+        "invalidated",
+        "invalidation",
+        "continuation failed",
+        "failed continuation",
+    ]
+
+    return _contains_any(text, invalidation_terms)
+
+
+def _narrative_missing_confirmations(record: dict, phase: str) -> list[str]:
+    behavior = record.get("behavior_classification") or {}
+    opportunity = record.get("opportunity_watch") or {}
+    missing = []
+
+    missing.extend(behavior.get("missing_confirmation") or [])
+    missing.extend(opportunity.get("next_confirmation_needed") or [])
+
+    phase_missing = {
+        "no_clear_narrative": ["Need a clean liquidity draw and HTF reaction-zone context."],
+        "draw_identified": ["Need price to approach or interact with a mapped HTF reaction zone."],
+        "approaching_reaction_zone": ["Need live behavior inside/around the reaction zone."],
+        "interacting_with_reaction_zone": ["Need acceptance, rejection, reclaim, sweep, or displacement evidence."],
+        "behavior_forming": ["Need MSS/BOS or 5M structure confirmation."],
+        "structure_confirming": ["Need liquidity, behavior, and structure to align before execution watch."],
+        "execution_watch": ["Need expansion or continuation confirmation before marking continuation confirmed."],
+        "continuation_confirmed": ["Monitor for sustained hold and target-liquidity continuation."],
+        "narrative_invalidated": ["Narrative invalidated; wait for a fresh draw and reaction-zone sequence."],
+    }
+    missing.extend(phase_missing.get(phase, []))
+
+    return _dedupe_text(missing)
+
+
+def derive_narrative_scanner_state(record: dict) -> dict:
+    liquidity_draw = record.get("liquidity_draw") or {}
+    primary_draw = liquidity_draw.get("primary_draw") or {}
+    behavior = record.get("behavior_classification") or {}
+
+    reaction_zone_status = _reaction_zone_status(record)
+    behavior_confirmation = _behavior_confirmation_state(record)
+    liquidity_draw_alignment = _liquidity_draw_alignment_state(record)
+    behavior_classification = str(behavior.get("classification") or "unknown").lower()
+    behavior_confidence = str(behavior.get("confidence") or "low").lower()
+    structure_confirmation = _structure_confirmation_state(record)
+    has_draw = bool(primary_draw.get("label") or primary_draw.get("key"))
+    has_reaction_zone = reaction_zone_status in {"mapped", "nearby", "interacting"}
+    has_behavior = behavior_confirmation != "none" or behavior_classification in {
+        "acceptance",
+        "rejection",
+        "reclaim",
+        "sweep",
+        "displacement",
+        "bullish_continuation_compression",
+        "bullish_continuation_expansion",
+    }
+    has_meaningful_behavior = _has_meaningful_behavior_confirmation(record)
+    has_structure = _has_structure_confirmation(record)
+    has_alignment = liquidity_draw_alignment == "aligned"
+
+    phase = "no_clear_narrative"
+    if _has_invalidation_evidence(record):
+        phase = "narrative_invalidated"
+    elif _has_continuation_confirmation(record):
+        phase = "continuation_confirmed"
+    elif has_meaningful_behavior and has_structure and has_alignment:
+        phase = "execution_watch"
+    elif has_behavior and has_structure:
+        phase = "structure_confirming"
+    elif has_behavior:
+        phase = "behavior_forming"
+    elif reaction_zone_status == "interacting":
+        phase = "interacting_with_reaction_zone"
+    elif reaction_zone_status in {"mapped", "nearby"} and has_draw:
+        phase = "approaching_reaction_zone"
+    elif has_draw:
+        phase = "draw_identified"
+
+    confidence = "low"
+    if phase in {"continuation_confirmed", "execution_watch"}:
+        confidence = "high" if behavior_confidence == "high" and has_alignment else "medium"
+    elif phase in {"behavior_forming", "structure_confirming"}:
+        confidence = "medium" if behavior_confidence in {"medium", "high"} else "low"
+    elif phase in {"draw_identified", "approaching_reaction_zone", "interacting_with_reaction_zone"}:
+        confidence = str(liquidity_draw.get("confidence") or "low").lower()
+    elif phase == "narrative_invalidated":
+        confidence = "medium"
+
+    zone_details = _reaction_zone_details(record, reaction_zone_status)
+    behavior_inside_zone = (
+        behavior_confirmation
+        if behavior_confirmation != "none"
+        else (behavior_classification if behavior_classification != "unknown" else "none")
+    )
+    execution_readiness_by_phase = {
+        "no_clear_narrative": "not_ready",
+        "draw_identified": "not_ready",
+        "approaching_reaction_zone": "watch",
+        "interacting_with_reaction_zone": "watch",
+        "behavior_forming": "forming",
+        "structure_confirming": "forming",
+        "execution_watch": "ready_for_review",
+        "continuation_confirmed": "confirmed",
+        "narrative_invalidated": "invalidated",
+    }
+
+    narrative = {
+        "liquidity_draw": _format_narrative_draw(primary_draw),
+        "liquidity_draw_direction": primary_draw.get("side") or "unclear",
+        **zone_details,
+        "behavior_inside_zone": behavior_inside_zone,
+        "structure_confirmation": structure_confirmation,
+        "execution_readiness": execution_readiness_by_phase.get(phase, "not_ready"),
+        "target_liquidity": _format_narrative_draw(primary_draw),
+        "invalidation_context": (
+            "Invalidation evidence detected in behavior context."
+            if phase == "narrative_invalidated"
+            else "No invalidation evidence detected."
+        ),
+        "narrative_phase": phase,
+        "narrative_confidence": confidence if confidence in {"low", "medium", "high"} else "low",
+        "missing_confirmations": _narrative_missing_confirmations(record, phase),
+        "does_not_generate_trade_signals": True,
+    }
+
+    return narrative
+
+
+def normalize_narrative_scanner_state(record: dict) -> dict:
+    narrative = record.get("narrative") or {}
+
+    if not isinstance(narrative, dict):
+        narrative = {}
+
+    defaults = {
+        "liquidity_draw": "None identified",
+        "liquidity_draw_direction": "unclear",
+        "htf_reaction_zone": "Unclear",
+        "reaction_zone_timeframe": "unclear",
+        "reaction_zone_type": "reaction_zone",
+        "reaction_zone_status": record.get("reaction_zone_status") or "unclear",
+        "behavior_inside_zone": record.get("behavior_confirmation") or "none",
+        "structure_confirmation": "5M unclear",
+        "execution_readiness": "not_ready",
+        "target_liquidity": "None identified",
+        "invalidation_context": "No invalidation evidence detected.",
+        "narrative_phase": record.get("narrative_phase") or record.get("narrative_state") or "no_clear_narrative",
+        "narrative_confidence": "low",
+        "missing_confirmations": [],
+        "does_not_generate_trade_signals": True,
+    }
+    defaults.update(narrative)
+
+    if defaults["narrative_phase"] not in NARRATIVE_PHASES:
+        defaults["narrative_phase"] = "no_clear_narrative"
+
+    if not isinstance(defaults.get("missing_confirmations"), list):
+        defaults["missing_confirmations"] = [str(defaults.get("missing_confirmations"))]
+
+    record["narrative"] = defaults
+    record["narrative_phase"] = defaults["narrative_phase"]
+    record["narrative_confidence"] = defaults["narrative_confidence"]
+    record.setdefault("narrative_state", defaults["narrative_phase"])
+    return record
+
+
+def format_narrative_scanner_section(narrative: dict) -> str:
+    missing = narrative.get("missing_confirmations") or ["No missing confirmations recorded."]
+    lines = [
+        "## Narrative Scanner",
+        f"Narrative Phase: {str(narrative.get('narrative_phase') or 'no_clear_narrative').replace('_', ' ')}",
+        f"Liquidity Draw: {narrative.get('liquidity_draw') or 'None identified'}",
+        f"Liquidity Draw Direction: {narrative.get('liquidity_draw_direction') or 'unclear'}",
+        f"Reaction Zone: {narrative.get('htf_reaction_zone') or 'Unclear'}",
+        f"Reaction Zone Timeframe: {narrative.get('reaction_zone_timeframe') or 'unclear'}",
+        f"Reaction Zone Type: {narrative.get('reaction_zone_type') or 'reaction zone'}",
+        f"Reaction Zone Status: {str(narrative.get('reaction_zone_status') or 'unclear').replace('_', ' ')}",
+        f"Behavior: {str(narrative.get('behavior_inside_zone') or 'none').replace('_', ' ')}",
+        f"Structure Confirmation: {narrative.get('structure_confirmation') or '5M unclear'}",
+        f"Execution Readiness: {str(narrative.get('execution_readiness') or 'not_ready').replace('_', ' ')}",
+        f"Target Liquidity: {narrative.get('target_liquidity') or 'None identified'}",
+        f"Invalidation Context: {narrative.get('invalidation_context') or 'No invalidation evidence detected.'}",
+        f"Narrative Confidence: {str(narrative.get('narrative_confidence') or 'low').capitalize()}",
+        "",
+        "Missing Confirmations:",
+    ]
+    lines.extend(f"- {item}" for item in missing)
+    return "\n".join(lines)
+
+
+def attach_narrative_scanner_state(record: dict) -> None:
+    narrative = derive_narrative_scanner_state(record)
+    record["narrative"] = narrative
+    record["narrative_phase"] = narrative["narrative_phase"]
+    record["narrative_confidence"] = narrative["narrative_confidence"]
+    record["narrative_state"] = narrative["narrative_phase"]
+    record["message"] = (
+        (record.get("message") or "")
+        + "\n\n"
+        + format_narrative_scanner_section(narrative)
+    ).strip()
+
+
+# -------------------------
 # Scanner signal tiering
 # -------------------------
 def _signal_level_rank(level: str) -> int:
@@ -2733,6 +3055,11 @@ def _reaction_zone_status(record: dict) -> str:
 
 
 def _narrative_state(record: dict) -> str:
+    narrative = record.get("narrative") or {}
+    narrative_phase = narrative.get("narrative_phase") or record.get("narrative_phase")
+    if narrative_phase in NARRATIVE_PHASES:
+        return narrative_phase
+
     opportunity = record.get("opportunity_watch") or {}
     opportunity_type = str(opportunity.get("opportunity_type") or "no_opportunity")
     behavior = record.get("behavior_classification") or {}
@@ -2807,7 +3134,9 @@ def evaluate_scanner_signal(record: dict, previous_scan: dict | None = None, now
     reaction_zone_status = _reaction_zone_status(record)
     behavior_confirmation = _behavior_confirmation_state(record)
     liquidity_draw_alignment = _liquidity_draw_alignment_state(record)
-    narrative_state = _narrative_state(record)
+    narrative = record.get("narrative") or derive_narrative_scanner_state(record)
+    narrative_state = str(narrative.get("narrative_phase") or _narrative_state(record))
+    narrative_confidence = str(narrative.get("narrative_confidence") or "low").lower()
     behavior = record.get("behavior_classification") or {}
     behavior_classification = str(behavior.get("classification") or "unknown").lower()
     behavior_confidence = str(behavior.get("confidence") or "low").lower()
@@ -2821,6 +3150,21 @@ def evaluate_scanner_signal(record: dict, previous_scan: dict | None = None, now
     level = "informational"
     reasons.append("Normal Liquidity Narrative Continuation scan update.")
 
+    phase_signal_floor = {
+        "no_clear_narrative": "informational",
+        "draw_identified": "informational",
+        "approaching_reaction_zone": "watch",
+        "interacting_with_reaction_zone": "watch",
+        "behavior_forming": "review",
+        "structure_confirming": "review",
+        "execution_watch": "alert" if narrative_confidence == "high" else "review",
+        "continuation_confirmed": "alert",
+        "narrative_invalidated": "review",
+    }
+    phase_floor = phase_signal_floor.get(narrative_state, "informational")
+    level = max(level, phase_floor, key=_signal_level_rank)
+    reasons.append(f"Narrative phase is {narrative_state.replace('_', ' ')}.")
+
     if reaction_zone_status in {"mapped", "nearby"} or liquidity_draw_alignment in {"aligned", "weakly_aligned"}:
         level = "watch"
         reasons.append("Price is approaching important liquidity or an FVG reaction zone; no confirmation yet.")
@@ -2832,7 +3176,7 @@ def evaluate_scanner_signal(record: dict, previous_scan: dict | None = None, now
         )
 
     if behavior_confirmation.startswith("forming_"):
-        level = "watch"
+        level = max(level, "watch", key=_signal_level_rank)
         reasons.append(f"Behavior is forming but not confirmed: {behavior_confirmation.removeprefix('forming_')}.")
 
     if meaningful_behavior or behavior_confirmation == "continuation_compression":
@@ -2861,7 +3205,13 @@ def evaluate_scanner_signal(record: dict, previous_scan: dict | None = None, now
         reasons.append("Market state changed, but meaningful behavior confirmation is still required for review/alert.")
 
     if behavior_classification in {"consolidation", "unknown"} and not meaningful_behavior:
-        level = min(level, "watch", key=_signal_level_rank)
+        if narrative_state in {
+            "no_clear_narrative",
+            "draw_identified",
+            "approaching_reaction_zone",
+            "interacting_with_reaction_zone",
+        }:
+            level = min(level, "watch", key=_signal_level_rank)
         reasons.append(f"Behavior is {behavior_classification}; FVG contact alone is not alert-worthy.")
 
     repeat_suppressed = _repeat_suppressed(previous_scan, record, now)
@@ -3379,6 +3729,7 @@ def _process_is_running(process_id: int | None) -> bool:
 def write_scanner_runtime_status(
     *,
     scanner_enabled: bool,
+    symbol: str | None = None,
     timeframe: str = SCAN_TIMEFRAME,
     running_scan: bool = False,
     last_scan_timestamp: str | None = None,
@@ -3386,6 +3737,7 @@ def write_scanner_runtime_status(
 ) -> None:
     now = datetime.now(TIMEZONE)
     sessions = get_active_sessions(now)
+    symbol = normalize_scanner_symbol(symbol or get_default_scanner_symbol())
 
     status = {
         "scanner_enabled": scanner_enabled,
@@ -3394,7 +3746,7 @@ def write_scanner_runtime_status(
         "heartbeat_timestamp": now.isoformat(),
         "timestamp": now.isoformat(),
         "timezone": "America/Denver",
-        "symbol": SYMBOL,
+        "symbol": symbol,
         "timeframe": timeframe,
         "active_sessions": sessions,
         "should_scan_now": should_scan_now(now),
@@ -3413,7 +3765,8 @@ def write_scanner_runtime_status(
 def get_scanner_runtime_status() -> dict:
     now = datetime.now(TIMEZONE)
     sessions = get_active_sessions(now)
-    latest_scan = load_latest_scan()
+    symbol = get_default_scanner_symbol()
+    latest_scan = load_latest_scan(symbol=symbol)
 
     runtime_status = {}
 
@@ -3432,7 +3785,8 @@ def get_scanner_runtime_status() -> dict:
 
     return {
         "success": True,
-        "symbol": SYMBOL,
+        "symbol": symbol,
+        "default_symbol": symbol,
         "timestamp": now.isoformat(),
         "timezone": "America/Denver",
         "scanner_enabled": scanner_enabled,
@@ -3703,16 +4057,18 @@ def build_scan_record(
     result: dict,
     now: datetime,
     sessions: list[str],
+    symbol: str = SYMBOL,
     comparison: dict | None = None,
     alert: dict | None = None,
 ) -> dict:
+    symbol = normalize_scanner_symbol(symbol)
     visual_extraction = result.get("visual_extraction", {}) or {}
     csv_analysis = result.get("csv_analysis", {}) or {}
 
     record = {
         "timestamp": now.isoformat(),
         "timezone": "America/Denver",
-        "symbol": SYMBOL,
+        "symbol": symbol,
         "timeframe": result.get("timeframe"),
         "sessions": sessions,
         "session_label": " + ".join(sessions),
@@ -3749,6 +4105,25 @@ def build_scan_record(
         "signal_level": "informational",
         "signal_reason": "Normal Liquidity Narrative Continuation scan update.",
         "narrative_state": "no_clear_narrative",
+        "narrative_phase": "no_clear_narrative",
+        "narrative_confidence": "low",
+        "narrative": {
+            "liquidity_draw": "None identified",
+            "liquidity_draw_direction": "unclear",
+            "htf_reaction_zone": "Unclear",
+            "reaction_zone_timeframe": "unclear",
+            "reaction_zone_type": "reaction_zone",
+            "reaction_zone_status": "unclear",
+            "behavior_inside_zone": "none",
+            "structure_confirmation": "5M unclear",
+            "execution_readiness": "not_ready",
+            "target_liquidity": "None identified",
+            "invalidation_context": "No invalidation evidence detected.",
+            "narrative_phase": "no_clear_narrative",
+            "narrative_confidence": "low",
+            "missing_confirmations": [],
+            "does_not_generate_trade_signals": True,
+        },
         "reaction_zone_status": "unclear",
         "behavior_confirmation": "none",
         "liquidity_draw_alignment": "unclear",
@@ -3777,10 +4152,11 @@ def build_scan_record(
 # -------------------------
 # Scan history lookup
 # -------------------------
-def load_latest_scan() -> dict | None:
+def load_latest_scan(symbol: str | None = None) -> dict | None:
     if not SCAN_HISTORY_PATH.exists():
         return None
 
+    symbol = normalize_scanner_symbol(symbol or get_default_scanner_symbol())
     latest = None
 
     with SCAN_HISTORY_PATH.open("r", encoding="utf-8") as f:
@@ -3790,18 +4166,22 @@ def load_latest_scan() -> dict | None:
             except json.JSONDecodeError:
                 continue
 
-            if record.get("symbol") != SYMBOL:
+            if record.get("symbol") != symbol:
                 continue
 
-            latest = record
+            latest = normalize_narrative_scanner_state(record)
 
     return latest
 
 
-def load_last_successful_scan(current_timestamp: str | None = None) -> dict | None:
+def load_last_successful_scan(
+    current_timestamp: str | None = None,
+    symbol: str | None = None,
+) -> dict | None:
     if not SCAN_HISTORY_PATH.exists():
         return None
 
+    symbol = normalize_scanner_symbol(symbol or get_default_scanner_symbol())
     last_scan = None
 
     with SCAN_HISTORY_PATH.open("r", encoding="utf-8") as f:
@@ -3814,7 +4194,7 @@ def load_last_successful_scan(current_timestamp: str | None = None) -> dict | No
             if current_timestamp and record.get("timestamp") == current_timestamp:
                 continue
 
-            if record.get("symbol") != SYMBOL:
+            if record.get("symbol") != symbol:
                 continue
 
             if not record.get("success"):
@@ -3823,7 +4203,7 @@ def load_last_successful_scan(current_timestamp: str | None = None) -> dict | No
             if not record.get("csv_success"):
                 continue
 
-            last_scan = record
+            last_scan = normalize_narrative_scanner_state(record)
 
     return last_scan
 
@@ -3901,9 +4281,11 @@ def run_scan(
     update_runtime_status: bool = False,
     timeframe: str = SCAN_TIMEFRAME,
     multi_timeframe: bool = False,
+    symbol: str | None = None,
 ) -> dict | None:
     now = datetime.now(TIMEZONE)
     sessions = get_active_sessions(now)
+    scan_symbol = normalize_scanner_symbol(symbol or get_default_scanner_symbol())
     timeframe = timeframe.upper()
     primary_timeframe = SCAN_TIMEFRAME if multi_timeframe else timeframe
     status_timeframe = scheduled_timeframe_label() if multi_timeframe else primary_timeframe
@@ -3915,30 +4297,32 @@ def run_scan(
     session_label = " + ".join(sessions) if sessions else "Forced Scan"
     screenshot_cleanup = _default_screenshot_cleanup_result()
 
-    print(f"[{now.isoformat()}] Running {SYMBOL} {status_timeframe} scan during: {session_label}")
+    print(f"[{now.isoformat()}] Running {scan_symbol} {status_timeframe} scan during: {session_label}")
 
     try:
         if update_runtime_status:
             write_scanner_runtime_status(
                 scanner_enabled=True,
+                symbol=scan_symbol,
                 timeframe=status_timeframe,
                 running_scan=True,
             )
 
-        screenshot_cleanup = cleanup_scan_screenshots()
+        screenshot_cleanup = cleanup_scan_screenshots(symbol=scan_symbol)
         print("Screenshot cleanup mode:", screenshot_cleanup.get("mode"))
         print("Screenshot cleanup deleted:", screenshot_cleanup.get("deleted_count", 0))
         for error in screenshot_cleanup.get("errors", []):
             print("Screenshot cleanup error:", error)
 
         result = analyze_tradingview(
-            symbol=SYMBOL,
+            symbol=scan_symbol,
             timeframe=primary_timeframe,
-            prompt=f"Scheduled {SYMBOL} scan during {session_label}. Analyze with marked levels.",
+            prompt=f"Scheduled {scan_symbol} scan during {session_label}. Analyze with marked levels.",
         )
 
         if multi_timeframe:
             timeframe_captures = collect_scheduled_timeframe_captures(
+                symbol=scan_symbol,
                 primary_timeframe=primary_timeframe,
                 primary_result=result,
                 session_label=session_label,
@@ -3951,12 +4335,13 @@ def run_scan(
         if multi_timeframe:
             attach_timeframe_screenshots_section(result, timeframe_captures)
 
-        previous_scan = load_last_successful_scan()
+        previous_scan = load_last_successful_scan(symbol=scan_symbol)
 
         temporary_record = build_scan_record(
             result=result,
             now=now,
             sessions=sessions if sessions else ["Forced Scan"],
+            symbol=scan_symbol,
         )
 
         comparison = compare_structured_states(previous_scan, temporary_record)
@@ -3968,6 +4353,7 @@ def run_scan(
             result=result,
             now=now,
             sessions=sessions if sessions else ["Forced Scan"],
+            symbol=scan_symbol,
             comparison=comparison,
             alert=alert,
         )
@@ -3975,6 +4361,7 @@ def run_scan(
         attach_liquidity_draw(record)
         attach_behavior_classification(record)
         attach_opportunity_watch(record)
+        attach_narrative_scanner_state(record)
         attach_scanner_signal(record, previous_scan=previous_scan, now=now)
         attach_alert_eligibility(record)
         attach_presence_notification_eligibility(record)
@@ -3986,6 +4373,7 @@ def run_scan(
         if update_runtime_status:
             write_scanner_runtime_status(
                 scanner_enabled=True,
+                symbol=scan_symbol,
                 timeframe=status_timeframe,
                 running_scan=False,
                 last_scan_timestamp=record.get("timestamp"),
@@ -4047,7 +4435,7 @@ def run_scan(
         error_record = {
             "timestamp": now.isoformat(),
             "timezone": "America/Denver",
-            "symbol": SYMBOL,
+            "symbol": scan_symbol,
             "timeframe": primary_timeframe,
             "timeframe_captures": {},
             "sessions": sessions if sessions else ["Forced Scan"],
@@ -4059,12 +4447,31 @@ def run_scan(
                 "should_notify": False,
                 "reasons": ["Scan failed before alert eligibility could be evaluated."],
                 "blockers": [str(e)],
-                "what_to_watch_next": ["Fix the scan failure, then rerun MES chart review."],
+                "what_to_watch_next": [f"Fix the scan failure, then rerun {scan_symbol} chart review."],
                 "does_not_generate_trade_signals": True,
             },
             "signal_level": "informational",
             "signal_reason": "Scan failed before scanner signal could be evaluated.",
             "narrative_state": "scan_failed",
+            "narrative_phase": "no_clear_narrative",
+            "narrative_confidence": "low",
+            "narrative": {
+                "liquidity_draw": "None identified",
+                "liquidity_draw_direction": "unclear",
+                "htf_reaction_zone": "Unclear",
+                "reaction_zone_timeframe": "unclear",
+                "reaction_zone_type": "reaction_zone",
+                "reaction_zone_status": "unclear",
+                "behavior_inside_zone": "none",
+                "structure_confirmation": "5M unclear",
+                "execution_readiness": "not_ready",
+                "target_liquidity": "None identified",
+                "invalidation_context": "Scan failed before narrative state could be evaluated.",
+                "narrative_phase": "no_clear_narrative",
+                "narrative_confidence": "low",
+                "missing_confirmations": [f"Fix the scan failure, then rerun {scan_symbol} chart review."],
+                "does_not_generate_trade_signals": True,
+            },
             "reaction_zone_status": "unclear",
             "behavior_confirmation": "none",
             "liquidity_draw_alignment": "unclear",
@@ -4091,6 +4498,7 @@ def run_scan(
         if update_runtime_status:
             write_scanner_runtime_status(
                 scanner_enabled=True,
+                symbol=scan_symbol,
                 timeframe=status_timeframe,
                 running_scan=False,
                 last_scan_timestamp=error_record.get("timestamp"),
@@ -4103,9 +4511,10 @@ def run_scan(
 
 def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
     timeframe = SCAN_TIMEFRAME
+    initial_symbol = get_default_scanner_symbol()
 
     print("Scheduled scanner started.")
-    print(f"Symbol: {SYMBOL}")
+    print(f"Default symbol: {initial_symbol}")
     print(f"Timeframes: {scheduled_timeframe_label()}")
     print(f"Primary analysis timeframe: {timeframe}")
     print(f"Interval: {SCAN_INTERVAL_SECONDS // 60} minutes")
@@ -4113,9 +4522,10 @@ def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
     print("Press CTRL+C to stop.")
     print()
 
-    latest_scan = load_latest_scan()
+    latest_scan = load_latest_scan(symbol=initial_symbol)
     write_scanner_runtime_status(
         scanner_enabled=True,
+        symbol=initial_symbol,
         timeframe=scheduled_timeframe_label(),
         last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
         latest_scan_success=latest_scan.get("success") if latest_scan else None,
@@ -4123,15 +4533,18 @@ def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
 
     try:
         while True:
+            loop_symbol = get_default_scanner_symbol()
             run_scan(
                 force=False,
                 update_runtime_status=True,
                 timeframe=timeframe,
                 multi_timeframe=True,
+                symbol=loop_symbol,
             )
-            latest_scan = load_latest_scan()
+            latest_scan = load_latest_scan(symbol=loop_symbol)
             write_scanner_runtime_status(
                 scanner_enabled=True,
+                symbol=loop_symbol,
                 timeframe=scheduled_timeframe_label(),
                 last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
                 latest_scan_success=latest_scan.get("success") if latest_scan else None,
@@ -4140,9 +4553,11 @@ def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
     except KeyboardInterrupt:
         print("Scheduled scanner stopped.")
     finally:
-        latest_scan = load_latest_scan()
+        final_symbol = get_default_scanner_symbol()
+        latest_scan = load_latest_scan(symbol=final_symbol)
         write_scanner_runtime_status(
             scanner_enabled=False,
+            symbol=final_symbol,
             timeframe=scheduled_timeframe_label(),
             last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
             latest_scan_success=latest_scan.get("success") if latest_scan else None,
@@ -4153,7 +4568,7 @@ def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
 # CLI entrypoint
 # -------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Scheduled MES chart scanner.")
+    parser = argparse.ArgumentParser(description="Scheduled futures chart scanner.")
     parser.add_argument(
         "--once",
         action="store_true",
@@ -4172,12 +4587,17 @@ if __name__ == "__main__":
             f"Scheduled scans always collect {scheduled_timeframe_label()} with {SCAN_TIMEFRAME} primary analysis."
         ),
     )
+    parser.add_argument(
+        "--symbol",
+        default=None,
+        help="Scanner symbol for this run. Defaults to scanner_settings.json default_symbol.",
+    )
 
     args = parser.parse_args()
 
     if args.force:
-        run_scan(force=True, timeframe=args.timeframe)
+        run_scan(force=True, timeframe=args.timeframe, symbol=args.symbol)
     elif args.once:
-        run_scan(force=False, timeframe=SCAN_TIMEFRAME, multi_timeframe=True)
+        run_scan(force=False, timeframe=SCAN_TIMEFRAME, multi_timeframe=True, symbol=args.symbol)
     else:
         run_loop()

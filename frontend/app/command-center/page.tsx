@@ -51,6 +51,24 @@ type ScanRecord = {
   signal_level?: string;
   signal_reason?: string;
   narrative_state?: string;
+  narrative_phase?: string;
+  narrative_confidence?: string;
+  narrative?: {
+    liquidity_draw?: string;
+    liquidity_draw_direction?: string;
+    htf_reaction_zone?: string;
+    reaction_zone_timeframe?: string;
+    reaction_zone_type?: string;
+    reaction_zone_status?: string;
+    behavior_inside_zone?: string;
+    structure_confirmation?: string;
+    execution_readiness?: string;
+    target_liquidity?: string;
+    invalidation_context?: string;
+    narrative_phase?: string;
+    narrative_confidence?: string;
+    missing_confirmations?: string[];
+  };
   reaction_zone_status?: string;
   behavior_confirmation?: string;
   liquidity_draw_alignment?: string;
@@ -72,6 +90,7 @@ type ScanRecord = {
 
 type ScanStatus = {
   symbol?: string;
+  default_symbol?: string;
   timezone?: string;
   scanner_enabled?: boolean;
   process_running?: boolean;
@@ -83,6 +102,12 @@ type ScanStatus = {
   scan_interval_seconds?: number;
   active_sessions?: string[];
   should_scan_now?: boolean;
+};
+
+type ScannerSettings = {
+  default_symbol: string;
+  supported_symbols: string[];
+  updated_at?: string;
 };
 
 type PresenceMode = {
@@ -187,7 +212,16 @@ function buildCompactScanSummary(record: ScanRecord | null) {
   const execution = record.state?.execution_bias || "unknown";
   const relation = formatLabel(record.state?.price_relation);
   const signal = formatLabel(record.signal_level || "informational");
-  const behavior = formatLabel(record.behavior_confirmation || "none");
+  const phase = formatLabel(
+    record.narrative?.narrative_phase ||
+      record.narrative_phase ||
+      record.narrative_state ||
+      "no_clear_narrative"
+  );
+  const behavior = formatLabel(
+    record.narrative?.behavior_inside_zone || record.behavior_confirmation || "none"
+  );
+  const readiness = formatLabel(record.narrative?.execution_readiness || "not_ready");
   const eligibility = record.alert_eligibility?.should_notify
     ? "eligible"
     : "not notification-worthy";
@@ -195,7 +229,7 @@ function buildCompactScanSummary(record: ScanRecord | null) {
     ? "presence allows"
     : "presence blocks";
 
-  return `Signal ${signal}. HTF ${htf}, execution ${execution}. Price relation: ${relation}. Behavior: ${behavior}. Alert eligibility: ${eligibility}; ${presence}.`;
+  return `Signal ${signal}. Phase ${phase}. HTF ${htf}, execution ${execution}. Price relation: ${relation}. Behavior: ${behavior}. Readiness: ${readiness}. Alert eligibility: ${eligibility}; ${presence}.`;
 }
 
 export default function Home() {
@@ -213,6 +247,8 @@ export default function Home() {
   const [latestScan, setLatestScan] = useState<ScanRecord | null>(null);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
   const [scanStatusError, setScanStatusError] = useState(false);
+  const [scannerSettings, setScannerSettings] = useState<ScannerSettings | null>(null);
+  const [scannerSettingsLoading, setScannerSettingsLoading] = useState(false);
   const [presence, setPresence] = useState<PresenceMode | null>(null);
   const [presenceLoading, setPresenceLoading] = useState(false);
 
@@ -232,6 +268,7 @@ export default function Home() {
     loadHistory();
     loadScanStatus();
     loadLatestScan();
+    loadScannerSettings();
     loadPresence();
   }, []);
 
@@ -279,17 +316,24 @@ export default function Home() {
     const eligibilityBlockers = eligibility?.blockers?.length
       ? eligibility.blockers.map((item) => `- ${item}`).join("\n")
       : "- No alert eligibility blocker available.";
+    const narrative = record.narrative || {};
+    const missingConfirmations = narrative.missing_confirmations?.length
+      ? narrative.missing_confirmations.map((item) => `- ${item}`).join("\n")
+      : "- No missing confirmations recorded.";
 
-    return `## Latest MES Scan
+    return `## Latest ${record.symbol || "MES"} Scan
 
 **Session:** ${record.session_label || "Unknown"}  
 **Time:** ${formatTimestamp(record.timestamp)}  
 **Vision:** ${record.vision_success ? "Success" : "Failed"}  
 **CSV:** ${record.csv_success ? "Success" : "Failed"}  
 **Signal Level:** ${formatLabel(record.signal_level || "informational")}  
-**Narrative State:** ${formatLabel(record.narrative_state || "no_clear_narrative")}  
-**Reaction Zone Status:** ${formatLabel(record.reaction_zone_status || "unclear")}  
-**Behavior Confirmation:** ${formatLabel(record.behavior_confirmation || "none")}  
+**Narrative Phase:** ${formatLabel(narrative.narrative_phase || record.narrative_phase || record.narrative_state || "no_clear_narrative")}
+**Liquidity Draw:** ${narrative.liquidity_draw || "None identified"}
+**Reaction Zone:** ${narrative.htf_reaction_zone || "Unclear"} (${formatLabel(narrative.reaction_zone_status || record.reaction_zone_status || "unclear")})
+**Behavior:** ${formatLabel(narrative.behavior_inside_zone || record.behavior_confirmation || "none")}
+**Structure Confirmation:** ${narrative.structure_confirmation || "5M unclear"}
+**Execution Readiness:** ${formatLabel(narrative.execution_readiness || "not_ready")}
 **Liquidity Draw Alignment:** ${formatLabel(record.liquidity_draw_alignment || "unclear")}  
 **Repeat Suppressed:** ${record.repeat_suppressed ? "Yes" : "No"}  
 **Presence Mode:** ${formatLabel(record.presence_mode || "home")}  
@@ -298,6 +342,9 @@ export default function Home() {
 
 ## Quick Read
 ${buildCompactScanSummary(record)}
+
+## Missing Confirmations
+${missingConfirmations}
 
 ## Market Changes
 ${marketChanges}
@@ -356,6 +403,53 @@ ${record.message || "No scan message returned."}`;
     }
   }
 
+  async function loadScannerSettings() {
+    try {
+      const res = await fetch(`${API_BASE}/scanner/settings`);
+
+      if (!res.ok) {
+        throw new Error("Scanner settings request failed");
+      }
+
+      const data = await res.json();
+      const settings = data.settings || data;
+      setScannerSettings(settings || null);
+      return settings || null;
+    } catch {
+      console.log("Could not load scanner settings.");
+      return null;
+    }
+  }
+
+  async function updateScannerDefaultSymbol(symbol: string) {
+    if (scannerSettingsLoading) return;
+
+    setScannerSettingsLoading(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/scanner/settings`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ default_symbol: symbol }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Scanner settings update failed");
+      }
+
+      const data = await res.json();
+      setScannerSettings(data.settings || data || null);
+      await loadScanStatus();
+      await loadLatestScan();
+    } catch {
+      addAssistantMessage("Could not update scanner default symbol.", true);
+    } finally {
+      setScannerSettingsLoading(false);
+    }
+  }
+
   async function loadPresence() {
     try {
       const res = await fetch(`${API_BASE}/presence`);
@@ -399,13 +493,14 @@ ${record.message || "No scan message returned."}`;
     }
   }
 
-  async function forceScanMES() {
+  async function forceScanDefaultSymbol() {
     if (scanLoading || loading) return;
 
+    const symbol = scannerSettings?.default_symbol || scanStatus?.symbol || "MES";
     const userMessage: Message = {
       id: generateId(),
       role: "user",
-      content: "Force scan MES",
+      content: `Force scan ${symbol}`,
     };
 
     setMessages((prev) => [...prev, userMessage]);
@@ -668,14 +763,33 @@ ${record.message || "No scan message returned."}`;
     : scanStatus?.process_running
     ? "Idle"
     : "Not running";
+  const scannerSymbol =
+    scannerSettings?.default_symbol || scanStatus?.default_symbol || scanStatus?.symbol || "MES";
+  const scannerSupportedSymbols = scannerSettings?.supported_symbols?.length
+    ? scannerSettings.supported_symbols
+    : ["MES", "MNQ", "ES", "NQ"];
 
   const htfBias = latestScan?.state?.htf_bias || "unknown";
   const executionBias = latestScan?.state?.execution_bias || "unknown";
   const priceRelation = formatLabel(latestScan?.state?.price_relation);
   const signalLevel = latestScan?.signal_level || "informational";
-  const narrativeState = formatLabel(latestScan?.narrative_state);
-  const reactionZoneStatus = formatLabel(latestScan?.reaction_zone_status);
-  const behaviorConfirmation = formatLabel(latestScan?.behavior_confirmation);
+  const narrative = latestScan?.narrative;
+  const narrativeState = formatLabel(
+    narrative?.narrative_phase ||
+      latestScan?.narrative_phase ||
+      latestScan?.narrative_state
+  );
+  const liquidityDraw = narrative?.liquidity_draw || "None identified";
+  const reactionZone = narrative?.htf_reaction_zone || "Unclear";
+  const reactionZoneStatus = formatLabel(
+    narrative?.reaction_zone_status || latestScan?.reaction_zone_status
+  );
+  const behaviorConfirmation = formatLabel(
+    narrative?.behavior_inside_zone || latestScan?.behavior_confirmation
+  );
+  const structureConfirmation = narrative?.structure_confirmation || "5M unclear";
+  const executionReadiness = formatLabel(narrative?.execution_readiness || "not_ready");
+  const missingConfirmations = narrative?.missing_confirmations || [];
   const liquidityDrawAlignment = formatLabel(latestScan?.liquidity_draw_alignment);
   const alertEligibilityLevel = latestScan?.alert_eligibility?.level || "none";
   const alertEligibilityNotify = latestScan?.alert_eligibility?.should_notify || false;
@@ -881,7 +995,7 @@ ${record.message || "No scan message returned."}`;
             <div className="mb-3 flex items-center justify-between">
               <div>
                 <h2 className="text-sm font-semibold text-blue-100">
-                  MES Scanner
+                  {scannerSymbol} Scanner
                 </h2>
                 <p className="text-xs text-blue-200/70">{scannerSubtitle}</p>
               </div>
@@ -950,6 +1064,31 @@ ${record.message || "No scan message returned."}`;
               </div>
             )}
 
+            <div className="mb-3">
+              <p className="mb-2 text-xs text-blue-200/70">Default symbol</p>
+              <div className="grid grid-cols-4 gap-2">
+                {scannerSupportedSymbols.map((symbol) => {
+                  const active = symbol === scannerSymbol;
+
+                  return (
+                    <button
+                      key={symbol}
+                      type="button"
+                      onClick={() => updateScannerDefaultSymbol(symbol)}
+                      disabled={scannerSettingsLoading}
+                      className={`rounded-lg border px-2 py-2 text-xs font-semibold transition ${
+                        active
+                          ? "border-blue-400/40 bg-blue-500/20 text-blue-100"
+                          : "border-white/10 bg-neutral-950/70 text-neutral-300 hover:bg-white/10"
+                      } disabled:cursor-not-allowed disabled:opacity-50`}
+                    >
+                      {symbol}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             <div className="mb-3 rounded-xl bg-neutral-950/70 p-3 text-xs">
               <p className="text-neutral-500">Active sessions</p>
               <p className="mt-1 font-semibold text-neutral-100">
@@ -959,11 +1098,11 @@ ${record.message || "No scan message returned."}`;
 
             <div className="grid grid-cols-2 gap-2">
               <button
-                onClick={forceScanMES}
+                onClick={forceScanDefaultSymbol}
                 disabled={scanLoading || loading}
                 className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {scanLoading ? "Scanning..." : "Scan MES"}
+                {scanLoading ? "Scanning..." : `Scan ${scannerSymbol}`}
               </button>
 
               <button
@@ -974,7 +1113,7 @@ ${record.message || "No scan message returned."}`;
                     addAssistantMessage(formatScanSummary(record));
                   } else {
                     addAssistantMessage(
-                      "No latest scan found yet. Run Scan MES first.",
+                      `No latest ${scannerSymbol} scan found yet. Run Scan ${scannerSymbol} first.`,
                       true
                     );
                   }
@@ -1043,17 +1182,25 @@ ${record.message || "No scan message returned."}`;
 
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div className="rounded-xl bg-neutral-950 p-3">
-                    <p className="text-neutral-500">Narrative</p>
+                    <p className="text-neutral-500">Narrative Phase</p>
                     <p className="mt-2 font-semibold text-neutral-200">
                       {narrativeState}
                     </p>
                   </div>
 
                   <div className="rounded-xl bg-neutral-950 p-3">
-                    <p className="text-neutral-500">Reaction zone</p>
+                    <p className="text-neutral-500">Liquidity Draw</p>
                     <p className="mt-2 font-semibold text-neutral-200">
-                      {reactionZoneStatus}
+                      {liquidityDraw}
                     </p>
+                  </div>
+
+                  <div className="rounded-xl bg-neutral-950 p-3">
+                    <p className="text-neutral-500">Reaction Zone</p>
+                    <p className="mt-2 font-semibold text-neutral-200">
+                      {reactionZone}
+                    </p>
+                    <p className="mt-1 text-neutral-500">{reactionZoneStatus}</p>
                   </div>
 
                   <div className="rounded-xl bg-neutral-950 p-3">
@@ -1064,11 +1211,40 @@ ${record.message || "No scan message returned."}`;
                   </div>
 
                   <div className="rounded-xl bg-neutral-950 p-3">
-                    <p className="text-neutral-500">Liquidity alignment</p>
+                    <p className="text-neutral-500">Structure Confirmation</p>
+                    <p className="mt-2 font-semibold text-neutral-200">
+                      {structureConfirmation}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl bg-neutral-950 p-3">
+                    <p className="text-neutral-500">Execution Readiness</p>
+                    <p className="mt-2 font-semibold text-neutral-200">
+                      {executionReadiness}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl bg-neutral-950 p-3">
+                    <p className="text-neutral-500">Liquidity Alignment</p>
                     <p className="mt-2 font-semibold text-neutral-200">
                       {liquidityDrawAlignment}
                     </p>
                   </div>
+                </div>
+
+                <div className="rounded-xl bg-neutral-950 p-3 text-xs">
+                  <p className="mb-1 text-neutral-500">Missing Confirmations</p>
+                  {missingConfirmations.length ? (
+                    <ul className="list-disc space-y-1 pl-5 text-neutral-300">
+                      {missingConfirmations.slice(0, 4).map((item, index) => (
+                        <li key={`${item}-${index}`}>{item}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-neutral-300">
+                      No missing confirmations recorded.
+                    </p>
+                  )}
                 </div>
 
                 <div className="rounded-xl bg-neutral-950 p-3 text-xs">
@@ -1107,7 +1283,7 @@ ${record.message || "No scan message returned."}`;
               </div>
             ) : (
               <p className="text-sm text-neutral-400">
-                No scan loaded yet. Run Scan MES.
+                No scan loaded yet. Run Scan {scannerSymbol}.
               </p>
             )}
           </section>
