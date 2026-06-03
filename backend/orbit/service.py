@@ -101,6 +101,7 @@ ORBIT_INBOX_GOAL_TITLE = "Inbox"
 MILESTONE_PROGRESS_SOURCES = {"manual", "task_advisory", "helix_tool", "system"}
 ORBIT_LOCAL_TIMEZONE = ZoneInfo("America/Denver")
 STRATEGIC_GAP_RECENT_ACTIVITY_DAYS = 7
+MAJOR_EVENT_ACTIVITY_DAYS = 7
 STRATEGIC_GAP_RECOMMENDATION_PREFIX = "strategic-gap-"
 
 
@@ -248,11 +249,13 @@ def _list_records_ordered(table: str, order_by: str) -> list[dict[str, Any]]:
 
 
 def create_major_event(payload: MajorEventCreate) -> dict[str, Any]:
-    return _create_record("major_events", _model_data(payload))
+    return _with_calculated_major_event_progress(
+        _create_record("major_events", _model_data(payload)),
+    )
 
 
 def list_major_events() -> list[dict[str, Any]]:
-    return _list_records_ordered(
+    records = _list_records_ordered(
         "major_events",
         """
         CASE status
@@ -265,15 +268,130 @@ def list_major_events() -> list[dict[str, Any]]:
         id
         """,
     )
+    return [_with_calculated_major_event_progress(record) for record in records]
+
+
+def get_major_event(record_id: int) -> dict[str, Any] | None:
+    record = get_record("major_events", record_id)
+    if record is None:
+        return None
+    return _with_calculated_major_event_progress(record)
 
 
 def update_major_event(record_id: int, payload: MajorEventUpdate) -> dict[str, Any] | None:
-    return _update_record("major_events", record_id, _model_data(payload, exclude_unset=True))
+    record = _update_record("major_events", record_id, _model_data(payload, exclude_unset=True))
+    if record is None:
+        return None
+    return _with_calculated_major_event_progress(record)
 
 
 def archive_major_event(record_id: int) -> dict[str, Any] | None:
     payload = MajorEventUpdate(status="archived")
     return update_major_event(record_id, payload)
+
+
+def calculate_major_event_progress(major_event_id: int) -> int:
+    init_orbit_db()
+
+    cutoff = datetime.now(ORBIT_LOCAL_TIMEZONE).date()
+    cutoff = cutoff.fromordinal(cutoff.toordinal() - MAJOR_EVENT_ACTIVITY_DAYS)
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id, progress_percent FROM milestones WHERE major_event_id = ?",
+        (major_event_id,),
+    )
+    milestones = [dict(row) for row in cursor.fetchall()]
+    milestone_ids = [int(milestone["id"]) for milestone in milestones]
+
+    cursor.execute(
+        "SELECT current_score FROM readiness_categories WHERE major_event_id = ?",
+        (major_event_id,),
+    )
+    readiness = [dict(row) for row in cursor.fetchall()]
+
+    milestone_average = (
+        sum(int(milestone.get("progress_percent") or 0) for milestone in milestones)
+        / len(milestones)
+        if milestones
+        else 0
+    )
+    readiness_average = (
+        sum(int(category.get("current_score") or 0) for category in readiness)
+        / len(readiness)
+        if readiness
+        else 0
+    )
+
+    recent_activity_exists = False
+    if milestone_ids:
+        milestone_placeholders = ", ".join("?" for _ in milestone_ids)
+        cursor.execute(
+            f"""
+            SELECT tasks.completed_at
+            FROM tasks
+            JOIN task_milestone_links ON task_milestone_links.task_id = tasks.id
+            WHERE task_milestone_links.milestone_id IN ({milestone_placeholders})
+                AND tasks.completed_at IS NOT NULL
+            """,
+            milestone_ids,
+        )
+        recent_activity_exists = any(
+            _date_is_on_or_after(row["completed_at"], cutoff)
+            for row in cursor.fetchall()
+        )
+
+        if not recent_activity_exists:
+            cursor.execute(
+                f"""
+                SELECT milestone_progress_history.created_at
+                FROM milestone_progress_history
+                WHERE milestone_id IN ({milestone_placeholders})
+                """,
+                milestone_ids,
+            )
+            recent_activity_exists = any(
+                _date_is_on_or_after(row["created_at"], cutoff)
+                for row in cursor.fetchall()
+            )
+
+    has_event_evidence = bool(milestones or readiness)
+    if has_event_evidence and not recent_activity_exists:
+        cursor.execute("SELECT created_at FROM reviews")
+        recent_activity_exists = any(
+            _date_is_on_or_after(row["created_at"], cutoff)
+            for row in cursor.fetchall()
+        )
+
+    if has_event_evidence and not recent_activity_exists:
+        cursor.execute("SELECT session_date FROM trade_sessions")
+        recent_activity_exists = any(
+            _date_is_on_or_after(row["session_date"], cutoff)
+            for row in cursor.fetchall()
+        )
+
+    conn.close()
+
+    activity_score = 100 if recent_activity_exists else 0
+    return round(
+        (milestone_average * 0.5)
+        + (readiness_average * 0.4)
+        + (activity_score * 0.1),
+    )
+
+
+def _with_calculated_major_event_progress(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **record,
+        "calculated_progress_percent": calculate_major_event_progress(int(record["id"])),
+    }
+
+
+def _date_is_on_or_after(value: str | None, cutoff: date) -> bool:
+    parsed = _parse_date(value)
+    return parsed is not None and parsed >= cutoff
 
 
 def create_milestone(payload: MilestoneCreate) -> dict[str, Any]:

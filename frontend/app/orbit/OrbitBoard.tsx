@@ -18,6 +18,7 @@ export type MajorEvent = {
   target_date: string | null;
   status: MajorEventStatus;
   progress_percent: number;
+  calculated_progress_percent?: number | null;
 };
 
 export type Milestone = {
@@ -517,6 +518,10 @@ function getPrimaryMajorEvent(events: MajorEvent[]) {
   );
 }
 
+function getMajorEventProgress(event: MajorEvent | undefined) {
+  return event?.calculated_progress_percent ?? event?.progress_percent ?? 0;
+}
+
 function getExcerpt(value: string | null | undefined, limit = 160) {
   if (!value) {
     return "";
@@ -836,7 +841,7 @@ export default function OrbitBoard({
     [eventReadiness],
   );
   const daysRemaining = getDaysRemaining(event?.target_date ?? null);
-  const progressPercentage = event?.progress_percent ?? 0;
+  const progressPercentage = getMajorEventProgress(event);
   const overallReadiness = getOverallReadiness(eventReadiness);
   const priorityTasks = useMemo(() => {
     const byId = new Map<number, MorningBriefingTask>();
@@ -1650,10 +1655,13 @@ export default function OrbitBoard({
             ) : null}
             <div className="mt-3">
               <div className="mb-1.5 flex justify-between text-xs text-neutral-400">
-                <span>Progress</span>
+                <span>Calculated progress</span>
                 <span>{progressPercentage}%</span>
               </div>
               <ProgressBar value={progressPercentage} />
+              <p className="mt-1.5 text-xs text-neutral-500">
+                Calculated from milestones, readiness, and recent activity.
+              </p>
             </div>
               </MiniPanel>
             </div>
@@ -1933,16 +1941,19 @@ export default function OrbitBoard({
               </div>
               <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
                 <div className="flex items-center justify-between gap-3 text-xs text-neutral-500">
-                  <span>Progress</span>
+                  <span>Calculated progress</span>
                   <span>
                     {editingMajorEventId
-                      ? `${majorEvents.find((majorEvent) => majorEvent.id === editingMajorEventId)?.progress_percent ?? 0}%`
+                      ? `${getMajorEventProgress(
+                          majorEvents.find(
+                            (majorEvent) => majorEvent.id === editingMajorEventId,
+                          ),
+                        )}%`
                       : "0%"}
                   </span>
                 </div>
                 <p className="mt-1 text-xs text-neutral-400">
-                  Progress will be calculated from milestones, readiness, and
-                  activity.
+                  Calculated from milestones, readiness, and recent activity.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -2034,9 +2045,13 @@ export default function OrbitBoard({
                           </div>
                           <p className="mt-1 text-xs text-neutral-500">
                             {formatDate(majorEvent.target_date)} |{" "}
-                            {majorEvent.progress_percent}% |{" "}
+                            Calculated progress {getMajorEventProgress(majorEvent)}% |{" "}
                             {linkedMilestones.length} milestone
                             {linkedMilestones.length === 1 ? "" : "s"}
+                          </p>
+                          <p className="mt-1 text-[11px] text-neutral-500">
+                            Calculated from milestones, readiness, and recent
+                            activity.
                           </p>
                           {majorEvent.description ? (
                             <p className="mt-1 line-clamp-2 text-sm leading-5 text-neutral-400">

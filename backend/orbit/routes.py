@@ -122,7 +122,7 @@ def list_major_events():
 
 @router.get("/major-events/{event_id}", response_model=MajorEvent)
 def get_major_event(event_id: int):
-    record = service.get_record("major_events", event_id)
+    record = service.get_major_event(event_id)
     if record is None:
         raise _not_found("Major event", event_id)
     return record

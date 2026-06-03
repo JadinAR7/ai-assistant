@@ -109,6 +109,7 @@ class MajorEvent(MajorEventBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    calculated_progress_percent: int = Field(default=0, ge=0, le=100)
 
 
 class MilestoneBase(BaseModel):
