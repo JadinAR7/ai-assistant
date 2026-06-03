@@ -55,6 +55,9 @@ type ScanRecord = {
   behavior_confirmation?: string;
   liquidity_draw_alignment?: string;
   repeat_suppressed?: boolean;
+  presence_mode?: string;
+  notification_allowed_by_presence?: boolean;
+  presence_reason?: string;
   state?: {
     htf_bias?: string;
     execution_bias?: string;
@@ -80,6 +83,18 @@ type ScanStatus = {
   scan_interval_seconds?: number;
   active_sessions?: string[];
   should_scan_now?: boolean;
+};
+
+type PresenceMode = {
+  mode: string;
+  label: string;
+  description: string;
+  scanner_min_signal_level: string;
+  notifications_allowed: boolean;
+  tts_allowed: boolean;
+  imessage_allowed: boolean;
+  scan_noise_profile: string;
+  updated_at?: string;
 };
 
 function formatTimestamp(timestamp?: string) {
@@ -152,22 +167,6 @@ function getBiasBadgeClass(value?: string) {
   return "bg-neutral-800 text-neutral-300 border-white/10";
 }
 
-function getAlertBadgeClass(shouldAlert?: boolean, severity?: string) {
-  if (!shouldAlert) {
-    return "bg-neutral-800 text-neutral-300 border-white/10";
-  }
-
-  if (severity === "high") {
-    return "bg-red-500/15 text-red-300 border-red-500/20";
-  }
-
-  if (severity === "medium") {
-    return "bg-yellow-500/15 text-yellow-300 border-yellow-500/20";
-  }
-
-  return "bg-blue-500/15 text-blue-300 border-blue-500/20";
-}
-
 function getSignalBadgeClass(level?: string) {
   switch ((level || "").toLowerCase()) {
     case "alert":
@@ -192,8 +191,11 @@ function buildCompactScanSummary(record: ScanRecord | null) {
   const eligibility = record.alert_eligibility?.should_notify
     ? "eligible"
     : "not notification-worthy";
+  const presence = record.notification_allowed_by_presence
+    ? "presence allows"
+    : "presence blocks";
 
-  return `Signal ${signal}. HTF ${htf}, execution ${execution}. Price relation: ${relation}. Behavior: ${behavior}. Alert eligibility: ${eligibility}.`;
+  return `Signal ${signal}. HTF ${htf}, execution ${execution}. Price relation: ${relation}. Behavior: ${behavior}. Alert eligibility: ${eligibility}; ${presence}.`;
 }
 
 export default function Home() {
@@ -211,6 +213,8 @@ export default function Home() {
   const [latestScan, setLatestScan] = useState<ScanRecord | null>(null);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
   const [scanStatusError, setScanStatusError] = useState(false);
+  const [presence, setPresence] = useState<PresenceMode | null>(null);
+  const [presenceLoading, setPresenceLoading] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -228,6 +232,7 @@ export default function Home() {
     loadHistory();
     loadScanStatus();
     loadLatestScan();
+    loadPresence();
   }, []);
 
   useEffect(() => {
@@ -287,6 +292,8 @@ export default function Home() {
 **Behavior Confirmation:** ${formatLabel(record.behavior_confirmation || "none")}  
 **Liquidity Draw Alignment:** ${formatLabel(record.liquidity_draw_alignment || "unclear")}  
 **Repeat Suppressed:** ${record.repeat_suppressed ? "Yes" : "No"}  
+**Presence Mode:** ${formatLabel(record.presence_mode || "home")}  
+**Presence Allows Notification:** ${record.notification_allowed_by_presence ? "Yes" : "No"}  
 **Alert Eligibility:** ${eligibility?.should_notify ? "Eligible" : "Not eligible"} (${eligibility?.level || "none"})
 
 ## Quick Read
@@ -303,6 +310,9 @@ ${eligibilityReasons}
 
 ## Alert Eligibility Blockers
 ${eligibilityBlockers}
+
+## Presence Reason
+${record.presence_reason || "No presence decision recorded."}
 
 ## Legacy Alert Reasons
 ${alertReasons}
@@ -343,6 +353,49 @@ ${record.message || "No scan message returned."}`;
     } catch {
       console.log("Could not load latest scan.");
       return null;
+    }
+  }
+
+  async function loadPresence() {
+    try {
+      const res = await fetch(`${API_BASE}/presence`);
+
+      if (!res.ok) {
+        throw new Error("Presence request failed");
+      }
+
+      const data = await res.json();
+      setPresence(data.current || null);
+    } catch {
+      console.log("Could not load presence mode.");
+    }
+  }
+
+  async function setPresenceMode(mode: string) {
+    if (presenceLoading) return;
+
+    setPresenceLoading(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/presence`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ mode }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Presence update failed");
+      }
+
+      const data = await res.json();
+      setPresence(data.current || null);
+      await loadLatestScan();
+    } catch {
+      addAssistantMessage("Could not update presence mode.", true);
+    } finally {
+      setPresenceLoading(false);
     }
   }
 
@@ -619,8 +672,6 @@ ${record.message || "No scan message returned."}`;
   const htfBias = latestScan?.state?.htf_bias || "unknown";
   const executionBias = latestScan?.state?.execution_bias || "unknown";
   const priceRelation = formatLabel(latestScan?.state?.price_relation);
-  const alertShouldFire = latestScan?.alert?.should_alert || false;
-  const alertSeverity = latestScan?.alert?.severity || "none";
   const signalLevel = latestScan?.signal_level || "informational";
   const narrativeState = formatLabel(latestScan?.narrative_state);
   const reactionZoneStatus = formatLabel(latestScan?.reaction_zone_status);
@@ -628,6 +679,8 @@ ${record.message || "No scan message returned."}`;
   const liquidityDrawAlignment = formatLabel(latestScan?.liquidity_draw_alignment);
   const alertEligibilityLevel = latestScan?.alert_eligibility?.level || "none";
   const alertEligibilityNotify = latestScan?.alert_eligibility?.should_notify || false;
+  const presenceAllows = latestScan?.notification_allowed_by_presence || false;
+  const presenceModes = ["home", "trading", "away", "focus"];
 
   return (
     <main className="min-h-screen bg-neutral-950 text-white">
@@ -758,6 +811,72 @@ ${record.message || "No scan message returned."}`;
         </section>
 
         <aside className="flex flex-col gap-4">
+          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-4">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold">Presence Mode</h2>
+                <p className="text-xs text-neutral-400">
+                  {presence?.label || "Home"} ·{" "}
+                  {formatLabel(presence?.scan_noise_profile || "normal")}
+                </p>
+              </div>
+
+              <span className="rounded-full border border-white/10 bg-neutral-950 px-2 py-1 text-xs text-neutral-300">
+                {formatLabel(presence?.scanner_min_signal_level || "review")}+
+              </span>
+            </div>
+
+            <div className="grid grid-cols-4 gap-2">
+              {presenceModes.map((mode) => {
+                const active = presence?.mode === mode;
+
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => setPresenceMode(mode)}
+                    disabled={presenceLoading}
+                    className={`rounded-lg border px-2 py-2 text-xs font-semibold transition ${
+                      active
+                        ? "border-blue-400/40 bg-blue-500/20 text-blue-100"
+                        : "border-white/10 bg-neutral-950 text-neutral-300 hover:bg-white/10"
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    {mode === "home"
+                      ? "Home"
+                      : mode === "trading"
+                      ? "Trading"
+                      : mode === "away"
+                      ? "Away"
+                      : "Focus"}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+              <div className="rounded-lg bg-neutral-950 p-2">
+                <p className="text-neutral-500">Notify</p>
+                <p className="mt-1 font-semibold text-neutral-200">
+                  {presence?.notifications_allowed ? "On" : "Off"}
+                </p>
+              </div>
+
+              <div className="rounded-lg bg-neutral-950 p-2">
+                <p className="text-neutral-500">iMessage</p>
+                <p className="mt-1 font-semibold text-neutral-200">
+                  {presence?.imessage_allowed ? "On" : "Off"}
+                </p>
+              </div>
+
+              <div className="rounded-lg bg-neutral-950 p-2">
+                <p className="text-neutral-500">TTS</p>
+                <p className="mt-1 font-semibold text-neutral-200">
+                  {presence?.tts_allowed ? "On" : "Off"}
+                </p>
+              </div>
+            </div>
+          </section>
+
           <section className="rounded-2xl border border-blue-500/30 bg-blue-950/20 p-4">
             <div className="mb-3 flex items-center justify-between">
               <div>
@@ -958,6 +1077,17 @@ ${record.message || "No scan message returned."}`;
                     {alertEligibilityNotify ? "Eligible" : "Not eligible"} ·{" "}
                     {formatLabel(alertEligibilityLevel)}
                     {latestScan.repeat_suppressed ? " · repeat suppressed" : ""}
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-neutral-950 p-3 text-xs">
+                  <p className="mb-1 text-neutral-500">Presence gate</p>
+                  <p className="text-neutral-200">
+                    {formatLabel(latestScan.presence_mode || "home")} ·{" "}
+                    {presenceAllows ? "allows" : "blocks"}
+                  </p>
+                  <p className="mt-1 text-neutral-400">
+                    {latestScan.presence_reason || "No presence decision recorded."}
                   </p>
                 </div>
 

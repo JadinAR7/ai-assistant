@@ -14,6 +14,7 @@ from database import init_db, save_message, get_recent_messages, clear_messages
 from notification_config import get_default_imessage_recipient, get_notification_config
 from agent_routes import router as agent_router
 from chat_intents import route_chat_intent
+from presence import get_presence, list_presence_modes, set_presence
 from orbit.database import init_orbit_db
 from orbit.routes import router as orbit_router
 
@@ -611,6 +612,10 @@ class ChatRequest(BaseModel):
     tool_mode: str = "auto"
 
 
+class PresenceRequest(BaseModel):
+    mode: str
+
+
 # -------------------------
 # Utility helpers
 # -------------------------
@@ -713,6 +718,31 @@ def build_followup_prompt(base_prompt: str, tool_result):
 @app.get("/")
 def health_check():
     return {"status": "backend running"}
+
+
+@app.get("/presence")
+def presence_status():
+    current = get_presence()
+    return {
+        "success": True,
+        "current": current,
+        "updated_at": current.get("updated_at"),
+        "modes": list_presence_modes(),
+    }
+
+
+@app.post("/presence")
+def update_presence(request: PresenceRequest):
+    try:
+        current = set_presence(request.mode)
+        return {
+            "success": True,
+            "current": current,
+            "updated_at": current.get("updated_at"),
+            "modes": list_presence_modes(),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # -------------------------
