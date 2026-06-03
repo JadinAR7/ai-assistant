@@ -24,6 +24,7 @@ from .models import (
     ScheduleBlock,
     ScheduleBlockCreate,
     ScheduleBlockUpdate,
+    ScheduleIntelligence,
     StrategicGap,
     Task,
     TaskCreate,
@@ -82,6 +83,11 @@ def _validation_error(message: str) -> HTTPException:
 @router.get("/schedule-blocks", response_model=list[ScheduleBlock])
 def list_schedule_blocks():
     return service.list_schedule_blocks()
+
+
+@router.get("/schedule/intelligence", response_model=ScheduleIntelligence)
+def get_schedule_intelligence():
+    return service.get_schedule_intelligence()
 
 
 @router.post("/schedule-blocks", response_model=ScheduleBlock, status_code=status.HTTP_201_CREATED)

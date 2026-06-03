@@ -27,6 +27,7 @@ DayOfWeek = Literal[
 ]
 ScheduleBlockPriority = Literal["low", "medium", "high"]
 MajorEventStatus = Literal["active", "paused", "completed", "archived"]
+ScheduleDayStatus = Literal["healthy", "busy", "overloaded"]
 
 
 class ScheduleBlockBase(BaseModel):
@@ -82,6 +83,42 @@ class ScheduleBlock(ScheduleBlockBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+
+class ScheduleAvailableWindow(BaseModel):
+    day: DayOfWeek
+    date: date
+    start_time: str
+    end_time: str
+    duration_minutes: int
+    after_block_title: Optional[str] = None
+    before_block_title: Optional[str] = None
+
+
+class ScheduleDaySummary(BaseModel):
+    day: DayOfWeek
+    date: date
+    total_scheduled_minutes: int
+    total_scheduled_hours: float
+    remaining_available_minutes: int
+    remaining_available_hours: float
+    high_priority_commitments: int
+    flexible_blocks: int
+    status: ScheduleDayStatus
+
+
+class ScheduleIntelligence(BaseModel):
+    week_start: date
+    week_end: date
+    day_summaries: list[ScheduleDaySummary]
+    overloaded_days: list[ScheduleDaySummary]
+    underutilized_days: list[ScheduleDaySummary]
+    available_windows: list[ScheduleAvailableWindow]
+    recommendations: list[str]
+    most_available_day: Optional[ScheduleDaySummary] = None
+    most_overloaded_day: Optional[ScheduleDaySummary] = None
+    recommended_placement: Optional[str] = None
+    unplaced_flexible_blocks: int = 0
 
 
 class MajorEventBase(BaseModel):
