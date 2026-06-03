@@ -16,8 +16,8 @@ Helix today is:
 * **Orbit Life Operating System**: a structured SQLite-backed system for major events, milestones, goals, tasks, reviews, readiness, schedule blocks, progress history, recommendations, trade-session records, and agent run records.
 * **Agent Framework**: a read-only/recommendation-first agent layer with manual runs, scheduled runs, prioritization, stored outputs, and Morning Check-In workflow.
 * **Trading Assistant**: a TradingView/CSV-based scanner and analysis stack for MES/MNQ/NQ/ES context, liquidity, behavior classification, alert eligibility, CSV freshness, and gated notifications.
-* **Scheduling Platform**: Orbit Schedule Blocks v1 plus a frontend Schedule Board with fixed/flexible blocks, week navigation, and date-aware block placement.
-* **Voice-enabled Assistant**: macOS `say` TTS, configurable voice profiles, speech formatting, manual voice trigger prototype, manual wake phrase listener, and iMessage-backed morning fallback delivery.
+* **Scheduling Platform**: Orbit Schedule Blocks v1, Schedule Board v1, and Schedule Intelligence v1 for read-only day density, free-time windows, overloaded-day detection, and placement recommendations.
+* **Voice-enabled Assistant**: macOS `say` TTS, configurable voice profiles, TTS routing, speech formatting, manual Voice Trigger prototype, Wake Phrase Listener v1, Morning Briefing condenser, and iMessage-backed morning fallback delivery.
 
 Helix remains the central intelligence layer. Orbit stores durable planning data. Agents perform specialized read-only analysis. Scanner logic remains separate from Orbit and does not write planning state.
 
@@ -106,8 +106,8 @@ Primary modules:
 * `backend/chat_intents.py`: deterministic Command Center intent routing before LLM fallback.
 * `backend/tools.py`: Helix tool layer for Orbit, trading, web/search helpers, reminders, file tools, and TradingView workflows.
 * `backend/orbit/database.py`: Orbit schema, initial agent definitions, and migrations-on-init style schema maintenance.
-* `backend/orbit/service.py`: Orbit data access, calculated progress, recommendations, priority scoring, morning briefing, daily closeout, schedule blocks, and readiness logic.
-* `backend/orbit/routes.py`: Orbit API surface.
+* `backend/orbit/service.py`: Orbit data access, calculated progress, recommendations, priority scoring, morning briefing, daily closeout, schedule blocks, Schedule Intelligence v1, and readiness logic.
+* `backend/orbit/routes.py`: Orbit API surface, including schedule intelligence.
 * `backend/agent_service.py`: agent definitions, manual runs, stored outputs, agent prioritization, Web Search Agent output, and Readiness Advisory output.
 * `backend/agent_routes.py`: agent API surface.
 * `backend/scheduled_agents.py`: scheduled Morning Review, Evening Review, daily prioritization snapshot, and morning fallback check loop.
@@ -147,8 +147,8 @@ Primary surfaces:
 Current frontend capabilities:
 
 * Command Center calls `/chat`, scanner endpoints, image analysis, reset, and history.
-* Orbit page preloads major events, milestones, reviews, readiness, morning briefing, daily closeout, recommendations, inbox tasks, progress advisory/history, agents, agent prioritization, scheduled-agent status, Morning Check-In status, and schedule blocks.
-* Schedule Board supports fixed and flexible schedule blocks, week navigation, date-aware placement, recurring day-of-week display, specific-date blocks, active/archive state, editing, deletion, and category/priority metadata.
+* Orbit page preloads major events, milestones, reviews, readiness, morning briefing, daily closeout, recommendations, inbox tasks, progress advisory/history, agents, agent prioritization, scheduled-agent status, Morning Check-In status, schedule blocks, and schedule intelligence.
+* Schedule Board v1 supports fixed and flexible schedule blocks, week navigation, date-aware placement, recurring day-of-week display, specific-date blocks, active/archive state, editing, deletion, category/priority metadata, subtle current-day column highlighting, and compact Schedule Intelligence display.
 * Agent views expose Morning Check-In, scheduled-agent checks, prioritization, manual agent runs, Web Search Agent output, Readiness Advisory suggestions, and recent run summaries.
 
 ## Voice
@@ -156,14 +156,15 @@ Current frontend capabilities:
 Voice and speech are local and intentionally conservative:
 
 * TTS uses macOS `say`.
+* TTS routing is available through backend endpoints, notification tests, Morning Check-In voice-originated flows, and scanner notification delivery when explicitly enabled.
 * `/tts/voices` lists available voices.
 * `/tts/config` reports configured voice/rate and resolved voice.
 * `/tts/say` formats and speaks text.
 * `HELIX_TTS_VOICE` and `HELIX_TTS_RATE` configure the profile.
 * `format_text_for_speech` removes markdown/code/URLs, expands percentages, normalizes labels, and caps spoken text length.
-* Morning Check-In condenses long Morning Review summaries before speech.
+* Morning Briefing condenser logic shortens long Morning Review summaries before speech and fallback delivery.
 * `voice_trigger.py` is a manual push-to-talk / typed prototype.
-* `wake_listener.py` is a manual microphone listener or typed simulation for morning wake phrases.
+* `wake_listener.py` is Wake Phrase Listener v1: a manual microphone listener or typed simulation for morning wake phrases.
 
 Voice prototypes do not install always-on microphone services.
 
@@ -196,6 +197,26 @@ Agent system rules:
 * Agents are read-only/recommendation-only unless an explicit future approval workflow is added.
 * Agents do not create tasks, update readiness, send notifications, or modify scanner state.
 * Scheduled/background automation should call `agent_service.run_agent(agent_id)` rather than duplicating agent logic.
+
+---
+
+# Completed Feature State
+
+The following major feature milestones are complete as of this overview:
+
+* Major Events Management v1
+* Calculated Major Event Progress
+* Schedule Blocks v1
+* Schedule Board v1
+* Schedule Intelligence v1
+* Command Router v1
+* Voice Trigger Prototype
+* Wake Phrase Listener v1
+* TTS Routing
+* Morning Briefing Condenser
+* Service Management / LaunchAgent support
+
+These features are considered implemented baseline capabilities. Future work should extend them deliberately rather than re-scaffold them.
 
 ---
 
@@ -298,7 +319,27 @@ The Orbit frontend includes a Schedule Board with:
 * Unscheduled/flexible block list
 * Create/edit/delete/archive controls
 
-Schedule Intelligence is not implemented yet. The board displays stored blocks but does not infer free time, conflicts, capacity, or auto-placement.
+The Today button returns the visible week to the current week. When the visible week includes today, the current day is indicated by a subtle turquoise column highlight rather than a separate day-header badge.
+
+## Schedule Intelligence v1
+
+Schedule Intelligence v1 is implemented as read-only analysis and recommendation generation.
+
+Current behavior:
+
+* Reads Schedule Blocks, Major Events, Milestones, and Tasks.
+* Produces daily summaries for the current week.
+* Calculates total scheduled time and remaining available time.
+* Counts high-priority commitments and flexible blocks by day.
+* Flags days as `healthy`, `busy`, or `overloaded` using simple v1 thresholds.
+* Identifies available windows inside a bounded planning day.
+* Lists overloaded and underutilized days.
+* Generates text-only placement recommendations such as open windows, possible flexible-block fits, and overloaded-day warnings.
+* Exposes `GET /orbit/schedule/intelligence`.
+* Displays a compact Schedule Intelligence card in the Schedule tab.
+* Feeds Command Router schedule intents such as free-time, packed-schedule, and next-scheduling questions.
+
+Schedule Intelligence v1 does not auto-place blocks, move blocks, modify calendar state, send notifications, or perform conflict resolution.
 
 ---
 
@@ -387,6 +428,8 @@ Supported natural language intents include:
 * `what should I focus on today`
 * `show my schedule`
 * `where do I have free time`
+* `is my schedule packed`
+* `what should I schedule next`
 * `which agent should run`
 * `what should helix check next`
 * `prioritize agents`
@@ -399,7 +442,7 @@ Supported natural language intents include:
 Routing behavior:
 
 * Morning check-in phrases call Morning Check-In or Morning Briefing paths.
-* Schedule phrases read Orbit schedule blocks and return a natural summary.
+* Schedule phrases read Schedule Intelligence v1 and return a natural summary of available days, overloaded days, available windows, unplaced flexible blocks, and recommendations.
 * Agent priority phrases call `/agents/prioritize` equivalent service logic.
 * Major event phrases read major events and selected/Corporate Escape status.
 * Readiness status phrases read readiness categories.
@@ -455,6 +498,7 @@ Operational note: backend restart is required after Command Router changes becau
 * `GET /orbit/schedule-blocks`
 * `POST /orbit/schedule-blocks`
 * `PATCH/DELETE /orbit/schedule-blocks/{schedule_block_id}`
+* `GET /orbit/schedule/intelligence`
 * `GET /orbit/milestones`
 * `POST /orbit/milestones`
 * `GET/PATCH/DELETE /orbit/milestones/{milestone_id}`
@@ -668,8 +712,10 @@ Rules:
 
 ## Orbit and Scheduling
 
-* Schedule Intelligence is not implemented.
-* Schedule Board displays stored blocks but does not calculate free time, capacity, conflicts, day density, or auto-placement.
+* Schedule Intelligence v1 is implemented as read-only recommendation logic only.
+* Schedule Board displays stored blocks and Schedule Intelligence v1 output, but it does not automatically place, move, or rebalance blocks.
+* Conflict detection is not implemented.
+* Protected time, recovery buffers, and workload balancing are not implemented.
 * Auto Schedule Placement is not implemented.
 * Full Trade Journal v1 is not implemented. Basic trade-session records and display surfaces exist, but full journaling workflows, analytics, and readiness evidence generation are not complete.
 
@@ -702,25 +748,72 @@ Rules:
 
 # Current Roadmap
 
-## Next
+Completed roadmap items removed from active priority lists include Agent Foundation v1, Web Search Agent v1 scaffolding, Readiness Advisory Agent v1, Agent Prioritization, Scheduled Agent Runs, Morning Check-In/Fallback Summary, Major Events Management v1, Calculated Major Event Progress, Schedule Blocks v1, Schedule Board v1, Schedule Intelligence v1, Command Router v1, Voice Trigger Prototype, Wake Phrase Listener v1, TTS Routing, Morning Briefing Condenser, and Service Management / LaunchAgent support.
 
-1. Schedule Intelligence v1
-2. Trade Journal v1
+## Next Major Development Priorities
 
-## Trading Evolution
+Priority order:
 
-3. Trading Model Refinement
-4. Scanner Refinement
-5. Presence Modes
-6. Narrative Scanner
+1. Trade Journal v1
+2. Trading Model Refinement
+3. Scanner Refinement
+4. Presence Modes
+5. Narrative-Based Trading Analysis
+6. Use Orbit for one week
+7. Collect friction points
+8. Schedule Intelligence v2
 
-## Future
+## Schedule Intelligence v2 (Future)
 
-7. Pattern Discovery
-8. Advanced Trade Coach
-9. Auto Schedule Placement
+Planned features:
 
-Completed roadmap items removed from active priority lists include Agent Foundation v1, Web Search Agent v1 scaffolding, Readiness Advisory Agent v1, Agent Prioritization, Scheduled Agent Runs, Morning Check-In/Fallback Summary, Schedule Blocks v1, Schedule Board v1, Major Events v1, and Command Router v1.
+* Auto placement of flexible blocks
+* Priority-aware scheduling
+* Conflict detection
+* Protected time blocks
+* Family time planning
+* Reading time planning
+* Recovery / buffer time
+* Schedule compression warnings
+* Daily workload balancing
+* Calendar notifications
+* Google Calendar integration (future)
+
+Status: Not started.
+
+## Trading System Refinement Backlog
+
+Purpose:
+
+Improve Helix's understanding of Jadin's actual trading model rather than generic ICT concepts.
+
+Planned work:
+
+* Trade Journal v1
+* Trading Model Refinement
+* Scanner Refinement
+* Presence Modes
+* Narrative-Based Analysis
+* Trading Coach v2
+* Pattern Discovery
+* Performance Analytics
+* Automated Journal Insights
+
+## Presence Modes (Future)
+
+Examples:
+
+* Home Mode
+* Trading Mode
+* Focus Mode
+* Away Mode
+
+Goals:
+
+* Reduce scanner noise
+* Modify notification behavior
+* Adjust scan frequency
+* Adjust assistant behavior based on availability
 
 ---
 
@@ -803,7 +896,7 @@ When working on Helix:
 3. Treat Orbit as the planning source of truth.
 4. Keep scanner logic separate from Orbit planning data.
 5. Keep agents read-only unless an explicit approval workflow is requested.
-6. Keep scheduling deterministic until Schedule Intelligence v1 is intentionally designed.
+6. Keep Schedule Intelligence v1 read-only and deterministic; do not add auto-placement or calendar mutation without an explicit approved v2 workflow.
 7. Do not add migrations or service behavior changes during documentation-only refreshes.
 8. Do not add autonomous notifications, readiness updates, or task creation without explicit approval gates.
 9. Prefer deterministic routing for common Command Center requests before adding a full LLM planner.
