@@ -42,6 +42,19 @@ type ScanRecord = {
     severity?: string;
     reasons?: string[];
   };
+  alert_eligibility?: {
+    level?: string;
+    should_notify?: boolean;
+    reasons?: string[];
+    blockers?: string[];
+  };
+  signal_level?: string;
+  signal_reason?: string;
+  narrative_state?: string;
+  reaction_zone_status?: string;
+  behavior_confirmation?: string;
+  liquidity_draw_alignment?: string;
+  repeat_suppressed?: boolean;
   state?: {
     htf_bias?: string;
     execution_bias?: string;
@@ -155,15 +168,32 @@ function getAlertBadgeClass(shouldAlert?: boolean, severity?: string) {
   return "bg-blue-500/15 text-blue-300 border-blue-500/20";
 }
 
+function getSignalBadgeClass(level?: string) {
+  switch ((level || "").toLowerCase()) {
+    case "alert":
+      return "bg-red-500/15 text-red-300 border-red-500/20";
+    case "review":
+      return "bg-yellow-500/15 text-yellow-300 border-yellow-500/20";
+    case "watch":
+      return "bg-blue-500/15 text-blue-300 border-blue-500/20";
+    default:
+      return "bg-neutral-800 text-neutral-300 border-white/10";
+  }
+}
+
 function buildCompactScanSummary(record: ScanRecord | null) {
   if (!record) return "No scan loaded yet.";
 
   const htf = record.state?.htf_bias || "unknown";
   const execution = record.state?.execution_bias || "unknown";
   const relation = formatLabel(record.state?.price_relation);
-  const alert = record.alert?.should_alert ? "Alert-worthy" : "No alert";
+  const signal = formatLabel(record.signal_level || "informational");
+  const behavior = formatLabel(record.behavior_confirmation || "none");
+  const eligibility = record.alert_eligibility?.should_notify
+    ? "eligible"
+    : "not notification-worthy";
 
-  return `HTF ${htf}, execution ${execution}. Price relation: ${relation}. ${alert}.`;
+  return `Signal ${signal}. HTF ${htf}, execution ${execution}. Price relation: ${relation}. Behavior: ${behavior}. Alert eligibility: ${eligibility}.`;
 }
 
 export default function Home() {
@@ -222,6 +252,7 @@ export default function Home() {
 
   function formatScanSummary(record: ScanRecord) {
     const alert = record.alert;
+    const eligibility = record.alert_eligibility;
     const comparison = record.comparison;
 
     const marketChanges = comparison?.market_changes?.length
@@ -236,14 +267,27 @@ export default function Home() {
       ? alert.reasons.map((item) => `- ${item}`).join("\n")
       : "- No alert decision available.";
 
+    const eligibilityReasons = eligibility?.reasons?.length
+      ? eligibility.reasons.map((item) => `- ${item}`).join("\n")
+      : "- No alert eligibility reason available.";
+
+    const eligibilityBlockers = eligibility?.blockers?.length
+      ? eligibility.blockers.map((item) => `- ${item}`).join("\n")
+      : "- No alert eligibility blocker available.";
+
     return `## Latest MES Scan
 
 **Session:** ${record.session_label || "Unknown"}  
 **Time:** ${formatTimestamp(record.timestamp)}  
 **Vision:** ${record.vision_success ? "Success" : "Failed"}  
 **CSV:** ${record.csv_success ? "Success" : "Failed"}  
-**Alert:** ${alert?.should_alert ? "YES" : "No"}  
-**Severity:** ${alert?.severity || "none"}
+**Signal Level:** ${formatLabel(record.signal_level || "informational")}  
+**Narrative State:** ${formatLabel(record.narrative_state || "no_clear_narrative")}  
+**Reaction Zone Status:** ${formatLabel(record.reaction_zone_status || "unclear")}  
+**Behavior Confirmation:** ${formatLabel(record.behavior_confirmation || "none")}  
+**Liquidity Draw Alignment:** ${formatLabel(record.liquidity_draw_alignment || "unclear")}  
+**Repeat Suppressed:** ${record.repeat_suppressed ? "Yes" : "No"}  
+**Alert Eligibility:** ${eligibility?.should_notify ? "Eligible" : "Not eligible"} (${eligibility?.level || "none"})
 
 ## Quick Read
 ${buildCompactScanSummary(record)}
@@ -254,7 +298,13 @@ ${marketChanges}
 ## Visual Context Changes
 ${visualChanges}
 
-## Alert Reasons
+## Alert Eligibility Reasons
+${eligibilityReasons}
+
+## Alert Eligibility Blockers
+${eligibilityBlockers}
+
+## Legacy Alert Reasons
 ${alertReasons}
 
 ---
@@ -366,7 +416,7 @@ ${record.message || "No scan message returned."}`;
         formData.append("file", attachedFile);
         formData.append(
           "prompt",
-          text || "Analyze this chart using Jadin's ICT trading model."
+          text || "Analyze this chart using Jadin's Liquidity Narrative Continuation model."
         );
 
         const res = await fetch(`${API_BASE}/analyze-image`, {
@@ -571,6 +621,13 @@ ${record.message || "No scan message returned."}`;
   const priceRelation = formatLabel(latestScan?.state?.price_relation);
   const alertShouldFire = latestScan?.alert?.should_alert || false;
   const alertSeverity = latestScan?.alert?.severity || "none";
+  const signalLevel = latestScan?.signal_level || "informational";
+  const narrativeState = formatLabel(latestScan?.narrative_state);
+  const reactionZoneStatus = formatLabel(latestScan?.reaction_zone_status);
+  const behaviorConfirmation = formatLabel(latestScan?.behavior_confirmation);
+  const liquidityDrawAlignment = formatLabel(latestScan?.liquidity_draw_alignment);
+  const alertEligibilityLevel = latestScan?.alert_eligibility?.level || "none";
+  const alertEligibilityNotify = latestScan?.alert_eligibility?.should_notify || false;
 
   return (
     <main className="min-h-screen bg-neutral-950 text-white">
@@ -854,16 +911,54 @@ ${record.message || "No scan message returned."}`;
                   </div>
 
                   <div className="rounded-xl bg-neutral-950 p-3">
-                    <p className="text-neutral-500">Alert</p>
+                    <p className="text-neutral-500">Signal</p>
                     <span
-                      className={`mt-2 inline-flex rounded-full border px-2 py-1 text-xs font-semibold ${getAlertBadgeClass(
-                        alertShouldFire,
-                        alertSeverity
+                      className={`mt-2 inline-flex rounded-full border px-2 py-1 text-xs font-semibold ${getSignalBadgeClass(
+                        signalLevel
                       )}`}
                     >
-                      {alertShouldFire ? "Yes" : "No"}
+                      {formatLabel(signalLevel)}
                     </span>
                   </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="rounded-xl bg-neutral-950 p-3">
+                    <p className="text-neutral-500">Narrative</p>
+                    <p className="mt-2 font-semibold text-neutral-200">
+                      {narrativeState}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl bg-neutral-950 p-3">
+                    <p className="text-neutral-500">Reaction zone</p>
+                    <p className="mt-2 font-semibold text-neutral-200">
+                      {reactionZoneStatus}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl bg-neutral-950 p-3">
+                    <p className="text-neutral-500">Behavior</p>
+                    <p className="mt-2 font-semibold text-neutral-200">
+                      {behaviorConfirmation}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl bg-neutral-950 p-3">
+                    <p className="text-neutral-500">Liquidity alignment</p>
+                    <p className="mt-2 font-semibold text-neutral-200">
+                      {liquidityDrawAlignment}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-xl bg-neutral-950 p-3 text-xs">
+                  <p className="mb-1 text-neutral-500">Alert eligibility</p>
+                  <p className="text-neutral-200">
+                    {alertEligibilityNotify ? "Eligible" : "Not eligible"} ·{" "}
+                    {formatLabel(alertEligibilityLevel)}
+                    {latestScan.repeat_suppressed ? " · repeat suppressed" : ""}
+                  </p>
                 </div>
 
                 <div className="rounded-xl bg-neutral-950 p-3 text-xs">
@@ -892,6 +987,10 @@ ${record.message || "No scan message returned."}`;
 
             {latestScan?.alert ? (
               <div className="space-y-2 text-sm">
+                <p>
+                  <span className="text-neutral-400">Eligibility:</span>{" "}
+                  {alertEligibilityNotify ? "Yes" : "No"} ({alertEligibilityLevel})
+                </p>
                 <p>
                   <span className="text-neutral-400">Should alert:</span>{" "}
                   {latestScan.alert.should_alert ? "Yes" : "No"}

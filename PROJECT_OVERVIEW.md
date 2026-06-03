@@ -43,7 +43,7 @@ Future systems should not create separate assistants. Instead:
 CSV data is responsible for:
 
 * Historical structure
-* FVG mapping
+* FVG reaction-zone mapping
 * Liquidity mapping
 * Market structure analysis
 * Historical context
@@ -60,7 +60,7 @@ Vision analysis is responsible for:
 Freshness rules:
 
 * Fresh CSVs may be used for structure and price context.
-* Stale CSVs may only be used for structure and FVG mapping.
+* Stale CSVs may only be used for structure and FVG reaction-zone mapping.
 * When CSV is stale, vision becomes the primary live-context source.
 * Helix must never present stale CSV prices as confirmed live market prices.
 
@@ -114,7 +114,7 @@ Primary modules:
 * `backend/agent_routes.py`: agent API surface.
 * `backend/scheduled_agents.py`: scheduled Morning Review, Evening Review, daily prioritization snapshot, and morning fallback check loop.
 * `backend/morning_checkin.py`: Morning Check-In acknowledgement, Morning Review run reuse/creation, fallback state, iMessage fallback delivery, and speech condensation.
-* `backend/scheduled_scan.py`: MES scanner, chart capture, deterministic analysis, state comparison, alert eligibility, and gated scan notifications.
+* `backend/scheduled_scan.py`: MES scanner, chart capture, deterministic analysis, state comparison, Scanner Refinement v1 signal tiers, alert eligibility, repeat suppression, and gated scan notifications.
 * `backend/csv_refresh.py`: scheduled and forced TradingView CSV refresh with verification before active file replacement.
 * `backend/tts.py`: speech formatter, macOS voice discovery/config, and TTS dispatch.
 * `backend/imessage_bridge.py`: local iMessage polling bridge and command router into backend endpoints.
@@ -726,6 +726,8 @@ Current scanner capabilities:
 * Behavior Classification
 * Continuation compression and expansion detection
 * Opportunity Watch generation
+* Scanner Refinement v1 signal tiers
+* Same-state repeat suppression
 * Alert Eligibility Engine
 * Gated iMessage/TTS notification infrastructure
 
@@ -739,24 +741,101 @@ Core flow:
 6. Compare current state against recent scan history.
 7. Attach liquidity draw output.
 8. Attach behavior classification output.
-9. Attach alert eligibility.
-10. Deliver scan notifications only when notification infrastructure is enabled and alert eligibility allows it.
-11. Persist scan history and runtime status.
+9. Attach scanner signal tier output.
+10. Attach alert eligibility.
+11. Deliver scan notifications only when notification infrastructure is enabled and alert eligibility allows it.
+12. Persist scan history and runtime status.
 
 Notifications remain intentionally gated. Smart scan notifications default disabled and only deliver when scanner logic has already determined notification eligibility. Manual notification test endpoints exist so TTS and iMessage delivery can be verified without fabricating a real trading alert.
 
+## Scanner Refinement v1
+
+Scanner Refinement v1 aligns scanner output with Liquidity Narrative Continuation and reduces noisy scanner behavior while preserving the existing interval-based scanner loop.
+
+Signal levels:
+
+* informational: normal scan update; no action needed.
+* watch: price is approaching important liquidity or an FVG reaction zone; no confirmation yet.
+* review: price is interacting with a reaction zone and meaningful behavior is forming or confirmed; worth manual review.
+* alert: stronger narrative shift or confirmation exists and may become eligible for notification later.
+
+Scanner rules:
+
+* FVGs are reaction zones, not automatic entries.
+* FVG touch/contact alone is not notification-worthy.
+* Price inside or interacting with an FVG reaction zone is watch context until behavior confirms acceptance, rejection, reclaim, sweep, displacement, structure shift, continuation compression/expansion, or liquidity-draw alignment.
+* Medium/High alert eligibility requires meaningful behavior confirmation.
+* `SCAN_ALERT_MIN_LEVEL` defaults to `review`.
+* `SCAN_SUPPRESS_REPEATS_MINUTES` defaults to `15`.
+* Repeat-suppressed scans still save scan history but are not marked notification-worthy inside the suppression window.
+
+Scanner records now include `signal_level`, `signal_reason`, `narrative_state`, `reaction_zone_status`, `behavior_confirmation`, `liquidity_draw_alignment`, and `repeat_suppressed`.
+
+Future Presence Modes remain pending. Future Narrative Scanner remains pending.
+
 ## Trading Framework Notes
 
-The durable trading framework still matters for future scanner and coaching work:
+Trading Model Refinement v1 adds Jadin's actual framework:
+Liquidity Narrative Continuation.
+
+Core thesis:
+
+* Price seeks liquidity.
+* FVGs are not automatic entries.
+* FVGs are reaction zones where price reveals whether it intends to continue toward or away from liquidity.
+* The primary question is: where is price trying to go?
+
+Framework:
 
 * Determine higher-timeframe bias first.
-* Identify draw on liquidity: previous day/week highs/lows, session highs/lows, and significant swing highs/lows.
-* Identify reaction zones and FVGs by timeframe.
-* Classify behavior around draw, structure, reaction zones, and multi-timeframe evidence.
-* Treat 4H/1H as context, 15M as primary scan/review timeframe, 5M as continuation/compression/expansion evidence, and 1M as execution-only.
+  * Daily
+  * 4H
+  * 1H
+* Identify draw on liquidity.
+  * PDH
+  * PDL
+  * PDNYH
+  * PDNYL
+  * Asia High
+  * Asia Low
+  * London High
+  * London Low
+  * Previous Week High
+  * Previous Week Low
+* Mark HTF reaction zones.
+  * Daily FVG
+  * 4H FVG
+  * 1H FVG
+  * 15M FVG
+* Evaluate behavior inside the zone.
+  * Acceptance
+  * Rejection
+  * Sweep
+  * Reclaim
+  * Displacement
+  * Consolidation
+* Confirm structure.
+  * 15M MSS/BOS
+  * 5M MSS/BOS
+* Execute only after behavior and structure confirm.
+  * 1M BRTC
+  * 1M FVG retest
+  * Sweep + reclaim
+  * MSS after displacement
+* Target liquidity first.
+  * Nearest liquidity
+  * Session liquidity
+  * PDH/PDL
+  * Weekly liquidity
+  * Fixed RR only when liquidity is unclear or too far
 * Use if/then language.
 * Never claim certainty or advise immediate entry without confirmation.
 * Do not use VWAP.
+
+Strategy Modes:
+
+* Scalp Mode: short hold time, usually 1-5 minutes. Uses HTF context but targets immediate liquidity. Execution is more aggressive and useful during funded-account rebuilds or small controlled targets.
+* Day Trade Mode: longer hold time, usually 15-90+ minutes. The HTF narrative drives the trade, targets larger liquidity pools, and requires more selective execution.
 
 Supported trading symbols remain:
 
@@ -792,14 +871,16 @@ Rules:
 
 # Trade Journal Data Foundation
 
-Trade Journal is the durable trading dataset layer for future Helix trading intelligence. It currently captures raw trade records, imported trade drafts, order enrichment, narrative, context, review fields, and attachment paths.
+Trade Journal is the durable trading dataset layer for future Helix trading intelligence. It currently captures raw trade records, imported trade drafts, order enrichment, narrative, context, strategy profile/mode, review fields, and attachment paths.
 
 Current role:
 
 * Preserve Jadin's manual strategy context and narrative after each trade.
+* Attach the Liquidity Narrative Continuation strategy profile and strategy mode where available.
 * Convert broker Performance and Orders PDFs into user-confirmed journal entries.
 * Keep imported trades in preview/draft form until Jadin explicitly saves them.
 * Store execution facts and user reasoning without coaching or model interpretation.
+* Help validate what Jadin actually trades versus what he thinks he trades once analytics are added.
 
 Future role:
 
@@ -835,8 +916,8 @@ Current boundaries:
 ## Trading
 
 * Scanner still uses interval-based logic.
-* Trading model refinement is not complete.
-* Scanner refinement is not complete.
+* Trading Model Refinement v1 is implemented as a framework/profile refinement.
+* Scanner Refinement v1 is implemented for signal tiers, FVG reaction-zone alert quality, and repeat suppression.
 * No AI coaching is implemented from Trade Journal data yet.
 * Pattern Discovery is not implemented.
 * No automatic scanner refinement is implemented from Trade Journal data yet.
@@ -844,6 +925,7 @@ Current boundaries:
 * Narrative Scanner is not implemented.
 * No direct screenshot/PDF/CSV model learning is implemented yet.
 * User still provides strategy context and narrative manually after import.
+* Trade Journal strategy mode classification is available as backend logic, but no automatic coaching or scanner refinement uses it yet.
 * Scanner alerts are chart-review notifications, not trade entries.
 
 ## Agents
@@ -865,19 +947,17 @@ Current boundaries:
 
 # Current Roadmap
 
-Completed roadmap items removed from active priority lists include Agent Foundation v1, Web Search Agent v1 scaffolding, Readiness Advisory Agent v1, Agent Prioritization, Scheduled Agent Runs, Morning Check-In/Fallback Summary, Major Events Management v1, Calculated Major Event Progress, Schedule Blocks v1, Schedule Board v1, Schedule Intelligence v1, Trade Journal v1, Trade Journal PDF Import v1, Command Router v1, Voice Trigger Prototype, Wake Phrase Listener v1, TTS Routing, Morning Briefing Condenser, and Service Management / LaunchAgent support.
+Completed roadmap items removed from active priority lists include Agent Foundation v1, Web Search Agent v1 scaffolding, Readiness Advisory Agent v1, Agent Prioritization, Scheduled Agent Runs, Morning Check-In/Fallback Summary, Major Events Management v1, Calculated Major Event Progress, Schedule Blocks v1, Schedule Board v1, Schedule Intelligence v1, Trade Journal v1, Trade Journal PDF Import v1, Trading Model Refinement v1, Scanner Refinement v1, Command Router v1, Voice Trigger Prototype, Wake Phrase Listener v1, TTS Routing, Morning Briefing Condenser, and Service Management / LaunchAgent support.
 
 ## Next Major Development Priorities
 
 Priority order:
 
-1. Trading Model Refinement
-2. Scanner Refinement
-3. Presence Modes
-4. Narrative-Based Scanner
-5. Pattern Discovery
-6. Trading Coach v2
-7. Schedule Intelligence v2
+1. Presence Modes
+2. Narrative-Based Scanner
+3. Pattern Discovery
+4. Trading Coach v2
+5. Schedule Intelligence v2
 
 ## Schedule Intelligence v2 (Future)
 
@@ -908,10 +988,10 @@ Completed:
 * Schedule Intelligence v1
 * Trade Journal v1
 * Trade Journal PDF Import v1
+* Trading Model Refinement v1
 
 Next:
 
-* Trading Model Refinement
 * Scanner Refinement
 * Presence Modes
 * Narrative-Based Scanner

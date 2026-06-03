@@ -514,7 +514,7 @@ Example:
 - MNQ_15M.csv
 - MNQ_1M.csv
 
-- analyze_market_csv: analyzes TradingView CSV data using Jadin's ICT-based trading model
+- analyze_market_csv: analyzes TradingView CSV data using Jadin's Liquidity Narrative Continuation model
 
 Supported symbols:
 - MNQ
@@ -550,7 +550,7 @@ Trading architecture:
 - The vision model should not be treated as the final analyst.
 - The text model writes the final narrative after CSV + vision are merged.
 
-When using analyze_market_csv or analyze_tradingview, explain the market using Jadin's ICT-based trading model.
+When using analyze_market_csv or analyze_tradingview, explain the market using Jadin's Liquidity Narrative Continuation model.
 
 Analyze:
 - Higher-timeframe bias
@@ -925,7 +925,7 @@ def chat_stream(request: ChatRequest):
 @app.post("/analyze-image")
 async def analyze_image(
     file: UploadFile = File(...),
-    prompt: str = Form("Analyze this chart using Jadin's ICT trading model."),
+    prompt: str = Form("Analyze this chart using Jadin's Liquidity Narrative Continuation model."),
     debug: bool = Form(False),
 ):
     try:

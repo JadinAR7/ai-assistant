@@ -3391,7 +3391,7 @@ def format_market_response(analysis: dict) -> str:
     )
 
     response.append(
-        "**Bottom Line:** CSV controls historical structure/FVG mapping. "
+        "**Bottom Line:** CSV controls historical structure/FVG reaction-zone mapping. "
         "Vision controls live visible chart context when CSV is stale."
     )
 
@@ -3545,8 +3545,8 @@ def analyze_market_csv(
             },
 
             "analysis_rules": {
-                "model": "ICT-based",
-                "source_of_truth": "CSV controls historical structure/FVG mapping.",
+                "model": "Liquidity Narrative Continuation",
+                "source_of_truth": "CSV controls historical structure/FVG reaction-zone mapping.",
                 "screenshot_role": "Vision controls live visible chart context when CSV is stale.",
                 "timeframe_priority": "1D > 4H > 1H > 15M > 1M",
                 "entry_model": "Liquidity sweep -> MSS/BOS -> BRTC retest -> continuation",
@@ -3884,7 +3884,7 @@ def build_merged_market_state(
     merged = {
         "success": True,
         "source_priority": [
-            "CSV controls historical structure/FVG mapping.",
+            "CSV controls historical structure/FVG reaction-zone mapping.",
             "Vision controls live visible chart context when CSV is stale.",
             "If LTF CSV is stale, do not treat CSV close as live current price.",
         ],
@@ -4865,7 +4865,7 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
         f"- Bearish scenario: {scenario_down}",
         "",
         "## Bottom Line",
-        "CSV controls historical structure/FVG mapping. Vision controls live visible chart context when CSV is stale.",
+        "CSV controls historical structure/FVG reaction-zone mapping. Vision controls live visible chart context when CSV is stale.",
     ])
 
     return "\n".join(lines)
@@ -4940,7 +4940,7 @@ Your job is to describe:
 - execution context
 
 Use this source priority:
-1. CSV controls historical structure/FVG mapping.
+1. CSV controls historical structure/FVG reaction-zone mapping.
 2. Vision controls live visible chart context when CSV is stale.
 3. If LTF CSV is stale, do not describe CSV close or CSV-derived zone distances as live current price.
 
