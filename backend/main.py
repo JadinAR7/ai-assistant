@@ -13,6 +13,7 @@ from database import get_connection, log_tool
 from database import init_db, save_message, get_recent_messages, clear_messages
 from notification_config import get_default_imessage_recipient, get_notification_config
 from agent_routes import router as agent_router
+from chat_intents import route_chat_intent
 from orbit.database import init_orbit_db
 from orbit.routes import router as orbit_router
 
@@ -799,6 +800,23 @@ def chat(request: ChatRequest):
             return {
                 "success": True,
                 "model": "pipeline:vision+csv+narrator",
+                "message": assistant_message,
+                "history_length": len(messages),
+            }
+
+        # -------------------------
+        # Auto mode: deterministic Command Center intent routing
+        # -------------------------
+        intent_response = route_chat_intent(request.message)
+        if intent_response is not None:
+            assistant_message = intent_response["message"]
+            save_message("Assistant", assistant_message)
+
+            messages = get_recent_messages(MAX_HISTORY_MESSAGES)
+
+            return {
+                "success": True,
+                "model": intent_response["model"],
                 "message": assistant_message,
                 "history_length": len(messages),
             }
