@@ -9,12 +9,14 @@ const API_BASE =
 const CORPORATE_ESCAPE_TITLE = "Corporate Escape";
 const INBOX_MILESTONE_TITLE = "Inbox / General";
 
+export type MajorEventStatus = "active" | "paused" | "completed" | "archived";
+
 export type MajorEvent = {
   id: number;
   title: string;
   description: string | null;
   target_date: string | null;
-  status: string;
+  status: MajorEventStatus;
   progress_percent: number;
 };
 
@@ -87,6 +89,7 @@ export type MorningBriefingTask = {
     title: string;
     status: string;
     progress_percent: number;
+    major_event_id?: number;
   }>;
   milestone_title?: string | null;
 };
@@ -233,6 +236,44 @@ export type ScheduledAgentStatus = {
   last_prioritization_snapshot?: Record<string, unknown> | null;
 };
 
+export type ScheduleBlockType = "fixed" | "flexible";
+export type ScheduleBlockCategory =
+  | "boxing"
+  | "family"
+  | "reading"
+  | "work"
+  | "trading"
+  | "milestone"
+  | "leisure"
+  | "personal"
+  | "other";
+export type ScheduleBlockPriority = "low" | "medium" | "high";
+export type DayOfWeek =
+  | "monday"
+  | "tuesday"
+  | "wednesday"
+  | "thursday"
+  | "friday"
+  | "saturday"
+  | "sunday";
+
+export type ScheduleBlock = {
+  id: number;
+  title: string;
+  block_type: ScheduleBlockType;
+  category: ScheduleBlockCategory;
+  day_of_week: DayOfWeek | null;
+  start_time: string | null;
+  end_time: string | null;
+  duration_minutes: number | null;
+  recurrence: string | null;
+  priority: ScheduleBlockPriority;
+  notes: string | null;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 export type MorningCheckInStatus = {
   date: string;
   morning_acknowledged: boolean;
@@ -282,6 +323,7 @@ type ReadinessSuggestion = {
 };
 
 type OrbitBoardProps = Readonly<{
+  majorEvents: MajorEvent[];
   event: MajorEvent | undefined;
   milestones: Milestone[];
   reviews: OrbitReview[];
@@ -307,12 +349,16 @@ type OrbitBoardProps = Readonly<{
   scheduledAgentsStatusError: string | null;
   morningCheckInStatus: MorningCheckInStatus | null;
   morningCheckInStatusError: string | null;
+  scheduleBlocks: ScheduleBlock[];
+  scheduleBlocksError: string | null;
   errorMessage: string | null;
 }>;
 
 const tabs = [
   "Overview",
+  "Major Events",
   "Tasks",
+  "Schedule",
   "Milestones",
   "Reviews",
   "Readiness",
@@ -324,6 +370,55 @@ type Toast = {
   type: "success" | "error";
 };
 const CLOSEOUT_LIST_LIMIT = 3;
+const majorEventStatusOptions: MajorEventStatus[] = [
+  "active",
+  "paused",
+  "completed",
+  "archived",
+];
+const emptyMajorEventForm = {
+  title: "",
+  description: "",
+  target_date: "",
+  progress_percent: "0",
+  status: "active" as MajorEventStatus,
+};
+type MajorEventFormState = typeof emptyMajorEventForm;
+const dayOptions: DayOfWeek[] = [
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+  "sunday",
+];
+const categoryOptions: ScheduleBlockCategory[] = [
+  "boxing",
+  "family",
+  "reading",
+  "work",
+  "trading",
+  "milestone",
+  "leisure",
+  "personal",
+  "other",
+];
+const priorityOptions: ScheduleBlockPriority[] = ["low", "medium", "high"];
+const emptyScheduleForm = {
+  title: "",
+  block_type: "fixed" as ScheduleBlockType,
+  category: "work" as ScheduleBlockCategory,
+  day_of_week: "monday" as DayOfWeek | "",
+  start_time: "",
+  end_time: "",
+  duration_minutes: "",
+  recurrence: "",
+  priority: "medium" as ScheduleBlockPriority,
+  notes: "",
+  active: true,
+};
+type ScheduleFormState = typeof emptyScheduleForm;
 
 function formatDate(value: string | null) {
   if (!value) {
@@ -359,6 +454,69 @@ function formatStatus(value: string) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function formatTime(value: string | null) {
+  if (!value) {
+    return "--";
+  }
+
+  const [hourValue, minuteValue] = value.split(":");
+  const hour = Number(hourValue);
+  const minute = Number(minuteValue ?? "0");
+
+  if (Number.isNaN(hour) || Number.isNaN(minute)) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(2026, 0, 1, hour, minute));
+}
+
+function formatBlockTiming(block: ScheduleBlock) {
+  if (block.block_type === "fixed") {
+    return `${formatStatus(block.day_of_week ?? "unscheduled")} ${formatTime(
+      block.start_time,
+    )}-${formatTime(block.end_time)}`;
+  }
+
+  return `${block.duration_minutes ?? "--"} min flexible`;
+}
+
+function scheduleFormFromBlock(block: ScheduleBlock): ScheduleFormState {
+  return {
+    title: block.title,
+    block_type: block.block_type,
+    category: block.category,
+    day_of_week: block.day_of_week ?? "",
+    start_time: block.start_time ?? "",
+    end_time: block.end_time ?? "",
+    duration_minutes: block.duration_minutes?.toString() ?? "",
+    recurrence: block.recurrence ?? "",
+    priority: block.priority,
+    notes: block.notes ?? "",
+    active: block.active,
+  };
+}
+
+function majorEventFormFromEvent(event: MajorEvent): MajorEventFormState {
+  return {
+    title: event.title,
+    description: event.description ?? "",
+    target_date: event.target_date ?? "",
+    progress_percent: event.progress_percent.toString(),
+    status: event.status,
+  };
+}
+
+function getPrimaryMajorEvent(events: MajorEvent[]) {
+  return (
+    events.find((majorEvent) => majorEvent.status === "active") ??
+    events.find((majorEvent) => majorEvent.status !== "archived") ??
+    events[0]
+  );
 }
 
 function getExcerpt(value: string | null | undefined, limit = 160) {
@@ -421,7 +579,7 @@ function getCompactGapReasons(reasons: string[]) {
   ];
 }
 
-function isTaskOpen(task: InboxTask) {
+function isTaskOpen(task: { status: string }) {
   return !["complete", "completed", "done", "cancelled"].includes(
     task.status.toLowerCase(),
   );
@@ -429,6 +587,12 @@ function isTaskOpen(task: InboxTask) {
 
 function getRecommendationId(gap: StrategicGap) {
   return `strategic-gap-${gap.milestone_id}`;
+}
+
+function getRecommendationTargetId(recommendation: Recommendation) {
+  const rawId = recommendation.id.split("-").at(-1);
+  const targetId = Number(rawId);
+  return Number.isNaN(targetId) ? null : targetId;
 }
 
 function formatTaskSummary(task: MorningBriefingTask) {
@@ -556,7 +720,8 @@ function MiniPanel({
 }
 
 export default function OrbitBoard({
-  event,
+  majorEvents: initialMajorEvents,
+  event: initialEvent,
   milestones,
   reviews,
   reviewsError,
@@ -581,6 +746,8 @@ export default function OrbitBoard({
   scheduledAgentsStatusError,
   morningCheckInStatus: initialMorningCheckInStatus,
   morningCheckInStatusError,
+  scheduleBlocks: initialScheduleBlocks,
+  scheduleBlocksError,
   errorMessage,
 }: OrbitBoardProps) {
   const router = useRouter();
@@ -616,34 +783,221 @@ export default function OrbitBoard({
   const [creatingRecommendationId, setCreatingRecommendationId] = useState<
     string | null
   >(null);
+  const [majorEvents, setMajorEvents] =
+    useState<MajorEvent[]>(initialMajorEvents);
+  const [selectedMajorEventId, setSelectedMajorEventId] = useState<
+    number | null
+  >(initialEvent?.id ?? getPrimaryMajorEvent(initialMajorEvents)?.id ?? null);
+  const [majorEventForm, setMajorEventForm] =
+    useState<MajorEventFormState>(emptyMajorEventForm);
+  const [editingMajorEventId, setEditingMajorEventId] = useState<number | null>(
+    null,
+  );
+  const [savingMajorEvent, setSavingMajorEvent] = useState(false);
+  const [archivingMajorEventId, setArchivingMajorEventId] = useState<
+    number | null
+  >(null);
+  const [scheduleBlocks, setScheduleBlocks] = useState<ScheduleBlock[]>(
+    initialScheduleBlocks,
+  );
+  const [scheduleForm, setScheduleForm] =
+    useState<ScheduleFormState>(emptyScheduleForm);
+  const [editingScheduleBlockId, setEditingScheduleBlockId] = useState<
+    number | null
+  >(null);
+  const [savingScheduleBlock, setSavingScheduleBlock] = useState(false);
+  const [mutatingScheduleBlockId, setMutatingScheduleBlockId] = useState<
+    number | null
+  >(null);
   const [toast, setToast] = useState<Toast | null>(null);
+  const selectedEvent =
+    majorEvents.find((majorEvent) => majorEvent.id === selectedMajorEventId) ??
+    initialEvent ??
+    getPrimaryMajorEvent(majorEvents);
+  const event = selectedEvent;
+  const eventMilestones = useMemo(
+    () =>
+      event
+        ? milestones.filter((milestone) => milestone.major_event_id === event.id)
+        : [],
+    [event, milestones],
+  );
+  const eventReadiness = useMemo(
+    () =>
+      event
+        ? readiness.filter((category) => category.major_event_id === event.id)
+        : readiness,
+    [event, readiness],
+  );
+  const eventMilestoneIds = useMemo(
+    () => new Set(eventMilestones.map((milestone) => milestone.id)),
+    [eventMilestones],
+  );
+  const eventReadinessIds = useMemo(
+    () => new Set(eventReadiness.map((category) => category.id)),
+    [eventReadiness],
+  );
   const daysRemaining = getDaysRemaining(event?.target_date ?? null);
   const progressPercentage = event?.progress_percent ?? 0;
-  const overallReadiness = getOverallReadiness(readiness);
-  const priorityTasks = morningBriefing?.top_tasks.slice(0, 3) ?? [];
-  const strategicGaps = morningBriefing?.strategic_gaps?.slice(0, 3) ?? [];
-  const activeBlockers = morningBriefing?.current_blockers ?? [];
+  const overallReadiness = getOverallReadiness(eventReadiness);
+  const priorityTasks = useMemo(() => {
+    const byId = new Map<number, MorningBriefingTask>();
+
+    (morningBriefing?.top_tasks ?? [])
+      .filter((task) => {
+        const linkedMilestones = task.milestones ?? [];
+        return (
+          linkedMilestones.some((milestone) =>
+            eventMilestoneIds.has(milestone.id),
+          ) ||
+          linkedMilestones.some(
+            (milestone) =>
+              event?.id !== undefined && milestone.major_event_id === event.id,
+          ) ||
+          (task.milestone_title
+            ? eventMilestones.some(
+                (milestone) => milestone.title === task.milestone_title,
+              )
+            : false)
+        );
+      })
+      .forEach((task) => byId.set(task.id, task));
+
+    eventMilestones.forEach((milestone) => {
+      (milestoneTasksById[milestone.id] ?? []).forEach((task) => {
+        if (isTaskOpen(task) && !byId.has(task.id)) {
+          byId.set(task.id, {
+            ...task,
+            milestone_title: milestone.title,
+          });
+        }
+      });
+    });
+
+    return Array.from(byId.values())
+      .filter(isTaskOpen)
+      .sort((left, right) => {
+        const leftScore = left.priority_score ?? 0;
+        const rightScore = right.priority_score ?? 0;
+        if (leftScore !== rightScore) {
+          return rightScore - leftScore;
+        }
+        return left.title.localeCompare(right.title);
+      })
+      .slice(0, 3);
+  }, [event, eventMilestoneIds, eventMilestones, milestoneTasksById, morningBriefing]);
+  const strategicGaps = useMemo(
+    () =>
+      (morningBriefing?.strategic_gaps ?? []).filter((gap) =>
+        eventMilestoneIds.has(gap.milestone_id),
+      ),
+    [eventMilestoneIds, morningBriefing],
+  );
+  const activeBlockers = useMemo(() => {
+    const blockers: string[] = [];
+    const stalledMilestones = eventMilestones.filter(
+      (milestone) =>
+        ["active", "in_progress"].includes(milestone.status.toLowerCase()) &&
+        milestone.progress_percent === 0,
+    );
+    const lowReadiness = eventReadiness.filter(
+      (category) => category.current_score < 50,
+    );
+
+    stalledMilestones.slice(0, 2).forEach((milestone) => {
+      blockers.push(
+        `Milestone is active but still at 0%: ${milestone.title}.`,
+      );
+    });
+
+    if (lowReadiness.length > 0) {
+      blockers.push(
+        `Low readiness categories: ${lowReadiness
+          .slice(0, 3)
+          .map((category) => category.category_name)
+          .join(", ")}.`,
+      );
+    }
+
+    return blockers;
+  }, [eventMilestones, eventReadiness]);
   const mostRecentReview = reviews[0] ?? null;
-  const topRecommendations =
-    recommendations?.recommendations.slice(0, 3) ??
-    morningBriefing?.recommendations?.slice(0, 3) ??
-    [];
-  const tagMilestones = milestones.filter(
+  const topRecommendations = useMemo(() => {
+    const scopedTaskIds = new Set(priorityTasks.map((task) => task.id));
+    const sourceRecommendations =
+      recommendations?.recommendations ?? morningBriefing?.recommendations ?? [];
+
+    return sourceRecommendations.filter((recommendation) => {
+      const targetId = getRecommendationTargetId(recommendation);
+
+      if (recommendation.category === "strategic_gap") {
+        return targetId !== null && eventMilestoneIds.has(targetId);
+      }
+
+      if (recommendation.category === "task_execution") {
+        return targetId !== null && scopedTaskIds.has(targetId);
+      }
+
+      if (recommendation.category === "readiness_improvement") {
+        return targetId !== null && eventReadinessIds.has(targetId);
+      }
+
+      if (recommendation.category === "blocker_resolution") {
+        return activeBlockers.some((blocker) =>
+          recommendation.recommendation.includes(blocker),
+        );
+      }
+
+      return false;
+    });
+  }, [
+    activeBlockers,
+    eventMilestoneIds,
+    eventReadinessIds,
+    morningBriefing,
+    priorityTasks,
+    recommendations,
+  ]);
+  const tagMilestones = eventMilestones.filter(
     (milestone) => milestone.title !== INBOX_MILESTONE_TITLE,
   );
-  const suggestedNextAction =
-    morningBriefing?.suggested_next_action &&
-    morningBriefing.suggested_next_action !== "No suggested action yet"
-      ? morningBriefing.suggested_next_action
-      : null;
+  const suggestedNextAction = topRecommendations[0]?.recommendation ?? null;
 
   const activeMilestones = useMemo(
     () =>
-      [...milestones].sort(
+      [...eventMilestones].sort(
         (left, right) => left.progress_percent - right.progress_percent,
       ),
-    [milestones],
+    [eventMilestones],
   );
+  const groupedScheduleBlocks = useMemo(() => {
+    const groups = new Map<string, ScheduleBlock[]>();
+
+    scheduleBlocks.forEach((block) => {
+      const groupKey =
+        block.block_type === "fixed"
+          ? (block.day_of_week ?? "unscheduled")
+          : block.category;
+      const label =
+        block.block_type === "fixed"
+          ? formatStatus(groupKey)
+          : `${formatStatus(groupKey)} Flexible`;
+
+      groups.set(label, [...(groups.get(label) ?? []), block]);
+    });
+
+    return Array.from(groups.entries()).map(([label, blocks]) => ({
+      label,
+      blocks: blocks.sort((left, right) => {
+        const leftTime = left.start_time ?? "";
+        const rightTime = right.start_time ?? "";
+        if (leftTime !== rightTime) {
+          return leftTime.localeCompare(rightTime);
+        }
+        return left.title.localeCompare(right.title);
+      }),
+    }));
+  }, [scheduleBlocks]);
 
   useEffect(() => {
     if (!toast) {
@@ -926,6 +1280,292 @@ export default function OrbitBoard({
     router.refresh();
   }
 
+  function setMajorEventField<K extends keyof MajorEventFormState>(
+    field: K,
+    value: MajorEventFormState[K],
+  ) {
+    setMajorEventForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function startMajorEventCreate() {
+    setEditingMajorEventId(null);
+    setMajorEventForm(emptyMajorEventForm);
+  }
+
+  function startMajorEventEdit(majorEvent: MajorEvent) {
+    setEditingMajorEventId(majorEvent.id);
+    setMajorEventForm(majorEventFormFromEvent(majorEvent));
+    setSelectedMajorEventId(majorEvent.id);
+  }
+
+  function getMajorEventPayload() {
+    return {
+      title: majorEventForm.title.trim(),
+      description: majorEventForm.description.trim() || null,
+      target_date: majorEventForm.target_date || null,
+      progress_percent: Number(majorEventForm.progress_percent || 0),
+      status: majorEventForm.status,
+    };
+  }
+
+  async function saveMajorEvent() {
+    if (!majorEventForm.title.trim()) {
+      setToast({ message: "Major event title is required.", type: "error" });
+      return;
+    }
+
+    setSavingMajorEvent(true);
+    setToast(null);
+
+    const response = await fetch(
+      editingMajorEventId
+        ? `${API_BASE}/orbit/major-events/${editingMajorEventId}`
+        : `${API_BASE}/orbit/major-events`,
+      {
+        method: editingMajorEventId ? "PATCH" : "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(getMajorEventPayload()),
+      },
+    );
+
+    if (!response.ok) {
+      setToast({ message: "Could not save major event.", type: "error" });
+      setSavingMajorEvent(false);
+      return;
+    }
+
+    const savedEvent = (await response.json()) as MajorEvent;
+    setMajorEvents((current) => {
+      if (editingMajorEventId) {
+        return current.map((majorEvent) =>
+          majorEvent.id === savedEvent.id ? savedEvent : majorEvent,
+        );
+      }
+
+      return [...current, savedEvent];
+    });
+    setSelectedMajorEventId(savedEvent.id);
+    setEditingMajorEventId(null);
+    setMajorEventForm(emptyMajorEventForm);
+    setToast({ message: "Major event saved.", type: "success" });
+    setSavingMajorEvent(false);
+    router.refresh();
+  }
+
+  async function archiveMajorEvent(majorEvent: MajorEvent) {
+    setArchivingMajorEventId(majorEvent.id);
+    setToast(null);
+
+    const response = await fetch(
+      `${API_BASE}/orbit/major-events/${majorEvent.id}`,
+      { method: "DELETE" },
+    );
+
+    if (!response.ok) {
+      setToast({ message: "Could not archive major event.", type: "error" });
+      setArchivingMajorEventId(null);
+      return;
+    }
+
+    const archivedEvent = (await response.json()) as MajorEvent;
+    setMajorEvents((current) =>
+      current.map((entry) =>
+        entry.id === archivedEvent.id ? archivedEvent : entry,
+      ),
+    );
+    if (selectedMajorEventId === archivedEvent.id) {
+      const nextEvent = getPrimaryMajorEvent(
+        majorEvents.map((entry) =>
+          entry.id === archivedEvent.id ? archivedEvent : entry,
+        ),
+      );
+      setSelectedMajorEventId(nextEvent?.id ?? archivedEvent.id);
+    }
+    setToast({ message: "Major event archived.", type: "success" });
+    setArchivingMajorEventId(null);
+    router.refresh();
+  }
+
+  function setScheduleField<K extends keyof ScheduleFormState>(
+    field: K,
+    value: ScheduleFormState[K],
+  ) {
+    setScheduleForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function startScheduleBlockCreate(blockType: ScheduleBlockType) {
+    setEditingScheduleBlockId(null);
+    setScheduleForm({
+      ...emptyScheduleForm,
+      block_type: blockType,
+      day_of_week: blockType === "fixed" ? "monday" : "",
+    });
+  }
+
+  function startScheduleBlockEdit(block: ScheduleBlock) {
+    setEditingScheduleBlockId(block.id);
+    setScheduleForm(scheduleFormFromBlock(block));
+  }
+
+  function getSchedulePayload() {
+    return {
+      title: scheduleForm.title.trim(),
+      block_type: scheduleForm.block_type,
+      category: scheduleForm.category,
+      day_of_week: scheduleForm.day_of_week || null,
+      start_time: scheduleForm.start_time || null,
+      end_time: scheduleForm.end_time || null,
+      duration_minutes: scheduleForm.duration_minutes
+        ? Number(scheduleForm.duration_minutes)
+        : null,
+      recurrence: scheduleForm.recurrence.trim() || null,
+      priority: scheduleForm.priority,
+      notes: scheduleForm.notes.trim() || null,
+      active: scheduleForm.active,
+    };
+  }
+
+  async function saveScheduleBlock() {
+    if (!scheduleForm.title.trim()) {
+      setToast({ message: "Schedule block title is required.", type: "error" });
+      return;
+    }
+
+    if (
+      scheduleForm.block_type === "fixed" &&
+      (!scheduleForm.day_of_week ||
+        !scheduleForm.start_time ||
+        !scheduleForm.end_time)
+    ) {
+      setToast({
+        message: "Fixed blocks need a day, start time, and end time.",
+        type: "error",
+      });
+      return;
+    }
+
+    if (
+      scheduleForm.block_type === "flexible" &&
+      !scheduleForm.duration_minutes
+    ) {
+      setToast({
+        message: "Flexible blocks need a duration.",
+        type: "error",
+      });
+      return;
+    }
+
+    setSavingScheduleBlock(true);
+    setToast(null);
+
+    const response = await fetch(
+      editingScheduleBlockId
+        ? `${API_BASE}/orbit/schedule-blocks/${editingScheduleBlockId}`
+        : `${API_BASE}/orbit/schedule-blocks`,
+      {
+        method: editingScheduleBlockId ? "PATCH" : "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(getSchedulePayload()),
+      },
+    );
+
+    if (!response.ok) {
+      let message = "Could not save schedule block.";
+      try {
+        const errorBody = (await response.json()) as { detail?: string };
+        message = errorBody.detail ?? message;
+      } catch {
+        message = "Could not save schedule block.";
+      }
+
+      setToast({ message, type: "error" });
+      setSavingScheduleBlock(false);
+      return;
+    }
+
+    const savedBlock = (await response.json()) as ScheduleBlock;
+    setScheduleBlocks((current) => {
+      if (editingScheduleBlockId) {
+        return current.map((block) =>
+          block.id === savedBlock.id ? savedBlock : block,
+        );
+      }
+
+      return [...current, savedBlock];
+    });
+    setScheduleForm({
+      ...emptyScheduleForm,
+      block_type: scheduleForm.block_type,
+      day_of_week: scheduleForm.block_type === "fixed" ? "monday" : "",
+    });
+    setEditingScheduleBlockId(null);
+    setToast({ message: "Schedule block saved.", type: "success" });
+    setSavingScheduleBlock(false);
+    router.refresh();
+  }
+
+  async function archiveScheduleBlock(block: ScheduleBlock) {
+    setMutatingScheduleBlockId(block.id);
+    setToast(null);
+
+    const response = await fetch(
+      `${API_BASE}/orbit/schedule-blocks/${block.id}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ active: false }),
+      },
+    );
+
+    if (!response.ok) {
+      setToast({ message: "Could not archive schedule block.", type: "error" });
+      setMutatingScheduleBlockId(null);
+      return;
+    }
+
+    const archivedBlock = (await response.json()) as ScheduleBlock;
+    setScheduleBlocks((current) =>
+      current.map((entry) =>
+        entry.id === archivedBlock.id ? archivedBlock : entry,
+      ),
+    );
+    setToast({ message: "Schedule block archived.", type: "success" });
+    setMutatingScheduleBlockId(null);
+    router.refresh();
+  }
+
+  async function deleteScheduleBlock(blockId: number) {
+    setMutatingScheduleBlockId(blockId);
+    setToast(null);
+
+    const response = await fetch(`${API_BASE}/orbit/schedule-blocks/${blockId}`, {
+      method: "DELETE",
+    });
+
+    if (!response.ok) {
+      setToast({ message: "Could not delete schedule block.", type: "error" });
+      setMutatingScheduleBlockId(null);
+      return;
+    }
+
+    setScheduleBlocks((current) =>
+      current.filter((block) => block.id !== blockId),
+    );
+    if (editingScheduleBlockId === blockId) {
+      setEditingScheduleBlockId(null);
+      setScheduleForm(emptyScheduleForm);
+    }
+    setToast({ message: "Schedule block deleted.", type: "success" });
+    setMutatingScheduleBlockId(null);
+    router.refresh();
+  }
+
   return (
     <section className="relative rounded-2xl border border-white/10 bg-neutral-900/80 p-4 shadow-2xl shadow-black/30">
       {toast ? (
@@ -968,7 +1608,7 @@ export default function OrbitBoard({
         <div className="flex flex-col gap-2 lg:grid lg:grid-cols-[1.1fr_0.9fr] lg:items-start">
           <div className="contents lg:flex lg:flex-col lg:gap-2">
             <div className="order-1 lg:order-none">
-              <MiniPanel title="Corporate Escape">
+              <MiniPanel title="Major Event">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-2xl font-semibold tracking-tight text-white">
@@ -987,6 +1627,21 @@ export default function OrbitBoard({
                 <p className="text-xs text-neutral-500">days</p>
               </div>
             </div>
+            {majorEvents.length > 1 ? (
+              <select
+                value={event?.id ?? ""}
+                onChange={(selectEvent) =>
+                  setSelectedMajorEventId(Number(selectEvent.target.value))
+                }
+                className="mt-3 w-full rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+              >
+                {majorEvents.map((majorEvent) => (
+                  <option key={majorEvent.id} value={majorEvent.id}>
+                    {majorEvent.title} ({formatStatus(majorEvent.status)})
+                  </option>
+                ))}
+              </select>
+            ) : null}
             <div className="mt-3">
               <div className="mb-1.5 flex justify-between text-xs text-neutral-400">
                 <span>Progress</span>
@@ -1021,24 +1676,34 @@ export default function OrbitBoard({
                     ))}
                   </div>
                 ) : (
-                  <p className="text-sm text-neutral-500">No priority tasks</p>
+                  <p className="text-sm text-neutral-500">
+                    No priority tasks linked to this event yet.
+                  </p>
                 )}
               </MiniPanel>
             </div>
 
             <div className="order-7 lg:order-none">
               <MiniPanel title="Overall Readiness">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-2xl font-semibold text-white">
-                {overallReadiness === null ? "--" : `${overallReadiness}%`}
-              </span>
-              <span className="text-xs text-neutral-500">
-                {readiness.length} categories
-              </span>
-            </div>
-            <div className="mt-2">
-              <ProgressBar value={overallReadiness ?? 0} />
-            </div>
+                {eventReadiness.length > 0 ? (
+                  <>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-2xl font-semibold text-white">
+                        {overallReadiness === null ? "--" : `${overallReadiness}%`}
+                      </span>
+                      <span className="text-xs text-neutral-500">
+                        {eventReadiness.length} categories
+                      </span>
+                    </div>
+                    <div className="mt-2">
+                      <ProgressBar value={overallReadiness ?? 0} />
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-sm text-neutral-500">
+                    No readiness categories for this event yet.
+                  </p>
+                )}
               </MiniPanel>
             </div>
           </div>
@@ -1082,7 +1747,7 @@ export default function OrbitBoard({
                   <p className="text-sm text-neutral-500">
                     {recommendationsError
                       ? "Recommendations unavailable right now."
-                      : "No recommendations yet"}
+                      : "No recommendations for this event yet."}
                   </p>
                 )}
               </MiniPanel>
@@ -1161,7 +1826,9 @@ export default function OrbitBoard({
                     })}
                   </div>
                 ) : (
-                  <p className="text-sm text-neutral-500">No strategic gaps</p>
+                  <p className="text-sm text-neutral-500">
+                    No strategic gaps for this event yet.
+                  </p>
                 )}
               </MiniPanel>
             </div>
@@ -1180,11 +1847,231 @@ export default function OrbitBoard({
                     ))}
                   </div>
                 ) : (
-                  <p className="text-sm text-neutral-500">No active blockers</p>
+                  <p className="text-sm text-neutral-500">
+                    No blockers detected for this event yet.
+                  </p>
                 )}
               </MiniPanel>
             </div>
           </div>
+        </div>
+      ) : null}
+
+      {activeTab === "Major Events" ? (
+        <div className="grid gap-3 lg:grid-cols-[0.9fr_1.1fr]">
+          <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-neutral-100">
+                  Major Event
+                </h2>
+                <p className="mt-1 text-xs text-neutral-500">
+                  {editingMajorEventId
+                    ? "Editing saved event"
+                    : "Create a new Orbit anchor"}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={startMajorEventCreate}
+                className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white"
+              >
+                New Event
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <input
+                type="text"
+                value={majorEventForm.title}
+                onChange={(event) =>
+                  setMajorEventField("title", event.target.value)
+                }
+                placeholder="Title"
+                className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
+              />
+              <textarea
+                value={majorEventForm.description}
+                onChange={(event) =>
+                  setMajorEventField("description", event.target.value)
+                }
+                placeholder="Description"
+                rows={3}
+                className="min-h-24 w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
+              />
+              <div className="grid gap-2 sm:grid-cols-3">
+                <input
+                  type="date"
+                  value={majorEventForm.target_date}
+                  onChange={(event) =>
+                    setMajorEventField("target_date", event.target.value)
+                  }
+                  className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                />
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={majorEventForm.progress_percent}
+                  onChange={(event) =>
+                    setMajorEventField("progress_percent", event.target.value)
+                  }
+                  placeholder="Progress"
+                  className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
+                />
+                <select
+                  value={majorEventForm.status}
+                  onChange={(event) =>
+                    setMajorEventField(
+                      "status",
+                      event.target.value as MajorEventStatus,
+                    )
+                  }
+                  className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                >
+                  {majorEventStatusOptions.map((statusOption) => (
+                    <option key={statusOption} value={statusOption}>
+                      {formatStatus(statusOption)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={saveMajorEvent}
+                  disabled={savingMajorEvent}
+                  className="rounded-lg border border-emerald-300/25 bg-emerald-300/10 px-3 py-2 text-xs font-semibold text-emerald-100 hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingMajorEvent
+                    ? "Saving..."
+                    : editingMajorEventId
+                      ? "Save Changes"
+                      : "Add Event"}
+                </button>
+                {editingMajorEventId ? (
+                  <button
+                    type="button"
+                    onClick={startMajorEventCreate}
+                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-neutral-100">
+                  Events
+                </h2>
+                <p className="mt-1 text-xs text-neutral-500">
+                  {majorEvents.length} event{majorEvents.length === 1 ? "" : "s"}
+                </p>
+              </div>
+              {majorEvents.length > 0 ? (
+                <select
+                  value={event?.id ?? ""}
+                  onChange={(selectEvent) =>
+                    setSelectedMajorEventId(Number(selectEvent.target.value))
+                  }
+                  className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                >
+                  {majorEvents.map((majorEvent) => (
+                    <option key={majorEvent.id} value={majorEvent.id}>
+                      {majorEvent.title}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+            </div>
+
+            {majorEvents.length > 0 ? (
+              <div className="space-y-2">
+                {majorEvents.map((majorEvent) => {
+                  const linkedMilestones = milestones.filter(
+                    (milestone) => milestone.major_event_id === majorEvent.id,
+                  );
+                  const isSelected = event?.id === majorEvent.id;
+
+                  return (
+                    <article
+                      key={majorEvent.id}
+                      className={`rounded-lg border px-3 py-2 ${
+                        isSelected
+                          ? "border-cyan-300/30 bg-cyan-300/10"
+                          : majorEvent.status === "archived"
+                            ? "border-white/5 bg-black/20 opacity-60"
+                            : "border-white/10 bg-white/[0.03]"
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="text-sm font-semibold text-neutral-100">
+                              {majorEvent.title}
+                            </h3>
+                            <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-400">
+                              {formatStatus(majorEvent.status)}
+                            </span>
+                            {isSelected ? (
+                              <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[11px] text-cyan-100">
+                                Selected
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="mt-1 text-xs text-neutral-500">
+                            {formatDate(majorEvent.target_date)} |{" "}
+                            {majorEvent.progress_percent}% |{" "}
+                            {linkedMilestones.length} milestone
+                            {linkedMilestones.length === 1 ? "" : "s"}
+                          </p>
+                          {majorEvent.description ? (
+                            <p className="mt-1 line-clamp-2 text-sm leading-5 text-neutral-400">
+                              {majorEvent.description}
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedMajorEventId(majorEvent.id)}
+                            className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white"
+                          >
+                            Select
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => startMajorEventEdit(majorEvent)}
+                            className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white"
+                          >
+                            Edit
+                          </button>
+                          {majorEvent.status !== "archived" ? (
+                            <button
+                              type="button"
+                              onClick={() => archiveMajorEvent(majorEvent)}
+                              disabled={archivingMajorEventId === majorEvent.id}
+                              className="rounded-md border border-amber-300/25 bg-amber-300/10 px-2 py-1 text-xs font-semibold text-amber-100 hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              Archive
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-sm text-neutral-500">
+                No major events have been added yet.
+              </p>
+            )}
+          </section>
         </div>
       ) : null}
 
@@ -1200,6 +2087,301 @@ export default function OrbitBoard({
               milestones={tagMilestones}
             />
           )}
+        </div>
+      ) : null}
+
+      {activeTab === "Schedule" ? (
+        <div className="grid gap-3 lg:grid-cols-[0.9fr_1.1fr]">
+          <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-neutral-100">
+                  Schedule Block
+                </h2>
+                <p className="mt-1 text-xs text-neutral-500">
+                  {editingScheduleBlockId
+                    ? "Editing saved block"
+                    : "Create a fixed or flexible block"}
+                </p>
+              </div>
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => startScheduleBlockCreate("fixed")}
+                  className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold ${
+                    scheduleForm.block_type === "fixed"
+                      ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-100"
+                      : "border-white/10 bg-white/[0.03] text-neutral-400 hover:text-white"
+                  }`}
+                >
+                  Fixed
+                </button>
+                <button
+                  type="button"
+                  onClick={() => startScheduleBlockCreate("flexible")}
+                  className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold ${
+                    scheduleForm.block_type === "flexible"
+                      ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-100"
+                      : "border-white/10 bg-white/[0.03] text-neutral-400 hover:text-white"
+                  }`}
+                >
+                  Flexible
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <input
+                type="text"
+                value={scheduleForm.title}
+                onChange={(event) =>
+                  setScheduleField("title", event.target.value)
+                }
+                placeholder="Title"
+                className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
+              />
+              <div className="grid gap-2 sm:grid-cols-2">
+                <select
+                  value={scheduleForm.category}
+                  onChange={(event) =>
+                    setScheduleField(
+                      "category",
+                      event.target.value as ScheduleBlockCategory,
+                    )
+                  }
+                  className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                >
+                  {categoryOptions.map((category) => (
+                    <option key={category} value={category}>
+                      {formatStatus(category)}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={scheduleForm.priority}
+                  onChange={(event) =>
+                    setScheduleField(
+                      "priority",
+                      event.target.value as ScheduleBlockPriority,
+                    )
+                  }
+                  className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                >
+                  {priorityOptions.map((priority) => (
+                    <option key={priority} value={priority}>
+                      {formatStatus(priority)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {scheduleForm.block_type === "fixed" ? (
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <select
+                    value={scheduleForm.day_of_week}
+                    onChange={(event) =>
+                      setScheduleField(
+                        "day_of_week",
+                        event.target.value as DayOfWeek,
+                      )
+                    }
+                    className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                  >
+                    {dayOptions.map((day) => (
+                      <option key={day} value={day}>
+                        {formatStatus(day)}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="time"
+                    value={scheduleForm.start_time}
+                    onChange={(event) =>
+                      setScheduleField("start_time", event.target.value)
+                    }
+                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                  />
+                  <input
+                    type="time"
+                    value={scheduleForm.end_time}
+                    onChange={(event) =>
+                      setScheduleField("end_time", event.target.value)
+                    }
+                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                  />
+                </div>
+              ) : (
+                <input
+                  type="number"
+                  min="1"
+                  value={scheduleForm.duration_minutes}
+                  onChange={(event) =>
+                    setScheduleField("duration_minutes", event.target.value)
+                  }
+                  placeholder="Duration minutes"
+                  className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
+                />
+              )}
+
+              <input
+                type="text"
+                value={scheduleForm.recurrence}
+                onChange={(event) =>
+                  setScheduleField("recurrence", event.target.value)
+                }
+                placeholder="Recurrence"
+                className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
+              />
+              <textarea
+                value={scheduleForm.notes}
+                onChange={(event) =>
+                  setScheduleField("notes", event.target.value)
+                }
+                placeholder="Notes"
+                rows={3}
+                className="min-h-24 w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
+              />
+              <label className="flex items-center gap-2 text-xs text-neutral-400">
+                <input
+                  type="checkbox"
+                  checked={scheduleForm.active}
+                  onChange={(event) =>
+                    setScheduleField("active", event.target.checked)
+                  }
+                  className="h-4 w-4 accent-cyan-300"
+                />
+                Active
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={saveScheduleBlock}
+                  disabled={savingScheduleBlock}
+                  className="rounded-lg border border-emerald-300/25 bg-emerald-300/10 px-3 py-2 text-xs font-semibold text-emerald-100 hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingScheduleBlock
+                    ? "Saving..."
+                    : editingScheduleBlockId
+                      ? "Save Changes"
+                      : "Add Block"}
+                </button>
+                {editingScheduleBlockId ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingScheduleBlockId(null);
+                      setScheduleForm(emptyScheduleForm);
+                    }}
+                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-neutral-100">
+                  Blocks
+                </h2>
+                <p className="mt-1 text-xs text-neutral-500">
+                  {scheduleBlocksError
+                    ? "Schedule blocks are unavailable right now."
+                    : `${scheduleBlocks.length} block${scheduleBlocks.length === 1 ? "" : "s"}`}
+                </p>
+              </div>
+            </div>
+
+            {scheduleBlocksError ? (
+              <p className="text-sm text-red-100">
+                Schedule blocks are unavailable right now.
+              </p>
+            ) : groupedScheduleBlocks.length > 0 ? (
+              <div className="space-y-3">
+                {groupedScheduleBlocks.map((group) => (
+                  <div key={group.label}>
+                    <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                      {group.label}
+                    </h3>
+                    <div className="space-y-1.5">
+                      {group.blocks.map((block) => (
+                        <article
+                          key={block.id}
+                          className={`rounded-lg border px-3 py-2 ${
+                            block.active
+                              ? "border-white/10 bg-white/[0.03]"
+                              : "border-white/5 bg-black/20 opacity-60"
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h4 className="text-sm font-semibold text-neutral-100">
+                                  {block.title}
+                                </h4>
+                                <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[11px] text-cyan-100">
+                                  {formatStatus(block.block_type)}
+                                </span>
+                                <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-400">
+                                  {formatStatus(block.priority)}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-xs text-neutral-500">
+                                {formatBlockTiming(block)} |{" "}
+                                {formatStatus(block.category)}
+                                {block.recurrence
+                                  ? ` | ${block.recurrence}`
+                                  : ""}
+                              </p>
+                              {block.notes ? (
+                                <p className="mt-1 line-clamp-2 text-sm leading-5 text-neutral-400">
+                                  {block.notes}
+                                </p>
+                              ) : null}
+                            </div>
+                            <div className="flex shrink-0 flex-wrap gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => startScheduleBlockEdit(block)}
+                                className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white"
+                              >
+                                Edit
+                              </button>
+                              {block.active ? (
+                                <button
+                                  type="button"
+                                  onClick={() => archiveScheduleBlock(block)}
+                                  disabled={mutatingScheduleBlockId === block.id}
+                                  className="rounded-md border border-amber-300/25 bg-amber-300/10 px-2 py-1 text-xs font-semibold text-amber-100 hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  Archive
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                onClick={() => deleteScheduleBlock(block.id)}
+                                disabled={mutatingScheduleBlockId === block.id}
+                                className="rounded-md border border-red-300/25 bg-red-300/10 px-2 py-1 text-xs font-semibold text-red-100 hover:bg-red-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-neutral-500">
+                No schedule blocks have been added yet.
+              </p>
+            )}
+          </section>
         </div>
       ) : null}
 
@@ -1326,8 +2508,8 @@ export default function OrbitBoard({
           ) : (
             <div className="rounded-xl border border-white/10 bg-neutral-950/70 p-4 text-sm text-neutral-500">
               {event
-                ? "No milestones are linked to Corporate Escape yet."
-                : "Milestones will appear once the Corporate Escape event is available."}
+                ? `No milestones are linked to ${event.title} yet.`
+                : "Milestones will appear once a major event is available."}
             </div>
           )}
         </div>
@@ -1628,8 +2810,8 @@ export default function OrbitBoard({
             <div className="rounded-xl border border-red-500/30 bg-red-950/20 p-4 text-sm text-red-100">
               Readiness is unavailable right now.
             </div>
-          ) : readiness.length > 0 ? (
-            readiness.map((category) => (
+          ) : eventReadiness.length > 0 ? (
+            eventReadiness.map((category) => (
               <article
                 key={category.id}
                 className="rounded-xl border border-white/10 bg-neutral-950/70 p-4"
@@ -1652,7 +2834,7 @@ export default function OrbitBoard({
             ))
           ) : (
             <div className="rounded-xl border border-white/10 bg-neutral-950/70 p-4 text-sm text-neutral-500">
-              No readiness categories have been added to Orbit yet.
+              No readiness categories have been added for this major event yet.
             </div>
           )}
         </div>

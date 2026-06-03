@@ -73,10 +73,6 @@ def _get_major_event_id(cursor: Any, title: str) -> int | None:
     return int(row["id"])
 
 
-def _is_blank(value: Any) -> bool:
-    return value is None or str(value).strip() == ""
-
-
 def _get_milestone_id(cursor: Any, major_event_id: int, title: str) -> int | None:
     cursor.execute(
         """
@@ -135,18 +131,6 @@ def _seed_major_event(cursor: Any) -> int:
         )
         return int(cursor.lastrowid)
 
-    cursor.execute("SELECT description FROM major_events WHERE id = ?", (event_id,))
-    row = cursor.fetchone()
-    if row is not None and _is_blank(row["description"]):
-        cursor.execute(
-            """
-            UPDATE major_events
-            SET description = ?
-            WHERE id = ?
-            """,
-            (EVENT_DATA["description"], event_id),
-        )
-
     return event_id
 
 
@@ -183,18 +167,6 @@ def _seed_milestones(cursor: Any, event_id: int) -> None:
                     milestone["status"],
                 ),
             )
-            continue
-
-        cursor.execute(
-            """
-            UPDATE milestones
-            SET
-                description = ?,
-                status = ?
-            WHERE id = ?
-            """,
-            (milestone["description"], milestone["status"], int(row["id"])),
-        )
 
 
 def _seed_inbox(cursor: Any, event_id: int) -> None:
@@ -219,21 +191,6 @@ def _seed_inbox(cursor: Any, event_id: int) -> None:
             ),
         )
         milestone_id = int(cursor.lastrowid)
-    else:
-        cursor.execute(
-            """
-            UPDATE milestones
-            SET
-                description = ?,
-                status = ?
-            WHERE id = ?
-            """,
-            (
-                "Default catch-all milestone for loose Orbit goals and tasks.",
-                "active",
-                milestone_id,
-            ),
-        )
 
     goal_id = _get_goal_id(cursor, milestone_id, INBOX_GOAL_TITLE)
     if goal_id is None:
@@ -256,21 +213,6 @@ def _seed_inbox(cursor: Any, event_id: int) -> None:
             ),
         )
         return
-
-    cursor.execute(
-        """
-        UPDATE goals
-        SET
-            description = ?,
-            status = ?
-        WHERE id = ?
-        """,
-        (
-            "Default catch-all goal for loose Orbit tasks.",
-            "active",
-            goal_id,
-        ),
-    )
 
 
 def _seed_readiness_categories(cursor: Any, event_id: int) -> None:

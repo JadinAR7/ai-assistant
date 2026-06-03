@@ -56,10 +56,11 @@ def init_orbit_db() -> None:
             title TEXT NOT NULL,
             description TEXT,
             target_date TEXT,
-            status TEXT NOT NULL DEFAULT 'not_started',
+            status TEXT NOT NULL DEFAULT 'active',
             progress_percent INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK (status IN ('active', 'paused', 'completed', 'archived')),
             CHECK (progress_percent >= 0 AND progress_percent <= 100)
         )
     """)
@@ -193,6 +194,51 @@ def init_orbit_db() -> None:
     """)
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS schedule_blocks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            block_type TEXT NOT NULL,
+            category TEXT NOT NULL,
+            day_of_week TEXT,
+            start_time TEXT,
+            end_time TEXT,
+            duration_minutes INTEGER,
+            recurrence TEXT,
+            priority TEXT NOT NULL DEFAULT 'medium',
+            notes TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK (block_type IN ('fixed', 'flexible')),
+            CHECK (category IN (
+                'boxing',
+                'family',
+                'reading',
+                'work',
+                'trading',
+                'milestone',
+                'leisure',
+                'personal',
+                'other'
+            )),
+            CHECK (
+                day_of_week IS NULL OR day_of_week IN (
+                    'monday',
+                    'tuesday',
+                    'wednesday',
+                    'thursday',
+                    'friday',
+                    'saturday',
+                    'sunday'
+                )
+            ),
+            CHECK (duration_minutes IS NULL OR duration_minutes > 0),
+            CHECK (priority IN ('low', 'medium', 'high')),
+            CHECK (active IN (0, 1))
+        )
+    """)
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS agent_definitions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -219,6 +265,12 @@ def init_orbit_db() -> None:
                 REFERENCES agent_definitions (id)
                 ON DELETE CASCADE
         )
+    """)
+
+    cursor.execute("""
+        UPDATE major_events
+        SET status = 'active'
+        WHERE status NOT IN ('active', 'paused', 'completed', 'archived')
     """)
 
     cursor.execute("""
@@ -249,6 +301,17 @@ def init_orbit_db() -> None:
         FOR EACH ROW
         BEGIN
             UPDATE trade_sessions
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = OLD.id;
+        END
+    """)
+
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS update_schedule_blocks_updated_at
+        AFTER UPDATE ON schedule_blocks
+        FOR EACH ROW
+        BEGIN
+            UPDATE schedule_blocks
             SET updated_at = CURRENT_TIMESTAMP
             WHERE id = OLD.id;
         END

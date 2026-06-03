@@ -21,6 +21,9 @@ from .models import (
     RecommendationSet,
     Review,
     ReviewCreate,
+    ScheduleBlock,
+    ScheduleBlockCreate,
+    ScheduleBlockUpdate,
     StrategicGap,
     Task,
     TaskCreate,
@@ -69,6 +72,44 @@ def _not_found(name: str, record_id: int) -> HTTPException:
     )
 
 
+def _validation_error(message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=message,
+    )
+
+
+@router.get("/schedule-blocks", response_model=list[ScheduleBlock])
+def list_schedule_blocks():
+    return service.list_schedule_blocks()
+
+
+@router.post("/schedule-blocks", response_model=ScheduleBlock, status_code=status.HTTP_201_CREATED)
+def create_schedule_block(payload: ScheduleBlockCreate):
+    try:
+        return service.create_schedule_block(payload)
+    except ValueError as error:
+        raise _validation_error(str(error)) from error
+
+
+@router.patch("/schedule-blocks/{schedule_block_id}", response_model=ScheduleBlock)
+def update_schedule_block(schedule_block_id: int, payload: ScheduleBlockUpdate):
+    try:
+        record = service.update_schedule_block(schedule_block_id, payload)
+    except ValueError as error:
+        raise _validation_error(str(error)) from error
+
+    if record is None:
+        raise _not_found("Schedule block", schedule_block_id)
+    return record
+
+
+@router.delete("/schedule-blocks/{schedule_block_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_schedule_block(schedule_block_id: int):
+    if not service.delete_record("schedule_blocks", schedule_block_id):
+        raise _not_found("Schedule block", schedule_block_id)
+
+
 @router.post("/major-events", response_model=MajorEvent, status_code=status.HTTP_201_CREATED)
 def create_major_event(payload: MajorEventCreate):
     return service.create_major_event(payload)
@@ -76,7 +117,7 @@ def create_major_event(payload: MajorEventCreate):
 
 @router.get("/major-events", response_model=list[MajorEvent])
 def list_major_events():
-    return service.list_records("major_events")
+    return service.list_major_events()
 
 
 @router.get("/major-events/{event_id}", response_model=MajorEvent)
@@ -95,10 +136,12 @@ def update_major_event(event_id: int, payload: MajorEventUpdate):
     return record
 
 
-@router.delete("/major-events/{event_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_major_event(event_id: int):
-    if not service.delete_record("major_events", event_id):
+@router.delete("/major-events/{event_id}", response_model=MajorEvent)
+def archive_major_event(event_id: int):
+    record = service.archive_major_event(event_id)
+    if record is None:
         raise _not_found("Major event", event_id)
+    return record
 
 
 @router.post("/milestones", response_model=Milestone, status_code=status.HTTP_201_CREATED)
