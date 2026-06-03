@@ -208,6 +208,8 @@ def init_orbit_db() -> None:
             contracts INTEGER,
             session TEXT,
             htf_bias TEXT,
+            strategy_profile TEXT NOT NULL DEFAULT 'Liquidity Narrative Continuation',
+            strategy_mode TEXT NOT NULL DEFAULT 'Hybrid / Review',
             draw_on_liquidity TEXT NOT NULL DEFAULT '[]',
             reaction_zone TEXT,
             behavior_tags TEXT NOT NULL DEFAULT '[]',
@@ -225,9 +227,23 @@ def init_orbit_db() -> None:
             CHECK (direction IN ('Long', 'Short')),
             CHECK (contracts IS NULL OR contracts >= 0),
             CHECK (session IS NULL OR session IN ('Asia', 'London', 'New York', 'After Hours')),
-            CHECK (htf_bias IS NULL OR htf_bias IN ('Bullish', 'Bearish', 'Neutral'))
+            CHECK (htf_bias IS NULL OR htf_bias IN ('Bullish', 'Bearish', 'Neutral')),
+            CHECK (strategy_mode IN ('Scalp', 'Day Trade', 'Hybrid / Review'))
         )
     """)
+
+    cursor.execute("PRAGMA table_info(trade_journal)")
+    trade_journal_columns = {row["name"] for row in cursor.fetchall()}
+    if "strategy_profile" not in trade_journal_columns:
+        cursor.execute(
+            "ALTER TABLE trade_journal "
+            "ADD COLUMN strategy_profile TEXT NOT NULL DEFAULT 'Liquidity Narrative Continuation'"
+        )
+    if "strategy_mode" not in trade_journal_columns:
+        cursor.execute(
+            "ALTER TABLE trade_journal "
+            "ADD COLUMN strategy_mode TEXT NOT NULL DEFAULT 'Hybrid / Review'"
+        )
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS schedule_blocks (

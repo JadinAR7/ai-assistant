@@ -95,6 +95,8 @@ TABLE_COLUMNS = {
         "contracts",
         "session",
         "htf_bias",
+        "strategy_profile",
+        "strategy_mode",
         "draw_on_liquidity",
         "reaction_zone",
         "behavior_tags",
@@ -1937,6 +1939,11 @@ def _normalize_trade_journal_data(data: dict[str, Any]) -> dict[str, Any]:
             normalized[key] = None
         elif key == "symbol" and isinstance(value, str):
             normalized[key] = value.strip().upper()
+        elif key == "strategy_profile":
+            normalized[key] = (
+                value.strip() if isinstance(value, str) and value.strip()
+                else "Liquidity Narrative Continuation"
+            )
         elif key in TRADE_JOURNAL_JSON_COLUMNS:
             normalized[key] = json.dumps(value or [])
         else:

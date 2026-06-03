@@ -31,6 +31,7 @@ ScheduleDayStatus = Literal["healthy", "busy", "overloaded"]
 TradeDirection = Literal["Long", "Short"]
 TradeSessionName = Literal["Asia", "London", "New York", "After Hours"]
 TradeHtfBias = Literal["Bullish", "Bearish", "Neutral"]
+TradeStrategyMode = Literal["Scalp", "Day Trade", "Hybrid / Review"]
 
 
 class ScheduleBlockBase(BaseModel):
@@ -415,6 +416,8 @@ class TradeJournalBase(BaseModel):
     contracts: Optional[int] = Field(default=None, ge=0)
     session: Optional[TradeSessionName] = None
     htf_bias: Optional[TradeHtfBias] = None
+    strategy_profile: str = "Liquidity Narrative Continuation"
+    strategy_mode: TradeStrategyMode = "Hybrid / Review"
     draw_on_liquidity: list[str] = Field(default_factory=list)
     reaction_zone: Optional[str] = None
     behavior_tags: list[str] = Field(default_factory=list)
@@ -446,6 +449,8 @@ class TradeJournalUpdate(BaseModel):
     contracts: Optional[int] = Field(default=None, ge=0)
     session: Optional[TradeSessionName] = None
     htf_bias: Optional[TradeHtfBias] = None
+    strategy_profile: Optional[str] = None
+    strategy_mode: Optional[TradeStrategyMode] = None
     draw_on_liquidity: Optional[list[str]] = None
     reaction_zone: Optional[str] = None
     behavior_tags: Optional[list[str]] = None

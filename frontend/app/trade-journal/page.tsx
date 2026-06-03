@@ -19,6 +19,8 @@ const IMPORT_SAVE_URL = `${IMPORT_URL}/save`;
 const directions = ["Long", "Short"] as const;
 const sessions = ["Asia", "London", "New York", "After Hours"] as const;
 const htfBiasOptions = ["Bullish", "Bearish", "Neutral"] as const;
+const strategyProfileName = "Liquidity Narrative Continuation";
+const strategyModeOptions = ["Scalp", "Day Trade", "Hybrid / Review"] as const;
 const liquidityOptions = [
   "PDH",
   "PDL",
@@ -56,6 +58,7 @@ const executionOptions = [
 type Direction = (typeof directions)[number];
 type TradeSession = (typeof sessions)[number];
 type HtfBias = (typeof htfBiasOptions)[number];
+type StrategyMode = (typeof strategyModeOptions)[number];
 type JournalMode = "import" | "manual";
 type DraftStatus = "pending" | "saved" | "skipped";
 
@@ -73,6 +76,8 @@ type TradeJournalEntry = {
   contracts: number | null;
   session: TradeSession | null;
   htf_bias: HtfBias | null;
+  strategy_profile: string;
+  strategy_mode: StrategyMode;
   draw_on_liquidity: string[];
   reaction_zone: string | null;
   behavior_tags: string[];
@@ -186,6 +191,8 @@ type JournalForm = {
   contracts: string;
   session: "" | TradeSession;
   htf_bias: "" | HtfBias;
+  strategy_profile: string;
+  strategy_mode: StrategyMode;
   draw_on_liquidity: string[];
   reaction_zone: string;
   behavior_tags: string[];
@@ -213,6 +220,8 @@ const emptyForm = (): JournalForm => ({
   contracts: "",
   session: "",
   htf_bias: "",
+  strategy_profile: strategyProfileName,
+  strategy_mode: "Hybrid / Review",
   draw_on_liquidity: [],
   reaction_zone: "",
   behavior_tags: [],
@@ -241,6 +250,8 @@ function formFromEntry(entry: TradeJournalEntry): JournalForm {
     contracts: entry.contracts?.toString() ?? "",
     session: entry.session ?? "",
     htf_bias: entry.htf_bias ?? "",
+    strategy_profile: entry.strategy_profile || strategyProfileName,
+    strategy_mode: entry.strategy_mode ?? "Hybrid / Review",
     draw_on_liquidity: entry.draw_on_liquidity,
     reaction_zone: entry.reaction_zone ?? "",
     behavior_tags: entry.behavior_tags,
@@ -283,6 +294,8 @@ function toPayload(form: JournalForm) {
       form.contracts.trim() === "" ? null : Math.max(0, Number(form.contracts)),
     session: form.session || null,
     htf_bias: form.htf_bias || null,
+    strategy_profile: form.strategy_profile || strategyProfileName,
+    strategy_mode: form.strategy_mode,
     draw_on_liquidity: form.draw_on_liquidity,
     reaction_zone: optionalText(form.reaction_zone),
     behavior_tags: form.behavior_tags,
@@ -1502,6 +1515,9 @@ export default function TradeJournalPage() {
                       <span className="rounded-md border border-white/10 px-2 py-1 text-xs text-neutral-300">
                         {entry.reaction_zone ?? "No zone"}
                       </span>
+                      <span className="rounded-md border border-cyan-300/25 bg-cyan-300/10 px-2 py-1 text-xs text-cyan-100">
+                        {entry.strategy_mode ?? "Hybrid / Review"}
+                      </span>
                     </div>
                   </button>
                 ))}
@@ -1557,6 +1573,14 @@ export default function TradeJournalPage() {
                 <DetailRow label="Result R" value={formatNumber(selectedEntry.result_r, "R")} />
                 <DetailRow label="Contracts" value={formatNumber(selectedEntry.contracts)} />
                 <DetailRow label="HTF Bias" value={selectedEntry.htf_bias ?? "--"} />
+                <DetailRow
+                  label="Strategy Profile"
+                  value={selectedEntry.strategy_profile || strategyProfileName}
+                />
+                <DetailRow
+                  label="Strategy Mode"
+                  value={selectedEntry.strategy_mode ?? "Hybrid / Review"}
+                />
               </div>
 
               <div className="mt-3 grid gap-3">
@@ -1757,6 +1781,26 @@ export default function TradeJournalPage() {
                     <option value="">Select bias</option>
                     {htfBiasOptions.map((bias) => (
                       <option key={bias}>{bias}</option>
+                    ))}
+                  </select>
+                </FieldLabel>
+                <FieldLabel label="Strategy Profile">
+                  <input
+                    readOnly
+                    value={form.strategy_profile}
+                    className={inputClassName("text-neutral-300")}
+                  />
+                </FieldLabel>
+                <FieldLabel label="Strategy Mode">
+                  <select
+                    value={form.strategy_mode}
+                    onChange={(event) =>
+                      updateForm("strategy_mode", event.target.value as StrategyMode)
+                    }
+                    className={inputClassName()}
+                  >
+                    {strategyModeOptions.map((mode) => (
+                      <option key={mode}>{mode}</option>
                     ))}
                   </select>
                 </FieldLabel>

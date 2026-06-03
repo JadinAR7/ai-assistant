@@ -30,6 +30,17 @@ TIMEZONE = ZoneInfo("America/Denver")
 SCAN_NOTIFY_ENABLED = os.getenv("SCAN_NOTIFY_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 SCAN_NOTIFY_IMESSAGE_ENABLED = os.getenv("SCAN_NOTIFY_IMESSAGE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 SCAN_NOTIFY_TTS_ENABLED = os.getenv("SCAN_NOTIFY_TTS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+SCAN_SIGNAL_LEVELS = ["informational", "watch", "review", "alert"]
+SCAN_ALERT_MIN_LEVEL = os.getenv("SCAN_ALERT_MIN_LEVEL", "review").strip().lower() or "review"
+if SCAN_ALERT_MIN_LEVEL not in SCAN_SIGNAL_LEVELS:
+    SCAN_ALERT_MIN_LEVEL = "review"
+try:
+    SCAN_SUPPRESS_REPEATS_MINUTES = max(
+        0,
+        int(os.getenv("SCAN_SUPPRESS_REPEATS_MINUTES", "15").strip() or "15"),
+    )
+except ValueError:
+    SCAN_SUPPRESS_REPEATS_MINUTES = 15
 
 BASE_DIR = Path(__file__).resolve().parent
 SCAN_HISTORY_PATH = BASE_DIR / "scan_history.jsonl"
@@ -1090,9 +1101,9 @@ def _behavior_location(record: dict, active_zone: dict | None, visual_text_all: 
     primary_draw = (record.get("liquidity_draw") or {}).get("primary_draw") or {}
 
     relation_labels = {
-        "inside_active_zone": "inside active FVG",
-        "above_active_zone": "above active FVG",
-        "below_active_zone": "below active FVG",
+        "inside_active_zone": "inside active FVG reaction zone",
+        "above_active_zone": "above active FVG reaction zone",
+        "below_active_zone": "below active FVG reaction zone",
     }
 
     if active_zone and active_zone.get("source") == "visual":
@@ -1102,7 +1113,7 @@ def _behavior_location(record: dict, active_zone: dict | None, visual_text_all: 
         parts.append(relation_labels[price_relation])
     elif active_zone and active_zone.get("relation_to_price"):
         relation = str(active_zone.get("relation_to_price")).replace("_", " ")
-        parts.append(f"{relation} relative to active FVG")
+        parts.append(f"{relation} relative to active FVG reaction zone")
 
     draw_label = primary_draw.get("label")
     if draw_label:
@@ -1903,6 +1914,10 @@ def classify_behavior(record: dict) -> dict:
 
     evidence.append(f"Framework hierarchy: liquidity draw -> HTF reaction zone -> behavior -> 15M context -> 5M structure.")
     evidence.append(f"Reaction zone is treated as decision context, not an entry signal: {reaction_zone}.")
+    if state.get("price_relation") == "inside_active_zone" and not has_directional_behavior:
+        evidence.append(
+            "Price is interacting with a reaction zone; behavior must confirm acceptance/rejection before this becomes alert-worthy."
+        )
 
     if reaction_zone_source == "visual":
         evidence.append("CSV is stale and visual FVG markings are available, so behavior classification anchors to the visual reaction zone.")
@@ -2045,7 +2060,7 @@ def classify_behavior(record: dict) -> dict:
     elif classification == "bullish_continuation_expansion":
         missing_confirmation.append("Need sustained 5M hold above the expansion structure for higher confidence.")
     elif classification == "consolidation":
-        missing_confirmation.append("Need cleaner directional behavior around the marked level or FVG.")
+        missing_confirmation.append("Need cleaner directional behavior around the marked level or FVG reaction zone.")
     else:
         missing_confirmation.append("Need clearer live visual behavior around the marked level or zone.")
 
@@ -2588,6 +2603,267 @@ def attach_opportunity_watch(record: dict) -> None:
 
 
 # -------------------------
+# Scanner signal tiering
+# -------------------------
+def _signal_level_rank(level: str) -> int:
+    try:
+        return SCAN_SIGNAL_LEVELS.index(str(level or "").lower())
+    except ValueError:
+        return 0
+
+
+def _at_or_above_signal_level(level: str, minimum: str) -> bool:
+    return _signal_level_rank(level) >= _signal_level_rank(minimum)
+
+
+def _behavior_confirmation_state(record: dict) -> str:
+    behavior = record.get("behavior_classification") or {}
+    classification = str(behavior.get("classification") or "unknown").lower()
+    confidence = str(behavior.get("confidence") or "low").lower()
+    structure_confirmation = str(behavior.get("structure_confirmation") or "").lower()
+    continuation_match = behavior.get("continuation_pattern_match") or {}
+    expansion_match = behavior.get("expansion_pattern_match") or {}
+
+    if classification in {"acceptance", "rejection", "reclaim", "sweep", "displacement"}:
+        if confidence in {"medium", "high"} or "5m confirms" in structure_confirmation:
+            return classification
+        return f"forming_{classification}"
+
+    if classification == "bullish_continuation_expansion" and expansion_match.get("matched"):
+        return "continuation_expansion"
+
+    if classification == "bullish_continuation_compression" and continuation_match.get("matched"):
+        return "continuation_compression"
+
+    return "none"
+
+
+def _has_meaningful_behavior_confirmation(record: dict) -> bool:
+    confirmation = _behavior_confirmation_state(record)
+    return confirmation not in {"none"} and not confirmation.startswith("forming_")
+
+
+def _liquidity_draw_alignment_state(record: dict) -> str:
+    state = record.get("state") or extract_structured_state(record)
+    htf_bias = str(state.get("htf_bias") or "unknown").lower()
+    liquidity_draw = record.get("liquidity_draw") or {}
+    primary = liquidity_draw.get("primary_draw") or {}
+    confidence = str(liquidity_draw.get("confidence") or "unknown").lower()
+    side = str(primary.get("side") or "unknown").lower()
+    label = primary.get("label")
+
+    if not label or htf_bias not in {"bullish", "bearish"} or side not in {"above", "below"}:
+        return "unclear"
+
+    aligned = (htf_bias == "bullish" and side == "above") or (htf_bias == "bearish" and side == "below")
+    if aligned and confidence in {"medium", "high"}:
+        return "aligned"
+    if aligned:
+        return "weakly_aligned"
+    return "counter"
+
+
+def _reaction_zone_status(record: dict) -> str:
+    state = record.get("state") or extract_structured_state(record)
+    behavior = record.get("behavior_classification") or {}
+    reaction_zone = str(behavior.get("reaction_zone") or "").strip()
+    behavior_location = str(behavior.get("behavior_location") or "").lower()
+    price_relation = str(state.get("price_relation") or "unknown")
+
+    if price_relation == "inside_active_zone":
+        return "interacting"
+
+    if "inside active" in behavior_location or "around visual" in behavior_location:
+        return "interacting"
+
+    if reaction_zone and reaction_zone.lower() != "unclear":
+        if price_relation in {"above_active_zone", "below_active_zone"}:
+            return "nearby"
+        return "mapped"
+
+    if state.get("visual_4h_fvg") or state.get("visual_15m_fvg"):
+        return "mapped"
+
+    return "unclear"
+
+
+def _narrative_state(record: dict) -> str:
+    opportunity = record.get("opportunity_watch") or {}
+    opportunity_type = str(opportunity.get("opportunity_type") or "no_opportunity")
+    behavior = record.get("behavior_classification") or {}
+    classification = str(behavior.get("classification") or "unknown")
+    state = record.get("state") or extract_structured_state(record)
+    htf_bias = str(state.get("htf_bias") or "unknown")
+    execution_bias = str(state.get("execution_bias") or "unknown")
+
+    if opportunity_type != "no_opportunity":
+        return opportunity_type
+    if classification != "unknown":
+        return classification
+    if htf_bias != "unknown" or execution_bias != "unknown":
+        return f"htf_{htf_bias}_execution_{execution_bias}"
+    return "no_clear_narrative"
+
+
+def _signal_repeat_signature(record: dict) -> dict:
+    state = record.get("state") or extract_structured_state(record)
+    behavior = record.get("behavior_classification") or {}
+    liquidity_draw = record.get("liquidity_draw") or {}
+    primary_draw = liquidity_draw.get("primary_draw") or {}
+
+    return {
+        "symbol": record.get("symbol") or SYMBOL,
+        "narrative_state": record.get("narrative_state") or _narrative_state(record),
+        "reaction_zone_status": record.get("reaction_zone_status") or _reaction_zone_status(record),
+        "behavior_confirmation": record.get("behavior_confirmation") or _behavior_confirmation_state(record),
+        "liquidity_draw_alignment": record.get("liquidity_draw_alignment") or _liquidity_draw_alignment_state(record),
+        "htf_bias": state.get("htf_bias"),
+        "execution_bias": state.get("execution_bias"),
+        "price_relation": state.get("price_relation"),
+        "behavior_classification": behavior.get("classification"),
+        "primary_draw": primary_draw.get("key") or primary_draw.get("label"),
+    }
+
+
+def _parse_scan_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=TIMEZONE)
+
+    return parsed.astimezone(TIMEZONE)
+
+
+def _same_scan_state(previous: dict | None, current: dict) -> bool:
+    if not previous:
+        return False
+    return _signal_repeat_signature(previous) == _signal_repeat_signature(current)
+
+
+def _repeat_suppressed(previous: dict | None, current: dict, now: datetime) -> bool:
+    if SCAN_SUPPRESS_REPEATS_MINUTES <= 0 or not _same_scan_state(previous, current):
+        return False
+
+    previous_timestamp = _parse_scan_timestamp(previous.get("timestamp"))
+    if previous_timestamp is None:
+        return False
+
+    return now - previous_timestamp <= timedelta(minutes=SCAN_SUPPRESS_REPEATS_MINUTES)
+
+
+def evaluate_scanner_signal(record: dict, previous_scan: dict | None = None, now: datetime | None = None) -> dict:
+    now = now or datetime.now(TIMEZONE)
+    reaction_zone_status = _reaction_zone_status(record)
+    behavior_confirmation = _behavior_confirmation_state(record)
+    liquidity_draw_alignment = _liquidity_draw_alignment_state(record)
+    narrative_state = _narrative_state(record)
+    behavior = record.get("behavior_classification") or {}
+    behavior_classification = str(behavior.get("classification") or "unknown").lower()
+    behavior_confidence = str(behavior.get("confidence") or "low").lower()
+    opportunity = record.get("opportunity_watch") or {}
+    opportunity_confidence = str(opportunity.get("confidence") or "low").lower()
+    comparison = record.get("comparison") or {}
+    major_change, major_change_reasons = _major_state_change(comparison)
+    meaningful_behavior = _has_meaningful_behavior_confirmation(record)
+    reasons = []
+
+    level = "informational"
+    reasons.append("Normal Liquidity Narrative Continuation scan update.")
+
+    if reaction_zone_status in {"mapped", "nearby"} or liquidity_draw_alignment in {"aligned", "weakly_aligned"}:
+        level = "watch"
+        reasons.append("Price is approaching important liquidity or an FVG reaction zone; no confirmation yet.")
+
+    if reaction_zone_status == "interacting":
+        level = "watch"
+        reasons.append(
+            "Price is interacting with a reaction zone; behavior must confirm acceptance/rejection before alert eligibility."
+        )
+
+    if behavior_confirmation.startswith("forming_"):
+        level = "watch"
+        reasons.append(f"Behavior is forming but not confirmed: {behavior_confirmation.removeprefix('forming_')}.")
+
+    if meaningful_behavior or behavior_confirmation == "continuation_compression":
+        level = "review"
+        reasons.append(f"Behavior confirmation is present: {behavior_confirmation}.")
+
+    if liquidity_draw_alignment == "aligned" and meaningful_behavior:
+        level = "review"
+        reasons.append("Liquidity draw alignment supports the behavior read.")
+
+    if (
+        meaningful_behavior
+        and liquidity_draw_alignment == "aligned"
+        and (
+            behavior_confidence == "high"
+            or behavior_confirmation == "continuation_expansion"
+            or (major_change and opportunity_confidence in {"medium", "high"})
+        )
+    ):
+        level = "alert"
+        reasons.append("Stronger narrative shift or confirmation is present.")
+
+    if major_change and not meaningful_behavior:
+        level = max(level, "watch", key=_signal_level_rank)
+        reasons.extend(major_change_reasons)
+        reasons.append("Market state changed, but meaningful behavior confirmation is still required for review/alert.")
+
+    if behavior_classification in {"consolidation", "unknown"} and not meaningful_behavior:
+        level = min(level, "watch", key=_signal_level_rank)
+        reasons.append(f"Behavior is {behavior_classification}; FVG contact alone is not alert-worthy.")
+
+    repeat_suppressed = _repeat_suppressed(previous_scan, record, now)
+    if repeat_suppressed and _at_or_above_signal_level(level, SCAN_ALERT_MIN_LEVEL):
+        reasons.append(
+            f"Repeated same-state scan suppressed for {SCAN_SUPPRESS_REPEATS_MINUTES} minutes."
+        )
+
+    return {
+        "signal_level": level,
+        "signal_reason": " ".join(_dedupe_text(reasons)),
+        "narrative_state": narrative_state,
+        "reaction_zone_status": reaction_zone_status,
+        "behavior_confirmation": behavior_confirmation,
+        "liquidity_draw_alignment": liquidity_draw_alignment,
+        "repeat_suppressed": repeat_suppressed,
+        "min_alert_level": SCAN_ALERT_MIN_LEVEL,
+    }
+
+
+def format_scanner_signal_section(signal: dict) -> str:
+    return "\n".join(
+        [
+            "## Scanner Signal",
+            f"Signal Level: {str(signal.get('signal_level') or 'informational').capitalize()}",
+            f"Narrative State: {str(signal.get('narrative_state') or 'no_clear_narrative').replace('_', ' ')}",
+            f"Reaction Zone Status: {str(signal.get('reaction_zone_status') or 'unclear').replace('_', ' ')}",
+            f"Behavior Confirmation: {str(signal.get('behavior_confirmation') or 'none').replace('_', ' ')}",
+            f"Liquidity Draw Alignment: {str(signal.get('liquidity_draw_alignment') or 'unclear').replace('_', ' ')}",
+            f"Repeat Suppressed: {'Yes' if signal.get('repeat_suppressed') else 'No'}",
+            "",
+            f"Reason: {signal.get('signal_reason') or 'Normal scan update.'}",
+        ]
+    )
+
+
+def attach_scanner_signal(record: dict, previous_scan: dict | None = None, now: datetime | None = None) -> None:
+    signal = evaluate_scanner_signal(record, previous_scan=previous_scan, now=now)
+    record.update(signal)
+    record["message"] = (
+        (record.get("message") or "")
+        + "\n\n"
+        + format_scanner_signal_section(signal)
+    ).strip()
+
+
+# -------------------------
 # Alert eligibility v1
 # -------------------------
 ALERT_ELIGIBILITY_LEVELS = ["none", "low", "medium", "high"]
@@ -2673,6 +2949,11 @@ def evaluate_chart_alert_eligibility(record: dict) -> dict:
     csv_stale = _csv_is_stale(record)
     strong_visual = _strong_visual_evidence(record)
     major_change, major_change_reasons = _major_state_change(comparison)
+    signal_level = str(record.get("signal_level") or "informational").lower()
+    reaction_zone_status = str(record.get("reaction_zone_status") or "unclear").lower()
+    behavior_confirmation = str(record.get("behavior_confirmation") or "none").lower()
+    liquidity_draw_alignment = str(record.get("liquidity_draw_alignment") or "unclear").lower()
+    repeat_suppressed = bool(record.get("repeat_suppressed"))
 
     clean_behavior = behavior_classification in [
         "acceptance",
@@ -2720,6 +3001,15 @@ def evaluate_chart_alert_eligibility(record: dict) -> dict:
     if behavior_classification in ["consolidation", "unknown"]:
         level = _min_level(level, "low")
         blockers.append(f"Behavior classification is {behavior_classification}, which caps eligibility at Low.")
+
+    if not _has_meaningful_behavior_confirmation(record):
+        level = _min_level(level, "low")
+        if reaction_zone_status == "interacting":
+            blockers.append(
+                "Price is interacting with a reaction zone, but behavior has not confirmed acceptance/rejection."
+            )
+        else:
+            blockers.append("Meaningful behavior confirmation is required before scanner eligibility can exceed Low.")
 
     if behavior_classification == "bullish_continuation_compression" and not major_change:
         level = _min_level(level, "low")
@@ -2773,6 +3063,9 @@ def evaluate_chart_alert_eligibility(record: dict) -> dict:
     if htf_bias != "unknown" or execution_bias != "unknown":
         reasons.append(f"Bias context: HTF {htf_bias}, execution {execution_bias}.")
 
+    if liquidity_draw_alignment in ["aligned", "weakly_aligned"]:
+        reasons.append(f"Liquidity draw alignment is {liquidity_draw_alignment.replace('_', ' ')}.")
+
     if (
         behavior_classification != "bullish_continuation_expansion"
         and htf_bias != execution_bias
@@ -2793,10 +3086,23 @@ def evaluate_chart_alert_eligibility(record: dict) -> dict:
     if not reasons and level == "none":
         reasons.append("No notification-worthy chart-review context is active.")
 
+    if not _at_or_above_signal_level(signal_level, SCAN_ALERT_MIN_LEVEL):
+        blockers.append(
+            f"Scanner signal level is {signal_level}; minimum alert level is {SCAN_ALERT_MIN_LEVEL}."
+        )
+
+    if repeat_suppressed:
+        blockers.append(f"Repeated same-state scan suppressed for {SCAN_SUPPRESS_REPEATS_MINUTES} minutes.")
+
     blockers = _dedupe_text(blockers)
     reasons = _dedupe_text(reasons)
     what_to_watch_next = _dedupe_text(what_to_watch_next)
-    should_notify = level in ["medium", "high"]
+    should_notify = (
+        level in ["medium", "high"]
+        and _at_or_above_signal_level(signal_level, SCAN_ALERT_MIN_LEVEL)
+        and _has_meaningful_behavior_confirmation(record)
+        and not repeat_suppressed
+    )
 
     return {
         "level": level,
@@ -2804,6 +3110,8 @@ def evaluate_chart_alert_eligibility(record: dict) -> dict:
         "reasons": reasons,
         "blockers": blockers,
         "what_to_watch_next": what_to_watch_next,
+        "signal_level": signal_level,
+        "behavior_confirmation": behavior_confirmation,
         "does_not_generate_trade_signals": True,
     }
 
@@ -3231,10 +3539,10 @@ def evaluate_alert_eligibility(comparison: dict, current_record: dict) -> dict:
     ]
 
     if meaningful_market_change:
-        should_alert = True
         alert_type = "market_state_change"
-        severity = "high"
+        severity = "watch"
         reasons.extend(meaningful_market_change)
+        reasons.append("Market state changed; behavior confirmation is required before this becomes alert-worthy.")
 
     # -------------------------
     # Price relation alerts
@@ -3242,10 +3550,11 @@ def evaluate_alert_eligibility(comparison: dict, current_record: dict) -> dict:
     price_relation = state.get("price_relation")
 
     if price_relation == "inside_active_zone":
-        should_alert = True
-        alert_type = "price_at_active_zone" if alert_type == "none" else alert_type
-        severity = "medium" if severity == "none" else severity
-        reasons.append("Price is inside the active computed zone.")
+        alert_type = "reaction_zone_interaction" if alert_type == "none" else alert_type
+        severity = "watch" if severity == "none" else severity
+        reasons.append(
+            "Price is interacting with a reaction zone; behavior must confirm acceptance/rejection."
+        )
 
     # -------------------------
     # Data quality alerts
@@ -3352,6 +3661,13 @@ def build_scan_record(
             "what_to_watch_next": [],
             "does_not_generate_trade_signals": True,
         },
+        "signal_level": "informational",
+        "signal_reason": "Normal Liquidity Narrative Continuation scan update.",
+        "narrative_state": "no_clear_narrative",
+        "reaction_zone_status": "unclear",
+        "behavior_confirmation": "none",
+        "liquidity_draw_alignment": "unclear",
+        "repeat_suppressed": False,
         "notification_status": {
             "enabled": bool(SCAN_NOTIFY_ENABLED),
             "should_notify": False,
@@ -3568,6 +3884,7 @@ def run_scan(
         attach_liquidity_draw(record)
         attach_behavior_classification(record)
         attach_opportunity_watch(record)
+        attach_scanner_signal(record, previous_scan=previous_scan, now=now)
         attach_alert_eligibility(record)
         deliver_scan_notification(record)
         record["screenshot_cleanup"] = screenshot_cleanup
@@ -3623,6 +3940,8 @@ def run_scan(
         alert_eligibility = record.get("alert_eligibility", {})
         print("Level:", alert_eligibility.get("level"))
         print("Notify:", alert_eligibility.get("should_notify"))
+        print("Signal level:", record.get("signal_level"))
+        print("Repeat suppressed:", record.get("repeat_suppressed"))
         print("Reasons:")
         for item in alert_eligibility.get("reasons", []):
             print("-", item)
@@ -3651,6 +3970,13 @@ def run_scan(
                 "what_to_watch_next": ["Fix the scan failure, then rerun MES chart review."],
                 "does_not_generate_trade_signals": True,
             },
+            "signal_level": "informational",
+            "signal_reason": "Scan failed before scanner signal could be evaluated.",
+            "narrative_state": "scan_failed",
+            "reaction_zone_status": "unclear",
+            "behavior_confirmation": "none",
+            "liquidity_draw_alignment": "unclear",
+            "repeat_suppressed": False,
             "notification_status": {
                 "enabled": bool(SCAN_NOTIFY_ENABLED),
                 "should_notify": False,

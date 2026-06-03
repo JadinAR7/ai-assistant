@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 import agent_service
 import morning_checkin
+import trading_strategy
 from orbit import service as orbit_service
 
 
@@ -38,6 +39,9 @@ def route_chat_intent(message: str) -> dict[str, Any] | None:
 
     if _is_readiness_status_intent(normalized):
         return _readiness_status_response()
+
+    if _is_trading_strategy_intent(normalized):
+        return _trading_strategy_response(normalized)
 
     return None
 
@@ -129,6 +133,20 @@ def _is_readiness_status_intent(message: str) -> bool:
             "check readiness",
             "show readiness",
             "readiness status",
+        ],
+    )
+
+
+def _is_trading_strategy_intent(message: str) -> bool:
+    return _contains_any(
+        message,
+        [
+            "what is my trading model",
+            "explain my trading strategy",
+            "what is liquidity narrative continuation",
+            "what is scalp mode",
+            "what is day trade mode",
+            "what is daytrade mode",
         ],
     )
 
@@ -232,6 +250,17 @@ def _readiness_advisory_response() -> dict[str, Any]:
     summary = str(run.get("summary") or "").strip()
     message = summary or "Readiness Advisory Agent ran, but no summary was returned."
     return _success_response("readiness_advisory", message, {"agent_run": run})
+
+
+def _trading_strategy_response(message_text: str) -> dict[str, Any]:
+    profile = trading_strategy.get_strategy_profile()
+    modes = trading_strategy.get_strategy_modes()
+    message = trading_strategy.format_strategy_profile_summary(message_text)
+    return _success_response(
+        "trading_strategy",
+        message,
+        {"strategy_profile": profile, "strategy_modes": modes},
+    )
 
 
 def _format_schedule_summary(blocks: list[dict[str, Any]]) -> str:
