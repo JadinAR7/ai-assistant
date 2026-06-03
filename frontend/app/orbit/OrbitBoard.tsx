@@ -380,7 +380,6 @@ const emptyMajorEventForm = {
   title: "",
   description: "",
   target_date: "",
-  progress_percent: "0",
   status: "active" as MajorEventStatus,
 };
 type MajorEventFormState = typeof emptyMajorEventForm;
@@ -506,7 +505,6 @@ function majorEventFormFromEvent(event: MajorEvent): MajorEventFormState {
     title: event.title,
     description: event.description ?? "",
     target_date: event.target_date ?? "",
-    progress_percent: event.progress_percent.toString(),
     status: event.status,
   };
 }
@@ -1299,12 +1297,20 @@ export default function OrbitBoard({
   }
 
   function getMajorEventPayload() {
-    return {
+    const payload = {
       title: majorEventForm.title.trim(),
       description: majorEventForm.description.trim() || null,
       target_date: majorEventForm.target_date || null,
-      progress_percent: Number(majorEventForm.progress_percent || 0),
       status: majorEventForm.status,
+    };
+
+    if (editingMajorEventId) {
+      return payload;
+    }
+
+    return {
+      ...payload,
+      progress_percent: 0,
     };
   }
 
@@ -1899,7 +1905,7 @@ export default function OrbitBoard({
                 rows={3}
                 className="min-h-24 w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
               />
-              <div className="grid gap-2 sm:grid-cols-3">
+              <div className="grid gap-2 sm:grid-cols-2">
                 <input
                   type="date"
                   value={majorEventForm.target_date}
@@ -1907,17 +1913,6 @@ export default function OrbitBoard({
                     setMajorEventField("target_date", event.target.value)
                   }
                   className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
-                />
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={majorEventForm.progress_percent}
-                  onChange={(event) =>
-                    setMajorEventField("progress_percent", event.target.value)
-                  }
-                  placeholder="Progress"
-                  className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
                 />
                 <select
                   value={majorEventForm.status}
@@ -1935,6 +1930,20 @@ export default function OrbitBoard({
                     </option>
                   ))}
                 </select>
+              </div>
+              <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+                <div className="flex items-center justify-between gap-3 text-xs text-neutral-500">
+                  <span>Progress</span>
+                  <span>
+                    {editingMajorEventId
+                      ? `${majorEvents.find((majorEvent) => majorEvent.id === editingMajorEventId)?.progress_percent ?? 0}%`
+                      : "0%"}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-neutral-400">
+                  Progress will be calculated from milestones, readiness, and
+                  activity.
+                </p>
               </div>
               <div className="flex flex-wrap gap-2">
                 <button
