@@ -404,6 +404,7 @@ const tabs = [
   "Milestones",
   "Reviews",
   "Readiness",
+  "Trade Journal",
   "Agents",
 ] as const;
 type Tab = (typeof tabs)[number];
@@ -3381,6 +3382,28 @@ export default function OrbitBoard({
               No readiness categories have been added for this major event yet.
             </div>
           )}
+        </div>
+      ) : null}
+
+      {activeTab === "Trade Journal" ? (
+        <div className="rounded-xl border border-cyan-300/20 bg-cyan-300/5 p-5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-cyan-200">
+            Data Capture
+          </p>
+          <h2 className="mt-2 text-lg font-semibold text-white">
+            Trade Journal v1
+          </h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-neutral-300">
+            Capture trade information, context, narrative, review notes, and
+            attachment paths for future trading intelligence.
+          </p>
+          <button
+            type="button"
+            onClick={() => router.push("/trade-journal")}
+            className="mt-4 rounded-lg bg-cyan-300 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200"
+          >
+            Open Trade Journal
+          </button>
         </div>
       ) : null}
 

@@ -1,0 +1,55 @@
+ALL TRADES
+Gross P/L
+$396.00
+# of Trades
+3
+# of Contracts
+24
+Avg. Trade Time
+4min 9sec
+Longest Trade Time
+8min 31sec
+% Profitable Trades
+100.00%
+Expectancy
+$132.00
+Trade Fees & Comm.
+$(12.48)
+Total P/L
+$383.52
+TRADES
+Symbol
+Qty
+Buy Price
+Buy Time
+Duration
+Sell Time
+Sell Price
+P&L
+MNQM6
+4
+30707.25
+06/03/2026 02:02:17
+1min
+59sec
+06/03/2026 02:04:16
+30723.50
+$130.00
+MNQM6
+4
+30724.75
+06/03/2026 02:09:39
+1min
+58sec
+06/03/2026 02:11:37
+30741.50
+$134.00
+MNQM6
+4
+30731.00
+06/03/2026 04:00:06
+8min
+31sec
+06/03/2026 03:51:34
+30747.50
+$132.00

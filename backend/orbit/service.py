@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta, timezone
+import json
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -21,6 +22,8 @@ from .models import (
     TaskUpdate,
     TradeSessionCreate,
     TradeSessionUpdate,
+    TradeJournalCreate,
+    TradeJournalUpdate,
 )
 
 
@@ -78,6 +81,32 @@ TABLE_COLUMNS = {
         "rule_adherence",
         "confidence",
         "session_grade",
+    ],
+    "trade_journal": [
+        "trade_date",
+        "symbol",
+        "direction",
+        "entry_price",
+        "stop_loss",
+        "take_profit",
+        "exit_price",
+        "result_dollars",
+        "result_r",
+        "contracts",
+        "session",
+        "htf_bias",
+        "draw_on_liquidity",
+        "reaction_zone",
+        "behavior_tags",
+        "execution_tags",
+        "why_taken",
+        "price_intent",
+        "liquidity_target",
+        "went_well",
+        "went_wrong",
+        "lesson_learned",
+        "screenshot_path",
+        "csv_path",
     ],
     "schedule_blocks": [
         "title",
@@ -1891,6 +1920,92 @@ def update_trade_session(
 
 def delete_trade_session(record_id: int) -> bool:
     return delete_record("trade_sessions", record_id)
+
+
+TRADE_JOURNAL_JSON_COLUMNS = {
+    "draw_on_liquidity",
+    "behavior_tags",
+    "execution_tags",
+}
+
+
+def _normalize_trade_journal_data(data: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+
+    for key, value in data.items():
+        if isinstance(value, str) and value.strip() == "":
+            normalized[key] = None
+        elif key == "symbol" and isinstance(value, str):
+            normalized[key] = value.strip().upper()
+        elif key in TRADE_JOURNAL_JSON_COLUMNS:
+            normalized[key] = json.dumps(value or [])
+        else:
+            normalized[key] = value
+
+    return normalized
+
+
+def _decode_trade_journal_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+
+    decoded = dict(record)
+    for key in TRADE_JOURNAL_JSON_COLUMNS:
+        raw_value = decoded.get(key)
+        if isinstance(raw_value, list):
+            continue
+
+        if not raw_value:
+            decoded[key] = []
+            continue
+
+        try:
+            value = json.loads(str(raw_value))
+        except json.JSONDecodeError:
+            value = []
+        decoded[key] = value if isinstance(value, list) else []
+
+    return decoded
+
+
+def create_trade_journal_entry(payload: TradeJournalCreate) -> dict[str, Any]:
+    record = _create_record(
+        "trade_journal",
+        _normalize_trade_journal_data(_model_data(payload)),
+    )
+    decoded = _decode_trade_journal_record(record)
+    if decoded is None:
+        raise RuntimeError("Unable to load created trade journal entry.")
+    return decoded
+
+
+def list_trade_journal_entries() -> list[dict[str, Any]]:
+    records = _list_records_ordered("trade_journal", "trade_date DESC, id DESC")
+    return [
+        decoded
+        for record in records
+        if (decoded := _decode_trade_journal_record(record)) is not None
+    ]
+
+
+def get_trade_journal_entry(record_id: int) -> dict[str, Any] | None:
+    return _decode_trade_journal_record(get_record("trade_journal", record_id))
+
+
+def update_trade_journal_entry(
+    record_id: int,
+    payload: TradeJournalUpdate,
+) -> dict[str, Any] | None:
+    record = _update_record(
+        "trade_journal",
+        record_id,
+        _normalize_trade_journal_data(_model_data(payload, exclude_unset=True)),
+    )
+    return _decode_trade_journal_record(record)
+
+
+def delete_trade_journal_entry(record_id: int) -> bool:
+    return delete_record("trade_journal", record_id)
 
 
 def _parse_date(value: str | None) -> date | None:
