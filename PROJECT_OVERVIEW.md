@@ -170,6 +170,7 @@ Helix remains the central intelligence layer. Orbit stores structured planning, 
 * Directory: `frontend`
 * Command: `npm run dev`
 * Backend base URL: `NEXT_PUBLIC_API_URL` or `http://127.0.0.1:8000`
+* Classification: manual/optional during local development; no LaunchAgent is installed by Helix service scripts.
 
 ## Scheduled Scanner
 
@@ -177,6 +178,7 @@ Helix remains the central intelligence layer. Orbit stores structured planning, 
 * Module: `backend/scheduled_scan.py`
 * Start script: `scripts/start_scanner.sh`
 * LaunchAgent: `scripts/launchagents/com.helix.scanner.plist`
+* Classification: optional always-on, install when automatic chart scanning is desired
 * Default symbol/timeframes: MES, scheduled 4H/1H/15M/5M with 15M primary
 * Interval: 5 minutes during active market sessions
 * Status endpoint: `GET /scan/status`
@@ -190,6 +192,7 @@ Helix remains the central intelligence layer. Orbit stores structured planning, 
 * Module: `backend/csv_refresh.py`
 * Start script: `scripts/start_csv_refresh.sh`
 * LaunchAgent: `scripts/launchagents/com.helix.csv-refresh.plist`
+* Classification: optional always-on, install when automatic TradingView CSV refresh checks are desired
 * Interval wrapper: `CSV_REFRESH_INTERVAL_SECONDS`, default 60 seconds
 * Refresh windows: New York session hourly, futures reopen, and Friday post-close review refresh
 * Active data directory: `backend/csv_data`
@@ -199,8 +202,11 @@ Helix remains the central intelligence layer. Orbit stores structured planning, 
 
 ## Scheduled Agents
 
-* Service: Python scheduler module, currently API-callable and CLI-runnable
+* Service: Python scheduler module, API-callable, CLI-runnable, and LaunchAgent-supported
 * Module: `backend/scheduled_agents.py`
+* Start script: `scripts/start_scheduled_agents.sh`
+* LaunchAgent: `scripts/launchagents/com.helix.scheduled-agents.plist`
+* Classification: always-on recommended
 * CLI: `python3 backend/scheduled_agents.py --once` or loop with `--interval-seconds`
 * Morning window: 06:00-09:00 local, runs Morning Review Agent once per day
 * Evening window: 18:00-22:00 local, runs Evening Review Agent once per day
@@ -209,18 +215,21 @@ Helix remains the central intelligence layer. Orbit stores structured planning, 
 * Status endpoint: `GET /agents/scheduled/status`
 * Run-once endpoint: `POST /agents/scheduled/run-once`
 * Status file: `backend/.scheduled_agents_status.json`
-* Limitation: no dedicated LaunchAgent plist is currently present for scheduled agents.
+* Logs: `backend/logs/scheduled-agents.out.log`, `backend/logs/scheduled-agents.err.log`
 
 ## iMessage Bridge
 
 * Service: local polling bridge for macOS Messages
 * Module: `backend/imessage_bridge.py`
+* Start script: `scripts/start_imessage_bridge.sh`
+* LaunchAgent: `scripts/launchagents/com.helix.imessage-bridge.plist`
+* Classification: always-on recommended if Messages permissions and allowed-sender config are stable
 * Polls: `~/Library/Messages/chat.db` read-only
 * Sends: AppleScript through the Messages app
 * Allowed sender: configured in code as `ALLOWED_SENDER`
 * Routes: help, time, latest MES scan, forced MES scan, TTS commands, Morning Check-In, and normal `/chat`
 * Backend dependencies: `/chat`, `/scan/latest`, `/scan/force`, `/tts/say`, `/agents/morning/check-in`
-* Limitation: no LaunchAgent plist is currently present for the bridge.
+* Logs: `backend/logs/imessage-bridge.out.log`, `backend/logs/imessage-bridge.err.log`
 
 ## Wake Listener
 
@@ -231,6 +240,7 @@ Helix remains the central intelligence layer. Orbit stores structured planning, 
 * Target endpoint: `POST /agents/morning/check-in` with `source="voice"` and `speak=true`
 * Optional dependencies: `SpeechRecognition`, `PyAudio`, `pocketsphinx`
 * Limitation: manual only; no auto-starting service or full conversational voice loop.
+* Classification: manual/optional; intentionally not installed by service scripts.
 
 ## Ollama
 
@@ -837,6 +847,8 @@ Helix can run as macOS user LaunchAgents.
 Current services:
 
 * `com.helix.backend`: FastAPI backend on `127.0.0.1:8000`
+* `com.helix.scheduled-agents`: scheduled Morning/Evening agents, daily prioritization snapshot, and morning fallback check loop
+* `com.helix.imessage-bridge`: local Messages bridge for command/reply routing
 * `com.helix.scanner`: scheduled market scanner
 * `com.helix.csv-refresh`: scheduled CSV refresh loop
 
@@ -846,6 +858,8 @@ Service scripts:
 * `scripts/uninstall_mac_services.sh`
 * `scripts/status_mac_services.sh`
 * `scripts/start_backend.sh`
+* `scripts/start_scheduled_agents.sh`
+* `scripts/start_imessage_bridge.sh`
 * `scripts/start_scanner.sh`
 * `scripts/start_csv_refresh.sh`
 
@@ -879,7 +893,7 @@ Runbook:
 * Web Search Agent v1 is research-plan-only and does not perform cited browsing yet.
 * Readiness Advisory Agent v1 suggests score changes but never applies them.
 * Agent Prioritization Layer v1 recommends only and does not run agents.
-* Scheduled Agent Runs v1 has no dedicated LaunchAgent plist yet.
+* Wake Phrase Listener v1 has no LaunchAgent and remains manual/optional.
 * Task reminders are not connected yet.
 * Free-form task tags are not implemented yet. Milestone links are structured tags only.
 * News risk is useful but not yet a complete economic-calendar intelligence layer.
@@ -889,18 +903,17 @@ Runbook:
 # Next Development Priorities
 
 1. Cited Web Search Agent execution for tasks requiring current or external information.
-2. Dedicated scheduled-agent LaunchAgent/service wrapper using `backend/scheduled_agents.py`.
-3. Controlled agent notification approvals for scheduled or manual run summaries.
-4. Apply-readiness workflow that lets Jadin approve Readiness Advisory suggestions before updating scores.
-5. Helix Core Agent Summary so the home surface can show recent agent output without becoming noisy.
-6. Always-on voice wake / speech input prototype that reuses the Morning Check-In endpoint.
-7. Daily and weekly automation loops for planning review, trading review, Morning Review, and Evening Review.
-8. Task reminder support connected to Orbit tasks.
-9. Expanded Orbit review workflows for daily and weekly synthesis.
-10. Scanner frontend visibility for liquidity draw, behavior classification, alert eligibility, notification status, and CSV freshness.
-11. 1M execution confirmation layer while preserving source-of-truth rules.
-12. Trade Journal analytics and readiness evidence generation.
-13. iMessage bridge hardening: config-driven senders, service wrapper, retry behavior, and command audit trail.
+2. Controlled agent notification approvals for scheduled or manual run summaries.
+3. Apply-readiness workflow that lets Jadin approve Readiness Advisory suggestions before updating scores.
+4. Helix Core Agent Summary so the home surface can show recent agent output without becoming noisy.
+5. Always-on voice wake / speech input prototype that reuses the Morning Check-In endpoint.
+6. Daily and weekly automation loops for planning review, trading review, Morning Review, and Evening Review.
+7. Task reminder support connected to Orbit tasks.
+8. Expanded Orbit review workflows for daily and weekly synthesis.
+9. Scanner frontend visibility for liquidity draw, behavior classification, alert eligibility, notification status, and CSV freshness.
+10. 1M execution confirmation layer while preserving source-of-truth rules.
+11. Trade Journal analytics and readiness evidence generation.
+12. iMessage bridge hardening: config-driven senders, retry behavior, and command audit trail.
 
 ## Before Next Major Build
 
@@ -911,7 +924,7 @@ Checklist:
 3. Confirm Ollama is running and the configured `OLLAMA_MODEL` and `VISION_MODEL` are available.
 4. Confirm Orbit DB initializes cleanly and existing `assistant.db` data is not overwritten.
 5. Confirm `GET /agents`, `GET /agents/prioritize`, `GET /agents/scheduled/status`, and `GET /agents/morning/status` return current state.
-6. Confirm `POST /agents/scheduled/run-once` behavior in a safe window before installing any scheduled-agent service.
+6. Confirm `POST /agents/scheduled/run-once` behavior in a safe window before relying on the scheduled-agent service.
 7. Confirm Morning Check-In fallback has a configured recipient before relying on iMessage fallback.
 8. Confirm TTS config through `GET /tts/config` before adding new voice interactions.
 9. Confirm wake listener remains manual unless an explicit always-on service is being built.

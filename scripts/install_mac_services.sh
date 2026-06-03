@@ -6,15 +6,84 @@ TEMPLATE_DIR="${PROJECT_ROOT}/scripts/launchagents"
 LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
 USER_ID="$(id -u)"
 
-SERVICES=(
+ALL_SERVICES=(
   "com.helix.backend"
+  "com.helix.scheduled-agents"
+  "com.helix.imessage-bridge"
   "com.helix.scanner"
   "com.helix.csv-refresh"
 )
 
+CORE_SERVICES=(
+  "com.helix.backend"
+  "com.helix.scheduled-agents"
+  "com.helix.imessage-bridge"
+)
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/install_mac_services.sh [all|core|SERVICE...]
+
+Groups:
+  all    Install backend, scheduled-agents, imessage-bridge, scanner, and csv-refresh. Default.
+  core   Install backend, scheduled-agents, and imessage-bridge.
+
+Services:
+  backend
+  scheduled-agents
+  imessage-bridge
+  scanner
+  csv-refresh
+USAGE
+}
+
+service_label() {
+  case "$1" in
+    com.helix.*)
+      printf "%s" "$1"
+      ;;
+    backend|scheduled-agents|imessage-bridge|scanner|csv-refresh)
+      printf "com.helix.%s" "$1"
+      ;;
+    *)
+      echo "Unknown service: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+selected_services() {
+  if [[ "$#" -eq 0 || "$1" == "all" ]]; then
+    printf "%s\n" "${ALL_SERVICES[@]}"
+    return
+  fi
+
+  if [[ "$1" == "core" ]]; then
+    printf "%s\n" "${CORE_SERVICES[@]}"
+    return
+  fi
+
+  for service in "$@"; do
+    service_label "${service}"
+  done
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
+  usage
+  exit 0
+fi
+
+SERVICES=()
+while IFS= read -r service; do
+  SERVICES+=("${service}")
+done < <(selected_services "$@")
+
 mkdir -p "${LAUNCH_AGENTS_DIR}" "${PROJECT_ROOT}/backend/logs"
 chmod +x \
   "${PROJECT_ROOT}/scripts/start_backend.sh" \
+  "${PROJECT_ROOT}/scripts/start_scheduled_agents.sh" \
+  "${PROJECT_ROOT}/scripts/start_imessage_bridge.sh" \
   "${PROJECT_ROOT}/scripts/start_scanner.sh" \
   "${PROJECT_ROOT}/scripts/start_csv_refresh.sh" \
   "${PROJECT_ROOT}/scripts/install_mac_services.sh" \

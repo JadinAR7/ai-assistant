@@ -8,8 +8,23 @@ USER_ID="$(id -u)"
 
 SERVICES=(
   "com.helix.backend"
+  "com.helix.scheduled-agents"
+  "com.helix.imessage-bridge"
   "com.helix.scanner"
   "com.helix.csv-refresh"
+)
+
+LOG_FILES=(
+  "backend.out.log"
+  "backend.err.log"
+  "scanner.out.log"
+  "scanner.err.log"
+  "csv-refresh.out.log"
+  "csv-refresh.err.log"
+  "scheduled-agents.out.log"
+  "scheduled-agents.err.log"
+  "imessage-bridge.out.log"
+  "imessage-bridge.err.log"
 )
 
 usage() {
@@ -41,8 +56,12 @@ show_status() {
     else
       echo "not loaded"
     fi
+    echo "logs: ${LOG_DIR}/$(log_prefix "${service}").out.log"
+    echo "      ${LOG_DIR}/$(log_prefix "${service}").err.log"
     echo
   done
+
+  show_backend_health
 }
 
 restart_services() {
@@ -59,26 +78,82 @@ restart_services() {
 
 tail_logs() {
   mkdir -p "${LOG_DIR}"
-  touch \
-    "${LOG_DIR}/backend.out.log" \
-    "${LOG_DIR}/backend.err.log" \
-    "${LOG_DIR}/scanner.out.log" \
-    "${LOG_DIR}/scanner.err.log" \
-    "${LOG_DIR}/csv-refresh.out.log" \
-    "${LOG_DIR}/csv-refresh.err.log"
+  local paths=()
 
-  tail -n 80 -F \
-    "${LOG_DIR}/backend.out.log" \
-    "${LOG_DIR}/backend.err.log" \
-    "${LOG_DIR}/scanner.out.log" \
-    "${LOG_DIR}/scanner.err.log" \
-    "${LOG_DIR}/csv-refresh.out.log" \
-    "${LOG_DIR}/csv-refresh.err.log"
+  for log_file in "${LOG_FILES[@]}"; do
+    touch "${LOG_DIR}/${log_file}"
+    paths+=("${LOG_DIR}/${log_file}")
+  done
+
+  tail -n 80 -F "${paths[@]}"
 }
 
 list_logs() {
   mkdir -p "${LOG_DIR}"
   ls -la "${LOG_DIR}"
+}
+
+log_prefix() {
+  case "$1" in
+    com.helix.backend)
+      printf "backend"
+      ;;
+    com.helix.scheduled-agents)
+      printf "scheduled-agents"
+      ;;
+    com.helix.imessage-bridge)
+      printf "imessage-bridge"
+      ;;
+    com.helix.scanner)
+      printf "scanner"
+      ;;
+    com.helix.csv-refresh)
+      printf "csv-refresh"
+      ;;
+    *)
+      printf "%s" "$1"
+      ;;
+  esac
+}
+
+curl_json() {
+  curl -fsS --max-time 3 "$1" 2>/dev/null
+}
+
+print_endpoint_status() {
+  local label="$1"
+  local url="$2"
+  local response
+
+  echo "== ${label} =="
+  if response="$(curl_json "${url}")"; then
+    echo "${response}"
+  else
+    echo "unavailable: ${url}"
+  fi
+  echo
+}
+
+show_backend_health() {
+  echo "== Backend Health =="
+  if curl_json "http://127.0.0.1:8000/" >/dev/null; then
+    curl_json "http://127.0.0.1:8000/"
+    echo
+    echo
+    print_endpoint_status "Scheduled Agents API" "http://127.0.0.1:8000/agents/scheduled/status"
+    print_endpoint_status "Scanner API" "http://127.0.0.1:8000/scan/status"
+  else
+    echo "backend health check failed: http://127.0.0.1:8000/"
+    echo "API status endpoints skipped because backend is unavailable."
+    echo
+  fi
+
+  echo "== Log Tail Locations =="
+  for log_file in "${LOG_FILES[@]}"; do
+    echo "${LOG_DIR}/${log_file}"
+  done
+  echo
+  echo "Tail logs with: scripts/status_mac_services.sh tail"
 }
 
 command="${1:-status}"

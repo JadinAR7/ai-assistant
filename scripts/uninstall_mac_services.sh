@@ -6,6 +6,8 @@ USER_ID="$(id -u)"
 
 SERVICES=(
   "com.helix.backend"
+  "com.helix.scheduled-agents"
+  "com.helix.imessage-bridge"
   "com.helix.scanner"
   "com.helix.csv-refresh"
 )

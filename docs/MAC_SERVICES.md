@@ -1,14 +1,43 @@
 # Helix macOS Services
 
-Helix can run as user LaunchAgents on macOS. These services load under your user account, not as root daemons.
+Helix can run selected local processes as user LaunchAgents on macOS. These services load under Jadin's user account, not as root daemons.
 
-## Services
+This runbook manages LaunchAgent support only. It does not start services unless Jadin explicitly runs `scripts/install_mac_services.sh`, `scripts/status_mac_services.sh restart`, or another launchctl command.
 
-- `com.helix.backend`: runs the FastAPI backend with `backend/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000`.
-- `com.helix.scanner`: runs `backend/scheduled_scan.py`, which performs automatic market scans during configured scan windows.
-- `com.helix.csv-refresh`: runs `scripts/start_csv_refresh.sh`, a small loop that calls `csv_refresh.run_csv_refresh(force=False)` every 60 seconds so the existing CSV refresh schedule can fire at its configured windows.
+## Service Plan
 
-All services run from `/Users/jadinrobinson/ai-assistant/backend` and write launchd logs to `/Users/jadinrobinson/ai-assistant/backend/logs/`.
+Always-on recommended:
+
+- `com.helix.backend`: FastAPI backend on `127.0.0.1:8000`.
+- `com.helix.scheduled-agents`: Morning Review, Evening Review, daily prioritization snapshot, and Morning Check-In fallback check loop.
+- `com.helix.imessage-bridge`: local iMessage command/reply bridge, if Messages permissions and allowed-sender config are stable.
+
+Optional always-on:
+
+- `com.helix.scanner`: scheduled MES scanner, if automatic chart scanning is desired.
+- `com.helix.csv-refresh`: scheduled CSV refresh loop, if automatic TradingView CSV refresh checks are desired.
+
+Manual/optional:
+
+- Frontend dev server: run from `frontend` with `npm run dev`.
+- Wake listener v1: run manually with `python3 backend/wake_listener.py --once` or `--loop`.
+- Voice trigger prototype: run manually with `python3 backend/voice_trigger.py`.
+
+Required external dependency:
+
+- Ollama must be running separately. The backend expects `OLLAMA_URL`, defaulting to `http://localhost:11434/api/generate`.
+
+## Managed Services
+
+| Service | Start script | LaunchAgent template | Logs |
+| --- | --- | --- | --- |
+| `com.helix.backend` | `scripts/start_backend.sh` | `scripts/launchagents/com.helix.backend.plist` | `backend/logs/backend.out.log`, `backend/logs/backend.err.log` |
+| `com.helix.scheduled-agents` | `scripts/start_scheduled_agents.sh` | `scripts/launchagents/com.helix.scheduled-agents.plist` | `backend/logs/scheduled-agents.out.log`, `backend/logs/scheduled-agents.err.log` |
+| `com.helix.imessage-bridge` | `scripts/start_imessage_bridge.sh` | `scripts/launchagents/com.helix.imessage-bridge.plist` | `backend/logs/imessage-bridge.out.log`, `backend/logs/imessage-bridge.err.log` |
+| `com.helix.scanner` | `scripts/start_scanner.sh` | `scripts/launchagents/com.helix.scanner.plist` | `backend/logs/scanner.out.log`, `backend/logs/scanner.err.log` |
+| `com.helix.csv-refresh` | `scripts/start_csv_refresh.sh` | `scripts/launchagents/com.helix.csv-refresh.plist` | `backend/logs/csv-refresh.out.log`, `backend/logs/csv-refresh.err.log` |
+
+All managed services run from `/Users/jadinrobinson/ai-assistant/backend`.
 
 ## Install
 
@@ -18,7 +47,63 @@ From the project root:
 scripts/install_mac_services.sh
 ```
 
-This copies plist templates from `scripts/launchagents/` into `~/Library/LaunchAgents/`, validates them with `plutil`, and loads them into the current user's `launchctl` GUI domain.
+Default install target is `all`.
+
+Install only the recommended core services:
+
+```bash
+scripts/install_mac_services.sh core
+```
+
+Install all managed services:
+
+```bash
+scripts/install_mac_services.sh all
+```
+
+Install explicit services:
+
+```bash
+scripts/install_mac_services.sh backend scheduled-agents imessage-bridge
+scripts/install_mac_services.sh scanner csv-refresh
+```
+
+The install script copies plist templates from `scripts/launchagents/` into `~/Library/LaunchAgents/`, validates them with `plutil`, and loads them into the current user's `launchctl` GUI domain.
+
+The install script handles:
+
+- `com.helix.backend`
+- `com.helix.scheduled-agents`
+- `com.helix.imessage-bridge`
+- `com.helix.scanner`
+- `com.helix.csv-refresh`
+
+Wake listener v1 is intentionally not installed.
+
+## Status
+
+```bash
+scripts/status_mac_services.sh status
+```
+
+The status command prints:
+
+- launchd loaded/running state for each managed service
+- each service's stdout/stderr log path
+- backend health check at `http://127.0.0.1:8000/`
+- scheduled agents API status from `/agents/scheduled/status` when the backend is reachable
+- scanner API status from `/scan/status` when the backend is reachable
+- the full list of log tail locations
+
+Other status helper commands:
+
+```bash
+scripts/status_mac_services.sh logs
+scripts/status_mac_services.sh tail
+scripts/status_mac_services.sh restart
+```
+
+`restart` only kickstarts services that are already loaded.
 
 ## Uninstall
 
@@ -26,26 +111,11 @@ This copies plist templates from `scripts/launchagents/` into `~/Library/LaunchA
 scripts/uninstall_mac_services.sh
 ```
 
-This unloads the user LaunchAgents and removes the copied plist files from `~/Library/LaunchAgents/`.
-
-## Service Commands
-
-```bash
-scripts/status_mac_services.sh status
-scripts/status_mac_services.sh restart
-scripts/status_mac_services.sh tail
-scripts/status_mac_services.sh logs
-```
-
-You can also unload everything with:
-
-```bash
-scripts/uninstall_mac_services.sh
-```
+This unloads the managed user LaunchAgents and removes the copied plist files from `~/Library/LaunchAgents/`.
 
 ## Notifications
 
-Notifications are disabled by default in both the plist templates and start scripts:
+Notification environment variables are conservative in the plist templates:
 
 ```text
 SCAN_NOTIFY_ENABLED=false
@@ -54,7 +124,7 @@ SCAN_NOTIFY_TTS_ENABLED=false
 SCAN_NOTIFY_IMESSAGE_RECIPIENT=
 ```
 
-To enable them, edit the installed scanner plist at:
+To enable scan notifications, edit the installed scanner plist:
 
 ```text
 ~/Library/LaunchAgents/com.helix.scanner.plist
@@ -73,10 +143,11 @@ Set only the channels you want, for example:
 <string>recipient@example.com</string>
 ```
 
-Then restart services:
+Then reload the service:
 
 ```bash
-scripts/status_mac_services.sh restart
+scripts/uninstall_mac_services.sh
+scripts/install_mac_services.sh
 ```
 
 Do not put secrets in plist files.
@@ -91,6 +162,61 @@ Expected response:
 
 ```json
 {"status":"backend running"}
+```
+
+## Verify Scheduled Agents
+
+```bash
+curl http://127.0.0.1:8000/agents/scheduled/status
+```
+
+The scheduled-agent LaunchAgent runs `backend/scheduled_agents.py` continuously with `SCHEDULED_AGENTS_INTERVAL_SECONDS`, default `300`.
+
+Manual one-shot check:
+
+```bash
+cd /Users/jadinrobinson/ai-assistant
+backend/.venv/bin/python backend/scheduled_agents.py --once
+```
+
+## Verify iMessage Bridge
+
+The bridge reads the local Messages database and sends replies through AppleScript. It requires:
+
+- macOS Messages database access
+- AppleScript permission for Messages
+- a stable allowed sender in `backend/imessage_bridge.py`
+- backend availability for chat, scan, TTS, and Morning Check-In routes
+
+Check logs:
+
+```bash
+tail -n 80 backend/logs/imessage-bridge.out.log
+tail -n 80 backend/logs/imessage-bridge.err.log
+```
+
+## Verify Scanner
+
+```bash
+curl http://127.0.0.1:8000/scan/status
+```
+
+You can also inspect:
+
+```bash
+cat /Users/jadinrobinson/ai-assistant/backend/scan_runtime_status.json
+```
+
+## Verify CSV Refresh
+
+```bash
+curl http://127.0.0.1:8000/csv-refresh/status
+```
+
+You can also inspect:
+
+```bash
+cat /Users/jadinrobinson/ai-assistant/backend/csv_refresh_status.json
 ```
 
 ## Manual TTS Test
@@ -135,47 +261,12 @@ This returns notification channel config and a masked default recipient.
 curl http://127.0.0.1:8000/notify/config
 ```
 
-Example response:
-
-```json
-{
-  "imessage_enabled": true,
-  "default_recipient_configured": true,
-  "recipient_source": "env",
-  "default_recipient": "***1234"
-}
-```
-
 ## Manual All-Channel Test
 
 This endpoint is for manual notification testing only. It sends a test iMessage and speaks a test TTS message without running scanner alert eligibility.
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/notify/test-all"
-```
-
-## Verify Scanner
-
-```bash
-curl http://127.0.0.1:8000/scan/status
-```
-
-You can also inspect the runtime status file:
-
-```bash
-cat /Users/jadinrobinson/ai-assistant/backend/scan_runtime_status.json
-```
-
-## Verify CSV Refresh
-
-```bash
-curl http://127.0.0.1:8000/csv-refresh/status
-```
-
-You can also inspect:
-
-```bash
-cat /Users/jadinrobinson/ai-assistant/backend/csv_refresh_status.json
 ```
 
 ## Logs
@@ -194,6 +285,10 @@ Files:
 - `scanner.err.log`
 - `csv-refresh.out.log`
 - `csv-refresh.err.log`
+- `scheduled-agents.out.log`
+- `scheduled-agents.err.log`
+- `imessage-bridge.out.log`
+- `imessage-bridge.err.log`
 
 Tail them together:
 
@@ -204,8 +299,9 @@ scripts/status_mac_services.sh tail
 ## Troubleshooting
 
 - If a service is `not loaded`, run `scripts/install_mac_services.sh`.
-- If backend health fails, check `backend/logs/backend.err.log` and confirm `backend/.venv/bin/uvicorn` exists.
+- If backend health fails, check `backend/logs/backend.err.log`, confirm `backend/.venv/bin/uvicorn` exists, and confirm Ollama is running for chat/model routes.
+- If scheduled agents do not run, check `backend/logs/scheduled-agents.err.log`, `backend/.scheduled_agents_status.json`, and `GET /agents/scheduled/status`.
+- If iMessage bridge does not reply, check Messages permissions, `backend/logs/imessage-bridge.err.log`, and backend health.
 - If scanner status shows no heartbeat, check `backend/logs/scanner.err.log` and `backend/scan_runtime_status.json`.
 - If CSV refresh does not run, check `backend/logs/csv-refresh.out.log`, `backend/logs/csv-refresh.err.log`, and `backend/csv_refresh_status.json`. Outside scheduled windows, CSV refresh records a skipped status.
-- After editing a plist in `~/Library/LaunchAgents/`, run `scripts/status_mac_services.sh restart`.
-- To fully reload changed plist files, run `scripts/uninstall_mac_services.sh` and then `scripts/install_mac_services.sh`.
+- After editing a plist in `~/Library/LaunchAgents/`, fully reload changed plist files with `scripts/uninstall_mac_services.sh` and then `scripts/install_mac_services.sh`.
