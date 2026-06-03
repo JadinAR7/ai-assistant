@@ -105,6 +105,7 @@ Primary modules:
 
 * `backend/main.py`: FastAPI app, `/chat`, deterministic Command Router v1 entry point, scanner routes, CSV refresh routes, TTS, notification tests, history, and tool logs.
 * `backend/chat_intents.py`: deterministic Command Center intent routing before LLM fallback.
+* `backend/presence.py`: local Presence Modes v1 storage and mode definitions for home, trading, away, and focus.
 * `backend/tools.py`: Helix tool layer for Orbit, trading, web/search helpers, reminders, file tools, and TradingView workflows.
 * `backend/orbit/database.py`: Orbit schema, initial agent definitions, Trade Journal tables, and migrations-on-init style schema maintenance.
 * `backend/orbit/service.py`: Orbit data access, calculated progress, recommendations, priority scoring, morning briefing, daily closeout, schedule blocks, Schedule Intelligence v1, Trade Journal CRUD, import-save behavior, and readiness logic.
@@ -126,6 +127,7 @@ Storage:
 * `backend/assistant.db`: chat/tool logs plus Orbit tables.
 * `backend/scan_history.jsonl`: scanner records.
 * `backend/scan_runtime_status.json`: scanner heartbeat/status.
+* `backend/presence_status.json`: current manual Presence Mode.
 * `backend/csv_refresh_status.json`: CSV refresh status.
 * `backend/.scheduled_agents_status.json`: scheduled-agent and prioritization snapshot status.
 * `backend/.morning_checkin_status.json`: daily morning acknowledgement/fallback state.
@@ -515,6 +517,13 @@ Supported natural language intents include:
 * `how ready am I`
 * `check readiness`
 * `readiness advisory`
+* `I’m home`
+* `I’m trading`
+* `I’m away`
+* `focus mode`
+* `turn on focus mode`
+* `what mode is Helix in`
+* `what is my presence mode`
 
 Routing behavior:
 
@@ -524,6 +533,7 @@ Routing behavior:
 * Major event phrases read major events and selected/Corporate Escape status.
 * Readiness status phrases read readiness categories.
 * Readiness advisory phrases run the Readiness Advisory Agent.
+* Presence phrases read or update Presence Modes v1 through deterministic local storage.
 * Unmatched prompts preserve existing `/chat` behavior and fall back to Ollama/tool prompting.
 
 Operational note: backend restart is required after Command Router changes because the running FastAPI process must import the updated `chat_intents.py`.
@@ -538,6 +548,8 @@ Operational note: backend restart is required after Command Router changes becau
 * `POST /chat`: primary chat, deterministic intent routing, and tool-routing endpoint.
 * `POST /chat/stream`: streaming chat endpoint.
 * `POST /analyze-image`: uploaded chart/image analysis.
+* `GET /presence`: current Presence Mode config, `updated_at`, and available modes.
+* `POST /presence`: set manual Presence Mode with `{ "mode": "home|trading|away|focus" }`.
 * `POST /reset`: clear chat memory.
 * `GET /history`: recent chat history.
 * `GET /tool-logs`: recent tool calls.
@@ -728,6 +740,7 @@ Current scanner capabilities:
 * Opportunity Watch generation
 * Scanner Refinement v1 signal tiers
 * Same-state repeat suppression
+* Presence Modes v1 notification/noise gating
 * Alert Eligibility Engine
 * Gated iMessage/TTS notification infrastructure
 
@@ -743,10 +756,33 @@ Core flow:
 8. Attach behavior classification output.
 9. Attach scanner signal tier output.
 10. Attach alert eligibility.
-11. Deliver scan notifications only when notification infrastructure is enabled and alert eligibility allows it.
-12. Persist scan history and runtime status.
+11. Attach Presence Mode notification eligibility.
+12. Deliver scan notifications only when notification infrastructure is enabled, alert eligibility allows it, and Presence Mode permits it.
+13. Persist scan history and runtime status.
 
 Notifications remain intentionally gated. Smart scan notifications default disabled and only deliver when scanner logic has already determined notification eligibility. Manual notification test endpoints exist so TTS and iMessage delivery can be verified without fabricating a real trading alert.
+
+## Presence Modes v1
+
+Presence Modes v1 is manual-only. It lets Jadin choose how noisy or active Helix should be without changing scanner cadence, scan execution, scan history persistence, location behavior, calendar behavior, wake listener behavior, iMessage internals, or TTS internals.
+
+Current modes:
+
+* `home`: review-level scanner notifications allowed, notifications on, iMessage on, TTS off, normal scan noise profile.
+* `trading`: alert-level scanner notifications only, notifications on, iMessage on, TTS off, quiet scan noise profile.
+* `away`: review-level scanner notifications allowed, notifications on, iMessage on, TTS off, active scan noise profile.
+* `focus`: alert-level scanner threshold, notifications off, iMessage off, TTS off, silent scan noise profile.
+
+Scanner behavior:
+
+* Presence Mode never stops scans from running.
+* Presence Mode never stops scan history from saving.
+* Presence Mode only affects alert/notification eligibility and delivery-channel noise.
+* Scanner records include `presence_mode`, `notification_allowed_by_presence`, and `presence_reason`.
+* Focus Mode can allow the scanner to classify `signal_level` while setting `notification_allowed_by_presence` to `false`.
+* Trading Mode suppresses review-level notifications but can allow alert-level notifications when the existing scanner eligibility and global notification gates also allow them.
+
+Future automatic presence detection is not implemented yet. There is no location detection, calendar detection, wake listener integration, or automatic mode switching in v1.
 
 ## Scanner Refinement v1
 
@@ -769,9 +805,9 @@ Scanner rules:
 * `SCAN_SUPPRESS_REPEATS_MINUTES` defaults to `15`.
 * Repeat-suppressed scans still save scan history but are not marked notification-worthy inside the suppression window.
 
-Scanner records now include `signal_level`, `signal_reason`, `narrative_state`, `reaction_zone_status`, `behavior_confirmation`, `liquidity_draw_alignment`, and `repeat_suppressed`.
+Scanner records now include `signal_level`, `signal_reason`, `narrative_state`, `reaction_zone_status`, `behavior_confirmation`, `liquidity_draw_alignment`, `repeat_suppressed`, `presence_mode`, `notification_allowed_by_presence`, and `presence_reason`.
 
-Future Presence Modes remain pending. Future Narrative Scanner remains pending.
+Future Narrative Scanner remains pending.
 
 ## Trading Framework Notes
 

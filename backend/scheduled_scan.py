@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from news_risk import build_news_risk_summary, format_news_risk_section
 from notification_config import get_default_imessage_recipient
+from presence import get_presence
 from tools import (
     analyze_tradingview,
     capture_tradingview,
@@ -2616,6 +2617,50 @@ def _at_or_above_signal_level(level: str, minimum: str) -> bool:
     return _signal_level_rank(level) >= _signal_level_rank(minimum)
 
 
+def _presence_notification_decision(record: dict, current_presence: dict | None = None) -> dict:
+    current_presence = current_presence or get_presence()
+    mode = str(current_presence.get("mode") or "home")
+    label = str(current_presence.get("label") or mode.title())
+    signal_level = str(record.get("signal_level") or "informational").lower()
+    scanner_min = str(current_presence.get("scanner_min_signal_level") or "review").lower()
+    notifications_allowed = bool(current_presence.get("notifications_allowed"))
+
+    if not notifications_allowed:
+        allowed = False
+        reason = f"{label} mode disables scanner notifications."
+    elif not _at_or_above_signal_level(signal_level, scanner_min):
+        allowed = False
+        reason = (
+            f"{label} mode requires {scanner_min} signal or stronger; "
+            f"current signal is {signal_level}."
+        )
+    else:
+        allowed = True
+        reason = f"{label} mode allows notification eligibility for {signal_level} signal."
+
+    return {
+        "presence_mode": mode,
+        "presence_config": current_presence,
+        "notification_allowed_by_presence": allowed,
+        "presence_reason": reason,
+    }
+
+
+def format_presence_scan_section(decision: dict) -> str:
+    config = decision.get("presence_config") or {}
+    label = str(config.get("label") or decision.get("presence_mode") or "Home")
+    return "\n".join(
+        [
+            "## Presence Mode",
+            f"Mode: {label}",
+            f"Noise Profile: {str(config.get('scan_noise_profile') or 'normal').replace('_', ' ')}",
+            f"Scanner Minimum Signal: {config.get('scanner_min_signal_level') or 'review'}",
+            f"Notifications Allowed By Presence: {'Yes' if decision.get('notification_allowed_by_presence') else 'No'}",
+            f"Reason: {decision.get('presence_reason') or 'No presence decision recorded.'}",
+        ]
+    )
+
+
 def _behavior_confirmation_state(record: dict) -> str:
     behavior = record.get("behavior_classification") or {}
     classification = str(behavior.get("classification") or "unknown").lower()
@@ -3151,6 +3196,36 @@ def attach_alert_eligibility(record: dict) -> None:
     ).strip()
 
 
+def attach_presence_notification_eligibility(record: dict) -> None:
+    decision = _presence_notification_decision(record)
+    alert_eligibility = record.get("alert_eligibility") or {}
+    should_notify_before_presence = bool(alert_eligibility.get("should_notify"))
+
+    record["presence_mode"] = decision["presence_mode"]
+    record["notification_allowed_by_presence"] = decision["notification_allowed_by_presence"]
+    record["presence_reason"] = decision["presence_reason"]
+
+    if not decision["notification_allowed_by_presence"]:
+        blockers = alert_eligibility.get("blockers") or []
+        blockers.append(decision["presence_reason"])
+        alert_eligibility["blockers"] = _dedupe_text(blockers)
+
+    alert_eligibility["should_notify_before_presence"] = should_notify_before_presence
+    alert_eligibility["notification_allowed_by_presence"] = decision["notification_allowed_by_presence"]
+    alert_eligibility["presence_mode"] = decision["presence_mode"]
+    alert_eligibility["presence_reason"] = decision["presence_reason"]
+    alert_eligibility["should_notify"] = (
+        should_notify_before_presence and decision["notification_allowed_by_presence"]
+    )
+    record["alert_eligibility"] = alert_eligibility
+
+    record["message"] = (
+        (record.get("message") or "")
+        + "\n\n"
+        + format_presence_scan_section(decision)
+    ).strip()
+
+
 # -------------------------
 # Smart scan notifications
 # -------------------------
@@ -3160,6 +3235,11 @@ def _default_notification_status(record: dict | None = None) -> dict:
     return {
         "enabled": bool(SCAN_NOTIFY_ENABLED),
         "should_notify": bool(alert_eligibility.get("should_notify")),
+        "presence_mode": (record or {}).get("presence_mode"),
+        "notification_allowed_by_presence": bool(
+            (record or {}).get("notification_allowed_by_presence", True)
+        ),
+        "presence_reason": (record or {}).get("presence_reason"),
         "imessage_sent": False,
         "tts_spoken": False,
         "errors": [],
@@ -3248,22 +3328,27 @@ def deliver_scan_notification(record: dict) -> dict:
         record["notification_status"] = status
         return status
 
+    current_presence = get_presence()
     payload = build_scan_notification_payload(record)
     message = format_scan_notification_message(payload)
 
-    if SCAN_NOTIFY_IMESSAGE_ENABLED:
+    if SCAN_NOTIFY_IMESSAGE_ENABLED and current_presence.get("imessage_allowed"):
         try:
             _send_scan_imessage(message)
             status["imessage_sent"] = True
         except Exception as e:
             status["errors"].append(f"iMessage notification failed: {e}")
+    elif SCAN_NOTIFY_IMESSAGE_ENABLED:
+        status["errors"].append(f"iMessage blocked by {current_presence.get('label')} presence mode.")
 
-    if SCAN_NOTIFY_TTS_ENABLED:
+    if SCAN_NOTIFY_TTS_ENABLED and current_presence.get("tts_allowed"):
         try:
             _speak_scan_notification(message)
             status["tts_spoken"] = True
         except Exception as e:
             status["errors"].append(f"TTS notification failed: {e}")
+    elif SCAN_NOTIFY_TTS_ENABLED:
+        status["errors"].append(f"TTS blocked by {current_presence.get('label')} presence mode.")
 
     if not SCAN_NOTIFY_IMESSAGE_ENABLED and not SCAN_NOTIFY_TTS_ENABLED:
         status["errors"].append("Notifications enabled, but no delivery channel is enabled.")
@@ -3668,9 +3753,15 @@ def build_scan_record(
         "behavior_confirmation": "none",
         "liquidity_draw_alignment": "unclear",
         "repeat_suppressed": False,
+        "presence_mode": "home",
+        "notification_allowed_by_presence": False,
+        "presence_reason": "Home mode requires review signal or stronger; current signal is informational.",
         "notification_status": {
             "enabled": bool(SCAN_NOTIFY_ENABLED),
             "should_notify": False,
+            "presence_mode": "home",
+            "notification_allowed_by_presence": False,
+            "presence_reason": "Home mode requires review signal or stronger; current signal is informational.",
             "imessage_sent": False,
             "tts_spoken": False,
             "errors": [],
@@ -3886,6 +3977,7 @@ def run_scan(
         attach_opportunity_watch(record)
         attach_scanner_signal(record, previous_scan=previous_scan, now=now)
         attach_alert_eligibility(record)
+        attach_presence_notification_eligibility(record)
         deliver_scan_notification(record)
         record["screenshot_cleanup"] = screenshot_cleanup
 
@@ -3977,15 +4069,22 @@ def run_scan(
             "behavior_confirmation": "none",
             "liquidity_draw_alignment": "unclear",
             "repeat_suppressed": False,
+            "presence_mode": "home",
+            "notification_allowed_by_presence": False,
+            "presence_reason": "Home mode requires review signal or stronger; current signal is informational.",
             "notification_status": {
                 "enabled": bool(SCAN_NOTIFY_ENABLED),
                 "should_notify": False,
+                "presence_mode": "home",
+                "notification_allowed_by_presence": False,
+                "presence_reason": "Home mode requires review signal or stronger; current signal is informational.",
                 "imessage_sent": False,
                 "tts_spoken": False,
                 "errors": [],
             },
             "screenshot_cleanup": screenshot_cleanup,
         }
+        attach_presence_notification_eligibility(error_record)
 
         save_scan_record(error_record)
 

@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 import agent_service
 import morning_checkin
+import presence
 import trading_strategy
 from orbit import service as orbit_service
 
@@ -27,6 +28,13 @@ def route_chat_intent(message: str) -> dict[str, Any] | None:
 
     if _is_schedule_intent(normalized):
         return _schedule_response()
+
+    presence_mode = _presence_set_mode(normalized)
+    if presence_mode:
+        return _presence_set_response(presence_mode)
+
+    if _is_presence_get_intent(normalized):
+        return _presence_get_response()
 
     if _is_agent_priority_intent(normalized):
         return _agent_priority_response()
@@ -105,6 +113,39 @@ def _is_agent_priority_intent(message: str) -> bool:
             "what should helix check next",
             "prioritize agents",
             "prioritise agents",
+        ],
+    )
+
+
+def _presence_set_mode(message: str) -> str | None:
+    exact_map = {
+        "i'm home": "home",
+        "im home": "home",
+        "i am home": "home",
+        "i'm trading": "trading",
+        "im trading": "trading",
+        "i am trading": "trading",
+        "i'm away": "away",
+        "im away": "away",
+        "i am away": "away",
+        "focus mode": "focus",
+        "turn on focus mode": "focus",
+    }
+    if message in exact_map:
+        return exact_map[message]
+
+    if message in {"home mode", "trading mode", "away mode"}:
+        return message.removesuffix(" mode")
+
+    return None
+
+
+def _is_presence_get_intent(message: str) -> bool:
+    return _contains_any(
+        message,
+        [
+            "what mode is helix in",
+            "what is my presence mode",
         ],
     )
 
@@ -200,6 +241,35 @@ def _agent_priority_response() -> dict[str, Any]:
     if ranked_lines:
         message += "\n\nTop agents:\n" + "\n".join(ranked_lines)
     return _success_response("agents_prioritize", message, {"prioritization": prioritization})
+
+
+def _presence_set_response(mode: str) -> dict[str, Any]:
+    current = presence.set_presence(mode)
+    message = _format_presence_summary(current, prefix="Presence mode set")
+    return _success_response("presence_set", message, {"presence": current})
+
+
+def _presence_get_response() -> dict[str, Any]:
+    current = presence.get_presence()
+    message = _format_presence_summary(current, prefix="Current presence mode")
+    return _success_response("presence_get", message, {"presence": current})
+
+
+def _format_presence_summary(current: dict[str, Any], prefix: str) -> str:
+    label = current.get("label") or str(current.get("mode") or "home").title()
+    mode = current.get("mode") or "home"
+    scanner_min = current.get("scanner_min_signal_level") or "review"
+    notifications = "on" if current.get("notifications_allowed") else "off"
+    imessage = "on" if current.get("imessage_allowed") else "off"
+    tts = "on" if current.get("tts_allowed") else "off"
+    noise = current.get("scan_noise_profile") or "normal"
+
+    return (
+        f"{prefix}: {label} ({mode}).\n\n"
+        f"Scanner notifications require {scanner_min} signal or stronger. "
+        f"Notifications: {notifications}. iMessage: {imessage}. TTS: {tts}. "
+        f"Noise profile: {noise}."
+    )
 
 
 def _major_event_response(message_text: str) -> dict[str, Any]:
