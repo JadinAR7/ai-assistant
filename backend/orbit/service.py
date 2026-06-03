@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -104,6 +104,17 @@ ORBIT_LOCAL_TIMEZONE = ZoneInfo("America/Denver")
 STRATEGIC_GAP_RECENT_ACTIVITY_DAYS = 7
 MAJOR_EVENT_ACTIVITY_DAYS = 7
 STRATEGIC_GAP_RECOMMENDATION_PREFIX = "strategic-gap-"
+SCHEDULE_PLANNING_DAY_START_MINUTE = 8 * 60
+SCHEDULE_PLANNING_DAY_END_MINUTE = 22 * 60
+SCHEDULE_DAY_ORDER = [
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+]
 
 
 def _serialize_value(value: Any) -> Any:
@@ -606,6 +617,416 @@ def update_schedule_block(
     merged = {**existing, **data}
     _validate_schedule_block_data(merged)
     return _update_record("schedule_blocks", record_id, data)
+
+
+def get_schedule_intelligence() -> dict[str, Any]:
+    today = datetime.now(ORBIT_LOCAL_TIMEZONE).date()
+    week_start = today - timedelta(days=today.weekday())
+    week_dates = [week_start + timedelta(days=index) for index in range(7)]
+    active_blocks = [
+        block for block in list_schedule_blocks() if _truthy(block.get("active"))
+    ]
+    fixed_instances = _schedule_fixed_instances(active_blocks, week_dates)
+    flexible_blocks = [
+        block
+        for block in active_blocks
+        if str(block.get("block_type") or "").casefold() == "flexible"
+    ]
+    flexible_blocks_by_date = _schedule_flexible_blocks_by_date(
+        flexible_blocks,
+        week_dates,
+    )
+    unplaced_flexible_blocks = [
+        block
+        for block in flexible_blocks
+        if not block.get("day_of_week") and not block.get("specific_date")
+    ]
+    high_priority_due_by_date = _schedule_high_priority_due_counts(week_dates)
+
+    day_summaries: list[dict[str, Any]] = []
+    available_windows: list[dict[str, Any]] = []
+    for index, current_date in enumerate(week_dates):
+        day = SCHEDULE_DAY_ORDER[index]
+        day_fixed_instances = fixed_instances.get(current_date.isoformat(), [])
+        scheduled_minutes = sum(
+            instance["duration_minutes"] for instance in day_fixed_instances
+        )
+        flexible_count = len(flexible_blocks_by_date.get(current_date.isoformat(), []))
+        high_priority_commitments = (
+            sum(
+                1
+                for instance in day_fixed_instances
+                if str(instance["block"].get("priority") or "").casefold() == "high"
+            )
+            + high_priority_due_by_date.get(current_date.isoformat(), 0)
+        )
+        remaining_minutes = max(
+            SCHEDULE_PLANNING_DAY_END_MINUTE
+            - SCHEDULE_PLANNING_DAY_START_MINUTE
+            - scheduled_minutes,
+            0,
+        )
+        summary = {
+            "day": day,
+            "date": current_date.isoformat(),
+            "total_scheduled_minutes": scheduled_minutes,
+            "total_scheduled_hours": round(scheduled_minutes / 60, 1),
+            "remaining_available_minutes": remaining_minutes,
+            "remaining_available_hours": round(remaining_minutes / 60, 1),
+            "high_priority_commitments": high_priority_commitments,
+            "flexible_blocks": flexible_count,
+            "status": _schedule_day_status(scheduled_minutes),
+        }
+        day_summaries.append(summary)
+        available_windows.extend(
+            _schedule_available_windows_for_day(
+                day=day,
+                current_date=current_date,
+                fixed_instances=day_fixed_instances,
+            )
+        )
+
+    overloaded_days = [
+        summary for summary in day_summaries if summary["status"] == "overloaded"
+    ]
+    underutilized_days = [
+        summary for summary in day_summaries if summary["total_scheduled_minutes"] < 120
+    ]
+    most_available_day = max(
+        day_summaries,
+        key=lambda summary: (
+            summary["remaining_available_minutes"],
+            -summary["total_scheduled_minutes"],
+        ),
+        default=None,
+    )
+    most_overloaded_day = max(
+        day_summaries,
+        key=lambda summary: (
+            summary["total_scheduled_minutes"],
+            summary["high_priority_commitments"],
+        ),
+        default=None,
+    )
+    recommendations = _schedule_recommendations(
+        available_windows=available_windows,
+        overloaded_days=overloaded_days,
+        flexible_blocks=flexible_blocks,
+        unplaced_flexible_blocks=unplaced_flexible_blocks,
+    )
+
+    return {
+        "week_start": week_start.isoformat(),
+        "week_end": week_dates[-1].isoformat(),
+        "day_summaries": day_summaries,
+        "overloaded_days": overloaded_days,
+        "underutilized_days": underutilized_days,
+        "available_windows": available_windows,
+        "recommendations": recommendations,
+        "most_available_day": most_available_day,
+        "most_overloaded_day": most_overloaded_day,
+        "recommended_placement": recommendations[0] if recommendations else None,
+        "unplaced_flexible_blocks": len(unplaced_flexible_blocks),
+    }
+
+
+def _truthy(value: Any) -> bool:
+    return value in (True, 1, "1", "true", "True")
+
+
+def _schedule_fixed_instances(
+    blocks: list[dict[str, Any]],
+    week_dates: list[date],
+) -> dict[str, list[dict[str, Any]]]:
+    instances = {current_date.isoformat(): [] for current_date in week_dates}
+    day_by_date = {
+        current_date.isoformat(): SCHEDULE_DAY_ORDER[index]
+        for index, current_date in enumerate(week_dates)
+    }
+
+    for block in blocks:
+        if str(block.get("block_type") or "").casefold() != "fixed":
+            continue
+        start_minute = _schedule_time_to_minutes(block.get("start_time"))
+        end_minute = _schedule_time_to_minutes(block.get("end_time"))
+        if start_minute is None or end_minute is None or end_minute <= start_minute:
+            continue
+
+        specific_date = str(block.get("specific_date") or "")
+        if specific_date in instances:
+            target_dates = [specific_date]
+        else:
+            block_day = str(block.get("day_of_week") or "").casefold()
+            target_dates = [
+                current_date
+                for current_date, day in day_by_date.items()
+                if day == block_day
+            ]
+
+        for target_date in target_dates:
+            instances[target_date].append(
+                {
+                    "block": block,
+                    "start_minute": start_minute,
+                    "end_minute": end_minute,
+                    "duration_minutes": end_minute - start_minute,
+                }
+            )
+
+    for date_key, date_instances in instances.items():
+        instances[date_key] = sorted(
+            date_instances,
+            key=lambda instance: (
+                instance["start_minute"],
+                str(instance["block"].get("title") or ""),
+            ),
+        )
+    return instances
+
+
+def _schedule_flexible_blocks_by_date(
+    blocks: list[dict[str, Any]],
+    week_dates: list[date],
+) -> dict[str, list[dict[str, Any]]]:
+    blocks_by_date = {current_date.isoformat(): [] for current_date in week_dates}
+    day_by_date = {
+        current_date.isoformat(): SCHEDULE_DAY_ORDER[index]
+        for index, current_date in enumerate(week_dates)
+    }
+
+    for block in blocks:
+        specific_date = str(block.get("specific_date") or "")
+        if specific_date in blocks_by_date:
+            blocks_by_date[specific_date].append(block)
+            continue
+
+        block_day = str(block.get("day_of_week") or "").casefold()
+        for date_key, day in day_by_date.items():
+            if day == block_day:
+                blocks_by_date[date_key].append(block)
+                break
+
+    return blocks_by_date
+
+
+def _schedule_high_priority_due_counts(week_dates: list[date]) -> dict[str, int]:
+    counts = {current_date.isoformat(): 0 for current_date in week_dates}
+    for task in list_records("tasks"):
+        due_date = _parse_date(task.get("due_date"))
+        if due_date is None or due_date.isoformat() not in counts or not _is_open(task):
+            continue
+        priority = calculate_task_priority(_with_linked_milestones(task))
+        if int(priority.get("priority_score") or 0) >= 70:
+            counts[due_date.isoformat()] += 1
+
+    for milestone in list_records("milestones"):
+        due_date = _parse_date(milestone.get("due_date"))
+        if (
+            due_date is not None
+            and due_date.isoformat() in counts
+            and _is_open(milestone)
+            and str(milestone.get("status") or "").casefold() in {"active", "in_progress"}
+        ):
+            counts[due_date.isoformat()] += 1
+
+    return counts
+
+
+def _schedule_day_status(scheduled_minutes: int) -> str:
+    if scheduled_minutes >= 8 * 60:
+        return "overloaded"
+    if scheduled_minutes >= 4 * 60:
+        return "busy"
+    return "healthy"
+
+
+def _schedule_available_windows_for_day(
+    day: str,
+    current_date: date,
+    fixed_instances: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    windows: list[dict[str, Any]] = []
+    cursor = SCHEDULE_PLANNING_DAY_START_MINUTE
+    clipped_instances = [
+        {
+            **instance,
+            "start_minute": max(instance["start_minute"], SCHEDULE_PLANNING_DAY_START_MINUTE),
+            "end_minute": min(instance["end_minute"], SCHEDULE_PLANNING_DAY_END_MINUTE),
+        }
+        for instance in fixed_instances
+        if instance["end_minute"] > SCHEDULE_PLANNING_DAY_START_MINUTE
+        and instance["start_minute"] < SCHEDULE_PLANNING_DAY_END_MINUTE
+    ]
+
+    for instance in clipped_instances:
+        if instance["start_minute"] > cursor:
+            windows.append(
+                _schedule_window(
+                    day=day,
+                    current_date=current_date,
+                    start_minute=cursor,
+                    end_minute=instance["start_minute"],
+                    before_block=instance["block"],
+                )
+            )
+        cursor = max(cursor, instance["end_minute"])
+
+    if cursor < SCHEDULE_PLANNING_DAY_END_MINUTE:
+        windows.append(
+            _schedule_window(
+                day=day,
+                current_date=current_date,
+                start_minute=cursor,
+                end_minute=SCHEDULE_PLANNING_DAY_END_MINUTE,
+                after_block=clipped_instances[-1]["block"] if clipped_instances else None,
+            )
+        )
+
+    return [window for window in windows if window["duration_minutes"] >= 30]
+
+
+def _schedule_window(
+    day: str,
+    current_date: date,
+    start_minute: int,
+    end_minute: int,
+    after_block: dict[str, Any] | None = None,
+    before_block: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "day": day,
+        "date": current_date.isoformat(),
+        "start_time": _schedule_minutes_to_time(start_minute),
+        "end_time": _schedule_minutes_to_time(end_minute),
+        "duration_minutes": end_minute - start_minute,
+        "after_block_title": _schedule_block_title(after_block) if after_block else None,
+        "before_block_title": _schedule_block_title(before_block) if before_block else None,
+    }
+
+
+def _schedule_recommendations(
+    available_windows: list[dict[str, Any]],
+    overloaded_days: list[dict[str, Any]],
+    flexible_blocks: list[dict[str, Any]],
+    unplaced_flexible_blocks: list[dict[str, Any]],
+) -> list[str]:
+    recommendations: list[str] = []
+    top_windows = sorted(
+        available_windows,
+        key=lambda window: window["duration_minutes"],
+        reverse=True,
+    )
+
+    if top_windows:
+        window = top_windows[0]
+        anchor = (
+            f" after {window['after_block_title']}"
+            if window.get("after_block_title")
+            else ""
+        )
+        recommendations.append(
+            f"{_schedule_day_label(window['day'])} has a "
+            f"{_schedule_duration_text(window['duration_minutes'])} opening{anchor}."
+        )
+
+    candidate_blocks = sorted(
+        unplaced_flexible_blocks,
+        key=lambda block: (
+            -_schedule_priority_rank(block.get("priority")),
+            str(block.get("title") or block.get("category") or ""),
+        ),
+    )
+    if candidate_blocks and top_windows:
+        block = candidate_blocks[0]
+        fitting_window = next(
+            (
+                window
+                for window in top_windows
+                if window["duration_minutes"] >= int(block.get("duration_minutes") or 0)
+            ),
+            top_windows[0],
+        )
+        recommendations.append(
+            f"{_schedule_block_title(block)} could fit on "
+            f"{_schedule_day_label(fitting_window['day'])} "
+            f"{_schedule_time_of_day_label(fitting_window['start_time'])}."
+        )
+
+    for summary in overloaded_days[:2]:
+        movable = next(
+            (
+                block
+                for block in flexible_blocks
+                if str(block.get("day_of_week") or "").casefold() == summary["day"]
+                or str(block.get("specific_date") or "") == summary["date"]
+            ),
+            None,
+        )
+        suffix = (
+            f" Consider moving {_schedule_block_title(movable)}."
+            if movable is not None
+            else " Consider moving a flexible block."
+        )
+        recommendations.append(
+            f"{_schedule_day_label(summary['day'])} appears overloaded.{suffix}"
+        )
+
+    return recommendations[:5]
+
+
+def _schedule_time_to_minutes(value: Any) -> int | None:
+    if not value:
+        return None
+    parts = str(value).split(":")
+    if len(parts) < 2:
+        return None
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return None
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return hour * 60 + minute
+
+
+def _schedule_minutes_to_time(minutes: int) -> str:
+    hour = minutes // 60
+    minute = minutes % 60
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _schedule_day_label(day: Any) -> str:
+    text = str(day or "")
+    return text[:1].upper() + text[1:]
+
+
+def _schedule_block_title(block: dict[str, Any] | None) -> str:
+    if not block:
+        return "Flexible block"
+    return str(block.get("title") or block.get("category") or "Flexible block").strip()
+
+
+def _schedule_duration_text(minutes: int) -> str:
+    if minutes < 60:
+        return f"{minutes}-minute"
+    hours = minutes / 60
+    return f"{hours:g}-hour"
+
+
+def _schedule_time_of_day_label(value: str) -> str:
+    minutes = _schedule_time_to_minutes(value)
+    if minutes is None:
+        return "window"
+    if minutes >= 17 * 60:
+        return "evening"
+    if minutes >= 12 * 60:
+        return "afternoon"
+    return "morning"
+
+
+def _schedule_priority_rank(priority: Any) -> int:
+    return {"high": 3, "medium": 2, "low": 1}.get(str(priority or "").casefold(), 0)
 
 
 def link_task_to_milestone(task_id: int, milestone_id: int) -> dict[str, Any] | None:

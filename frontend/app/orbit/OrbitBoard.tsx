@@ -276,6 +276,44 @@ export type ScheduleBlock = {
   updated_at: string;
 };
 
+export type ScheduleDayStatus = "healthy" | "busy" | "overloaded";
+
+export type ScheduleDaySummary = {
+  day: DayOfWeek;
+  date: string;
+  total_scheduled_minutes: number;
+  total_scheduled_hours: number;
+  remaining_available_minutes: number;
+  remaining_available_hours: number;
+  high_priority_commitments: number;
+  flexible_blocks: number;
+  status: ScheduleDayStatus;
+};
+
+export type ScheduleAvailableWindow = {
+  day: DayOfWeek;
+  date: string;
+  start_time: string;
+  end_time: string;
+  duration_minutes: number;
+  after_block_title?: string | null;
+  before_block_title?: string | null;
+};
+
+export type ScheduleIntelligence = {
+  week_start: string;
+  week_end: string;
+  day_summaries: ScheduleDaySummary[];
+  overloaded_days: ScheduleDaySummary[];
+  underutilized_days: ScheduleDaySummary[];
+  available_windows: ScheduleAvailableWindow[];
+  recommendations: string[];
+  most_available_day?: ScheduleDaySummary | null;
+  most_overloaded_day?: ScheduleDaySummary | null;
+  recommended_placement?: string | null;
+  unplaced_flexible_blocks: number;
+};
+
 export type MorningCheckInStatus = {
   date: string;
   morning_acknowledged: boolean;
@@ -353,6 +391,8 @@ type OrbitBoardProps = Readonly<{
   morningCheckInStatusError: string | null;
   scheduleBlocks: ScheduleBlock[];
   scheduleBlocksError: string | null;
+  scheduleIntelligence: ScheduleIntelligence | null;
+  scheduleIntelligenceError: string | null;
   errorMessage: string | null;
 }>;
 
@@ -569,6 +609,16 @@ function formatBlockCardTiming(block: ScheduleBlock) {
   }
 
   return formatDuration(block.duration_minutes);
+}
+
+function formatScheduleDaySummary(day: ScheduleDaySummary | null | undefined) {
+  if (!day) {
+    return "Unavailable";
+  }
+
+  return `${formatStatus(day.day)} | ${formatDuration(
+    day.total_scheduled_minutes,
+  )} scheduled`;
 }
 
 function formatDuration(durationMinutes: number | null) {
@@ -955,7 +1005,7 @@ function CalendarScheduleBlockCard({
         />
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5">
-        <span className="rounded-full border border-cyan-300/15 bg-cyan-300/5 px-2 py-0.5 text-[11px] font-semibold text-cyan-100">
+        <span className="whitespace-nowrap rounded-full border border-cyan-300/15 bg-cyan-300/5 px-2 py-0.5 text-[11px] font-semibold text-cyan-100">
           {formatBlockCardTiming(block)}
         </span>
         {block.block_type === "flexible" ? (
@@ -1003,6 +1053,8 @@ export default function OrbitBoard({
   morningCheckInStatusError,
   scheduleBlocks: initialScheduleBlocks,
   scheduleBlocksError,
+  scheduleIntelligence,
+  scheduleIntelligenceError,
   errorMessage,
 }: OrbitBoardProps) {
   const router = useRouter();
@@ -2688,6 +2740,72 @@ export default function OrbitBoard({
             </div>
           </section>
 
+          <section className="rounded-xl border border-cyan-300/15 bg-cyan-300/[0.04] p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-neutral-100">
+                  Schedule Intelligence
+                </h2>
+                <p className="mt-1 text-xs text-neutral-500">
+                  Read-only schedule density and placement signals
+                </p>
+              </div>
+              <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
+                Recommendations only
+              </span>
+            </div>
+
+            {scheduleIntelligenceError ? (
+              <p className="text-sm text-red-100">
+                Schedule intelligence is unavailable right now.
+              </p>
+            ) : scheduleIntelligence ? (
+              <div className="grid gap-2 lg:grid-cols-4">
+                <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-neutral-500">
+                    Most Available
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-neutral-100">
+                    {formatScheduleDaySummary(
+                      scheduleIntelligence.most_available_day,
+                    )}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-neutral-500">
+                    Most Overloaded
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-neutral-100">
+                    {formatScheduleDaySummary(
+                      scheduleIntelligence.most_overloaded_day,
+                    )}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-neutral-500">
+                    Recommended Placement
+                  </p>
+                  <p className="mt-1 line-clamp-2 text-sm font-semibold text-neutral-100">
+                    {scheduleIntelligence.recommended_placement ??
+                      "No placement recommendation yet"}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-neutral-500">
+                    Unplaced Flexible
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-neutral-100">
+                    {scheduleIntelligence.unplaced_flexible_blocks}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-neutral-500">
+                Schedule intelligence has not loaded yet.
+              </p>
+            )}
+          </section>
+
           <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-4">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -2757,9 +2875,17 @@ export default function OrbitBoard({
                       return (
                         <div
                           key={weekDay.dateKey}
-                          className="min-h-[26rem] rounded-lg border border-white/10 bg-black/20"
+                          className={`min-h-[26rem] rounded-lg border ${
+                            today
+                              ? "border-cyan-300/35 bg-cyan-300/[0.05]"
+                              : "border-white/10 bg-black/20"
+                          }`}
                         >
-                          <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
+                          <div
+                            className={`flex items-center justify-between gap-2 border-b px-3 py-2 ${
+                              today ? "border-cyan-300/20" : "border-white/10"
+                            }`}
+                          >
                             <div>
                               <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-300">
                                 {formatStatus(weekDay.day)}
@@ -2768,11 +2894,6 @@ export default function OrbitBoard({
                                 {formatWeekDateLabel(weekDay.date)}
                               </p>
                             </div>
-                            {today ? (
-                              <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-cyan-100">
-                                Today
-                              </span>
-                            ) : null}
                             <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-500">
                               {blocks.length}
                             </span>

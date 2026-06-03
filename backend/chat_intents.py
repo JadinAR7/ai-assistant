@@ -81,10 +81,14 @@ def _is_schedule_intent(message: str) -> bool:
             "what does my schedule look like",
             "where do i have free time",
             "is my day packed",
+            "is my schedule packed",
+            "what should i schedule next",
             "show my schedule",
             "schedule look like",
             "free time",
             "day packed",
+            "schedule packed",
+            "schedule next",
         ],
     )
 
@@ -154,9 +158,9 @@ def _morning_briefing_response() -> dict[str, Any]:
 
 
 def _schedule_response() -> dict[str, Any]:
-    blocks = [block for block in orbit_service.list_schedule_blocks() if _truthy(block.get("active"))]
-    message = _format_schedule_summary(blocks)
-    return _success_response("schedule", message, {"schedule_blocks": blocks})
+    intelligence = orbit_service.get_schedule_intelligence()
+    message = _format_schedule_intelligence_summary(intelligence)
+    return _success_response("schedule", message, {"schedule_intelligence": intelligence})
 
 
 def _agent_priority_response() -> dict[str, Any]:
@@ -274,6 +278,67 @@ def _format_schedule_summary(blocks: list[dict[str, Any]]) -> str:
     return message
 
 
+def _format_schedule_intelligence_summary(intelligence: dict[str, Any]) -> str:
+    day_summaries = intelligence.get("day_summaries") or []
+    if not day_summaries:
+        return "Schedule Intelligence\n\nNo schedule data is available yet."
+
+    most_available = intelligence.get("most_available_day") or {}
+    most_overloaded = intelligence.get("most_overloaded_day") or {}
+    overloaded_days = intelligence.get("overloaded_days") or []
+    windows = sorted(
+        intelligence.get("available_windows") or [],
+        key=lambda window: int(window.get("duration_minutes") or 0),
+        reverse=True,
+    )
+    recommendations = intelligence.get("recommendations") or []
+
+    message = (
+        "Schedule Intelligence\n\n"
+        f"Most available: {_format_schedule_day_summary(most_available)}.\n"
+        f"Most loaded: {_format_schedule_day_summary(most_overloaded)}.\n"
+        f"Unplaced flexible blocks: {intelligence.get('unplaced_flexible_blocks') or 0}."
+    )
+
+    if overloaded_days:
+        message += (
+            "\n\nOverloaded days:\n"
+            + "\n".join(
+                f"- {_day_label(day.get('day'))}: {_format_duration(day.get('total_scheduled_minutes'))} scheduled"
+                for day in overloaded_days[:3]
+            )
+        )
+    else:
+        message += "\n\nNo overloaded days detected this week."
+
+    if windows:
+        message += (
+            "\n\nBest available windows:\n"
+            + "\n".join(
+                f"- {_day_label(window.get('day'))} {window.get('start_time')}-{window.get('end_time')}: "
+                f"{_format_duration(window.get('duration_minutes'))}"
+                for window in windows[:3]
+            )
+        )
+
+    if recommendations:
+        message += "\n\nRecommendations:\n" + "\n".join(
+            f"- {recommendation}" for recommendation in recommendations[:3]
+        )
+
+    return message
+
+
+def _format_schedule_day_summary(day: dict[str, Any]) -> str:
+    if not day:
+        return "Unavailable"
+    return (
+        f"{_day_label(day.get('day'))} "
+        f"({_format_duration(day.get('remaining_available_minutes'))} open, "
+        f"{day.get('status')})"
+    )
+
+
 def _blocks_for_today(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     today = date.today()
     weekday = today.strftime("%A").casefold()
@@ -309,6 +374,11 @@ def _format_duration(duration: Any) -> str:
     if hours:
         return f"{hours}h"
     return f"{minutes}m"
+
+
+def _day_label(value: Any) -> str:
+    text = str(value or "")
+    return text[:1].upper() + text[1:]
 
 
 def _format_major_events(events: list[dict[str, Any]], selected: dict[str, Any] | None) -> str:

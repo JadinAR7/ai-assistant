@@ -13,6 +13,7 @@ import OrbitBoard, {
   type ReadinessCategory,
   type RecommendationSet,
   type ScheduleBlock,
+  type ScheduleIntelligence,
   type ScheduledAgentStatus,
 } from "./OrbitBoard";
 import { type InboxTask } from "./InboxTaskControls";
@@ -32,6 +33,8 @@ const DAILY_CLOSEOUT_URL = "http://127.0.0.1:8000/orbit/daily-closeout";
 const RECOMMENDATIONS_URL = "http://127.0.0.1:8000/orbit/recommendations";
 const INBOX_TASKS_URL = "http://127.0.0.1:8000/orbit/inbox-tasks";
 const SCHEDULE_BLOCKS_URL = "http://127.0.0.1:8000/orbit/schedule-blocks";
+const SCHEDULE_INTELLIGENCE_URL =
+  "http://127.0.0.1:8000/orbit/schedule/intelligence";
 const AGENTS_URL = "http://127.0.0.1:8000/agents";
 const AGENT_PRIORITIZATION_URL = "http://127.0.0.1:8000/agents/prioritize";
 const SCHEDULED_AGENTS_STATUS_URL =
@@ -66,6 +69,7 @@ async function getOrbitData() {
     scheduledAgentsStatusResult,
     morningCheckInStatusResult,
     scheduleBlocksResult,
+    scheduleIntelligenceResult,
   ] = await Promise.all([
     fetchJson<MajorEvent[]>(MAJOR_EVENTS_URL),
     fetchJson<Milestone[]>(MILESTONES_URL),
@@ -180,6 +184,18 @@ async function getOrbitData() {
             ? error.message
             : "Schedule blocks could not be loaded.",
       })),
+    fetchJson<ScheduleIntelligence>(SCHEDULE_INTELLIGENCE_URL)
+      .then((scheduleIntelligence) => ({
+        scheduleIntelligence,
+        error: null,
+      }))
+      .catch((error: unknown) => ({
+        scheduleIntelligence: null,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Schedule intelligence could not be loaded.",
+      })),
   ]);
 
   const event = getPrimaryMajorEvent(majorEvents);
@@ -227,6 +243,8 @@ async function getOrbitData() {
     morningCheckInStatusError: morningCheckInStatusResult.error,
     scheduleBlocks: scheduleBlocksResult.scheduleBlocks,
     scheduleBlocksError: scheduleBlocksResult.error,
+    scheduleIntelligence: scheduleIntelligenceResult.scheduleIntelligence,
+    scheduleIntelligenceError: scheduleIntelligenceResult.error,
   };
 }
 
@@ -320,6 +338,8 @@ export default async function OrbitPage() {
       morningCheckInStatusError: null,
       scheduleBlocks: [],
       scheduleBlocksError: null,
+      scheduleIntelligence: null,
+      scheduleIntelligenceError: null,
     };
     errorMessage =
       error instanceof Error
@@ -395,6 +415,8 @@ export default async function OrbitPage() {
           morningCheckInStatusError={orbitData.morningCheckInStatusError}
           scheduleBlocks={orbitData.scheduleBlocks}
           scheduleBlocksError={orbitData.scheduleBlocksError}
+          scheduleIntelligence={orbitData.scheduleIntelligence}
+          scheduleIntelligenceError={orbitData.scheduleIntelligenceError}
           errorMessage={errorMessage}
         />
       </div>
