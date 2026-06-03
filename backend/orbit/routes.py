@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
 from . import service
+from . import trade_journal_import
 from .models import (
     DailyCloseoutReviewCreate,
     Goal,
@@ -31,6 +32,12 @@ from .models import (
     TaskMilestoneLink,
     TaskPriority,
     TaskUpdate,
+    TradeJournalCreate,
+    TradeJournalImportPreview,
+    TradeJournalImportSaveRequest,
+    TradeJournalImportSaveResponse,
+    TradeJournalRead,
+    TradeJournalUpdate,
     TaskWithMilestones,
     TradeSessionCreate,
     TradeSessionRead,
@@ -417,3 +424,70 @@ def update_trade_session(trade_session_id: int, payload: TradeSessionUpdate):
 def delete_trade_session(trade_session_id: int):
     if not service.delete_trade_session(trade_session_id):
         raise _not_found("Trade session", trade_session_id)
+
+
+@router.post("/trade-journal", response_model=TradeJournalRead, status_code=status.HTTP_201_CREATED)
+def create_trade_journal_entry(payload: TradeJournalCreate):
+    return service.create_trade_journal_entry(payload)
+
+
+@router.get("/trade-journal", response_model=list[TradeJournalRead])
+def list_trade_journal_entries():
+    return service.list_trade_journal_entries()
+
+
+@router.post("/trade-journal/import-pdf", response_model=TradeJournalImportPreview)
+async def preview_trade_journal_pdf_import(
+    performance_pdf: UploadFile | None = File(default=None),
+    orders_pdf: UploadFile | None = File(default=None),
+):
+    performance_payload = None
+    orders_payload = None
+
+    if performance_pdf is not None:
+        performance_payload = (
+            performance_pdf.filename or "performance.pdf",
+            await performance_pdf.read(),
+        )
+
+    if orders_pdf is not None:
+        orders_payload = (
+            orders_pdf.filename or "orders.pdf",
+            await orders_pdf.read(),
+        )
+
+    return trade_journal_import.preview_trade_journal_pdf_import(
+        performance_pdf=performance_payload,
+        orders_pdf=orders_payload,
+    )
+
+
+@router.post(
+    "/trade-journal/import-pdf/save",
+    response_model=TradeJournalImportSaveResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def save_trade_journal_pdf_import(payload: TradeJournalImportSaveRequest):
+    return trade_journal_import.save_trade_journal_import(payload)
+
+
+@router.get("/trade-journal/{entry_id}", response_model=TradeJournalRead)
+def get_trade_journal_entry(entry_id: int):
+    record = service.get_trade_journal_entry(entry_id)
+    if record is None:
+        raise _not_found("Trade journal entry", entry_id)
+    return record
+
+
+@router.patch("/trade-journal/{entry_id}", response_model=TradeJournalRead)
+def update_trade_journal_entry(entry_id: int, payload: TradeJournalUpdate):
+    record = service.update_trade_journal_entry(entry_id, payload)
+    if record is None:
+        raise _not_found("Trade journal entry", entry_id)
+    return record
+
+
+@router.delete("/trade-journal/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_trade_journal_entry(entry_id: int):
+    if not service.delete_trade_journal_entry(entry_id):
+        raise _not_found("Trade journal entry", entry_id)

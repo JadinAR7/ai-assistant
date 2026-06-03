@@ -194,6 +194,42 @@ def init_orbit_db() -> None:
     """)
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trade_journal (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_date TEXT NOT NULL DEFAULT CURRENT_DATE,
+            symbol TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            entry_price REAL,
+            stop_loss REAL,
+            take_profit REAL,
+            exit_price REAL,
+            result_dollars REAL,
+            result_r REAL,
+            contracts INTEGER,
+            session TEXT,
+            htf_bias TEXT,
+            draw_on_liquidity TEXT NOT NULL DEFAULT '[]',
+            reaction_zone TEXT,
+            behavior_tags TEXT NOT NULL DEFAULT '[]',
+            execution_tags TEXT NOT NULL DEFAULT '[]',
+            why_taken TEXT,
+            price_intent TEXT,
+            liquidity_target TEXT,
+            went_well TEXT,
+            went_wrong TEXT,
+            lesson_learned TEXT,
+            screenshot_path TEXT,
+            csv_path TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK (direction IN ('Long', 'Short')),
+            CHECK (contracts IS NULL OR contracts >= 0),
+            CHECK (session IS NULL OR session IN ('Asia', 'London', 'New York', 'After Hours')),
+            CHECK (htf_bias IS NULL OR htf_bias IN ('Bullish', 'Bearish', 'Neutral'))
+        )
+    """)
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS schedule_blocks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
@@ -307,6 +343,17 @@ def init_orbit_db() -> None:
         FOR EACH ROW
         BEGIN
             UPDATE trade_sessions
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = OLD.id;
+        END
+    """)
+
+    cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS update_trade_journal_updated_at
+        AFTER UPDATE ON trade_journal
+        FOR EACH ROW
+        BEGIN
+            UPDATE trade_journal
             SET updated_at = CURRENT_TIMESTAMP
             WHERE id = OLD.id;
         END

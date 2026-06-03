@@ -28,6 +28,9 @@ DayOfWeek = Literal[
 ScheduleBlockPriority = Literal["low", "medium", "high"]
 MajorEventStatus = Literal["active", "paused", "completed", "archived"]
 ScheduleDayStatus = Literal["healthy", "busy", "overloaded"]
+TradeDirection = Literal["Long", "Short"]
+TradeSessionName = Literal["Asia", "London", "New York", "After Hours"]
+TradeHtfBias = Literal["Bullish", "Bearish", "Neutral"]
 
 
 class ScheduleBlockBase(BaseModel):
@@ -397,6 +400,155 @@ class TradeSessionRead(TradeSessionBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+
+class TradeJournalBase(BaseModel):
+    trade_date: date
+    symbol: str
+    direction: TradeDirection
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    exit_price: Optional[float] = None
+    result_dollars: Optional[float] = None
+    result_r: Optional[float] = None
+    contracts: Optional[int] = Field(default=None, ge=0)
+    session: Optional[TradeSessionName] = None
+    htf_bias: Optional[TradeHtfBias] = None
+    draw_on_liquidity: list[str] = Field(default_factory=list)
+    reaction_zone: Optional[str] = None
+    behavior_tags: list[str] = Field(default_factory=list)
+    execution_tags: list[str] = Field(default_factory=list)
+    why_taken: Optional[str] = None
+    price_intent: Optional[str] = None
+    liquidity_target: Optional[str] = None
+    went_well: Optional[str] = None
+    went_wrong: Optional[str] = None
+    lesson_learned: Optional[str] = None
+    screenshot_path: Optional[str] = None
+    csv_path: Optional[str] = None
+
+
+class TradeJournalCreate(TradeJournalBase):
+    pass
+
+
+class TradeJournalUpdate(BaseModel):
+    trade_date: Optional[date] = None
+    symbol: Optional[str] = None
+    direction: Optional[TradeDirection] = None
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    exit_price: Optional[float] = None
+    result_dollars: Optional[float] = None
+    result_r: Optional[float] = None
+    contracts: Optional[int] = Field(default=None, ge=0)
+    session: Optional[TradeSessionName] = None
+    htf_bias: Optional[TradeHtfBias] = None
+    draw_on_liquidity: Optional[list[str]] = None
+    reaction_zone: Optional[str] = None
+    behavior_tags: Optional[list[str]] = None
+    execution_tags: Optional[list[str]] = None
+    why_taken: Optional[str] = None
+    price_intent: Optional[str] = None
+    liquidity_target: Optional[str] = None
+    went_well: Optional[str] = None
+    went_wrong: Optional[str] = None
+    lesson_learned: Optional[str] = None
+    screenshot_path: Optional[str] = None
+    csv_path: Optional[str] = None
+
+
+class TradeJournalRead(TradeJournalBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class TradeJournalDailySummary(BaseModel):
+    gross_pnl: Optional[float] = None
+    total_pnl: Optional[float] = None
+    fees_commissions: Optional[float] = None
+    trade_count: Optional[int] = None
+    contract_count: Optional[int] = None
+    win_rate: Optional[float] = None
+    expectancy: Optional[float] = None
+    average_trade_time: Optional[str] = None
+    longest_trade_time: Optional[str] = None
+
+
+class TradeJournalOrderImport(BaseModel):
+    order_id: Optional[str] = None
+    side: Optional[str] = None
+    quantity: Optional[int] = None
+    contract: Optional[str] = None
+    order_type: Optional[str] = None
+    limit_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    status: Optional[str] = None
+    filled_qty: Optional[int] = None
+    fill_time: Optional[str] = None
+    average_fill_price: Optional[float] = None
+    timestamp: Optional[str] = None
+    account: Optional[str] = None
+    venue: Optional[str] = None
+    notional_value: Optional[float] = None
+
+
+class TradeJournalImportDraft(BaseModel):
+    draft_id: str
+    selected: bool = True
+    trade_date: Optional[date] = None
+    symbol: str
+    direction: TradeDirection
+    quantity: Optional[int] = None
+    contracts: Optional[int] = None
+    entry_price: Optional[float] = None
+    entry_time: Optional[str] = None
+    exit_price: Optional[float] = None
+    exit_time: Optional[str] = None
+    duration: Optional[str] = None
+    pnl: Optional[float] = None
+    session: Optional[TradeSessionName] = None
+    stop_detected: bool = False
+    stop_canceled: bool = False
+    market_entry: bool = False
+    market_exit: bool = False
+    limit_entry: bool = False
+    limit_exit: bool = False
+    related_order_ids: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    htf_bias: Optional[TradeHtfBias] = None
+    draw_on_liquidity: list[str] = Field(default_factory=list)
+    reaction_zone: Optional[str] = None
+    behavior_tags: list[str] = Field(default_factory=list)
+    execution_tags: list[str] = Field(default_factory=list)
+    why_taken: Optional[str] = None
+    price_intent: Optional[str] = None
+    liquidity_target: Optional[str] = None
+    went_well: Optional[str] = None
+    went_wrong: Optional[str] = None
+    lesson_learned: Optional[str] = None
+    screenshot_path: Optional[str] = None
+    csv_path: Optional[str] = None
+
+
+class TradeJournalImportPreview(BaseModel):
+    daily_summary: TradeJournalDailySummary
+    trade_drafts: list[TradeJournalImportDraft] = Field(default_factory=list)
+    unmatched_orders: list[TradeJournalOrderImport] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    source_files: dict[str, Optional[str]]
+
+
+class TradeJournalImportSaveRequest(BaseModel):
+    trade_drafts: list[TradeJournalImportDraft] = Field(default_factory=list)
+
+
+class TradeJournalImportSaveResponse(BaseModel):
+    created_entries: list[TradeJournalRead] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class AgentRun(BaseModel):
