@@ -84,6 +84,7 @@ TABLE_COLUMNS = {
         "block_type",
         "category",
         "day_of_week",
+        "specific_date",
         "start_time",
         "end_time",
         "duration_minutes",
@@ -220,20 +221,34 @@ def delete_record(table: str, record_id: int) -> bool:
 
 def _validate_schedule_block_data(data: dict[str, Any]) -> None:
     block_type = data.get("block_type")
+    duration_minutes = data.get("duration_minutes")
+    specific_date = data.get("specific_date")
+
+    if specific_date not in (None, ""):
+        try:
+            date.fromisoformat(str(specific_date))
+        except ValueError as exc:
+            raise ValueError("specific_date must use YYYY-MM-DD format.") from exc
 
     if block_type == "fixed":
-        missing = [
-            field
-            for field in ["day_of_week", "start_time", "end_time"]
-            if data.get(field) in (None, "")
-        ]
-        if missing:
+        has_schedule_anchor = data.get("day_of_week") not in (None, "") or specific_date not in (None, "")
+        missing_time = data.get("start_time") in (None, "") or data.get("end_time") in (None, "")
+        if not has_schedule_anchor or missing_time:
             raise ValueError(
-                "Fixed schedule blocks require day_of_week, start_time, and end_time."
+                "Fixed schedule blocks require day_of_week or specific_date, plus start_time and end_time."
             )
 
     if block_type == "flexible" and data.get("duration_minutes") is None:
         raise ValueError("Flexible schedule blocks require duration_minutes.")
+
+    if duration_minutes is not None and int(duration_minutes) > 480:
+        raise ValueError("Schedule block duration cannot exceed 480 minutes.")
+
+
+def _normalize_schedule_block_data(data: dict[str, Any]) -> dict[str, Any]:
+    if "title" in data and data.get("title") is None:
+        return {**data, "title": ""}
+    return data
 
 
 def _list_records_ordered(table: str, order_by: str) -> list[dict[str, Any]]:
@@ -574,7 +589,7 @@ def list_schedule_blocks() -> list[dict[str, Any]]:
 
 
 def create_schedule_block(payload: ScheduleBlockCreate) -> dict[str, Any]:
-    data = _model_data(payload)
+    data = _normalize_schedule_block_data(_model_data(payload))
     _validate_schedule_block_data(data)
     return _create_record("schedule_blocks", data)
 
@@ -587,7 +602,7 @@ def update_schedule_block(
     if existing is None:
         return None
 
-    data = _model_data(payload, exclude_unset=True)
+    data = _normalize_schedule_block_data(_model_data(payload, exclude_unset=True))
     merged = {**existing, **data}
     _validate_schedule_block_data(merged)
     return _update_record("schedule_blocks", record_id, data)

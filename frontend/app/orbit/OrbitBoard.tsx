@@ -260,10 +260,11 @@ export type DayOfWeek =
 
 export type ScheduleBlock = {
   id: number;
-  title: string;
+  title?: string | null;
   block_type: ScheduleBlockType;
   category: ScheduleBlockCategory;
   day_of_week: DayOfWeek | null;
+  specific_date: string | null;
   start_time: string | null;
   end_time: string | null;
   duration_minutes: number | null;
@@ -405,15 +406,47 @@ const categoryOptions: ScheduleBlockCategory[] = [
   "other",
 ];
 const priorityOptions: ScheduleBlockPriority[] = ["low", "medium", "high"];
+const durationUnitOptions = ["minutes", "hours"] as const;
+type DurationUnit = (typeof durationUnitOptions)[number];
+const maxScheduleDurationMinutes = 480;
+const recurrenceOptions = [
+  "once",
+  "daily",
+  "weekly",
+  "every_other_week",
+  "monthly",
+  "every_other_month",
+] as const;
+const recurrenceLabels: Record<(typeof recurrenceOptions)[number], string> = {
+  once: "Once",
+  daily: "Daily",
+  weekly: "Weekly",
+  every_other_week: "Every other week",
+  monthly: "Monthly",
+  every_other_month: "Every other month",
+};
+const scheduleCategoryFallbackLabels: Record<ScheduleBlockCategory, string> = {
+  boxing: "Boxing",
+  family: "Family Time",
+  reading: "Reading",
+  work: "Work",
+  trading: "Trading",
+  milestone: "Milestone Work",
+  leisure: "Leisure",
+  personal: "Personal",
+  other: "Other",
+};
 const emptyScheduleForm = {
   title: "",
   block_type: "fixed" as ScheduleBlockType,
   category: "work" as ScheduleBlockCategory,
   day_of_week: "monday" as DayOfWeek | "",
+  specific_date: "",
   start_time: "",
   end_time: "",
-  duration_minutes: "",
-  recurrence: "",
+  duration_value: "",
+  duration_unit: "minutes" as DurationUnit,
+  recurrence: "once" as (typeof recurrenceOptions)[number],
   priority: "medium" as ScheduleBlockPriority,
   notes: "",
   active: true,
@@ -448,6 +481,61 @@ function formatDateTime(value: string) {
   }).format(date);
 }
 
+function toDateOnlyString(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function addDays(date: Date, days: number) {
+  const nextDate = new Date(date);
+  nextDate.setDate(nextDate.getDate() + days);
+  return nextDate;
+}
+
+function getWeekStart(date: Date) {
+  const weekStart = new Date(date);
+  weekStart.setHours(0, 0, 0, 0);
+  const dayOffset = (weekStart.getDay() + 6) % 7;
+  weekStart.setDate(weekStart.getDate() - dayOffset);
+  return weekStart;
+}
+
+function formatWeekHeading(weekDays: { date: Date }[]) {
+  const firstDay = weekDays[0]?.date ?? new Date();
+  const lastDay = weekDays[weekDays.length - 1]?.date ?? firstDay;
+  const firstMonth = new Intl.DateTimeFormat("en-US", { month: "long" }).format(
+    firstDay,
+  );
+  const lastMonth = new Intl.DateTimeFormat("en-US", { month: "long" }).format(
+    lastDay,
+  );
+  const firstYear = firstDay.getFullYear();
+  const lastYear = lastDay.getFullYear();
+
+  if (firstYear !== lastYear) {
+    return `${firstMonth} ${firstYear} - ${lastMonth} ${lastYear}`;
+  }
+
+  if (firstMonth !== lastMonth) {
+    return `${firstMonth} - ${lastMonth} ${firstYear}`;
+  }
+
+  return `${firstMonth} ${firstYear}`;
+}
+
+function formatWeekDateLabel(date: Date) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+  }).format(date);
+}
+
+function isSameDate(left: Date, right: Date) {
+  return toDateOnlyString(left) === toDateOnlyString(right);
+}
+
 function formatStatus(value: string) {
   return value
     .split("_")
@@ -475,26 +563,79 @@ function formatTime(value: string | null) {
   }).format(new Date(2026, 0, 1, hour, minute));
 }
 
-function formatBlockTiming(block: ScheduleBlock) {
+function formatBlockCardTiming(block: ScheduleBlock) {
   if (block.block_type === "fixed") {
-    return `${formatStatus(block.day_of_week ?? "unscheduled")} ${formatTime(
-      block.start_time,
-    )}-${formatTime(block.end_time)}`;
+    return `${formatTime(block.start_time)}-${formatTime(block.end_time)}`;
   }
 
-  return `${block.duration_minutes ?? "--"} min flexible`;
+  return formatDuration(block.duration_minutes);
+}
+
+function formatDuration(durationMinutes: number | null) {
+  if (!durationMinutes) {
+    return "--";
+  }
+
+  if (durationMinutes < 60) {
+    return `${durationMinutes} min`;
+  }
+
+  const hours = durationMinutes / 60;
+  return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} hr`;
+}
+
+function getDurationMinutesFromForm(form: ScheduleFormState) {
+  const duration = Number(form.duration_value);
+
+  if (Number.isNaN(duration)) {
+    return null;
+  }
+
+  return form.duration_unit === "hours" ? Math.round(duration * 60) : duration;
+}
+
+function getDurationFormFields(durationMinutes: number | null) {
+  if (!durationMinutes) {
+    return {
+      duration_value: "",
+      duration_unit: "minutes" as DurationUnit,
+    };
+  }
+
+  if (durationMinutes >= 60 && durationMinutes % 60 === 0) {
+    return {
+      duration_value: String(durationMinutes / 60),
+      duration_unit: "hours" as DurationUnit,
+    };
+  }
+
+  return {
+    duration_value: String(durationMinutes),
+    duration_unit: "minutes" as DurationUnit,
+  };
+}
+
+function getScheduleBlockLabel(block: ScheduleBlock) {
+  return block.title?.trim() || scheduleCategoryFallbackLabels[block.category];
 }
 
 function scheduleFormFromBlock(block: ScheduleBlock): ScheduleFormState {
+  const durationFields = getDurationFormFields(block.duration_minutes);
+
   return {
-    title: block.title,
+    title: block.title ?? "",
     block_type: block.block_type,
     category: block.category,
     day_of_week: block.day_of_week ?? "",
+    specific_date: block.specific_date ?? "",
     start_time: block.start_time ?? "",
     end_time: block.end_time ?? "",
-    duration_minutes: block.duration_minutes?.toString() ?? "",
-    recurrence: block.recurrence ?? "",
+    ...durationFields,
+    recurrence: recurrenceOptions.includes(
+      block.recurrence as (typeof recurrenceOptions)[number],
+    )
+      ? (block.recurrence as (typeof recurrenceOptions)[number])
+      : "once",
     priority: block.priority,
     notes: block.notes ?? "",
     active: block.active,
@@ -722,6 +863,117 @@ function MiniPanel({
   );
 }
 
+function ScheduleBlockActionMenu({
+  block,
+  mutatingScheduleBlockId,
+  onEdit,
+  onArchive,
+  onDelete,
+}: Readonly<{
+  block: ScheduleBlock;
+  mutatingScheduleBlockId: number | null;
+  onEdit: (block: ScheduleBlock) => void;
+  onArchive: (block: ScheduleBlock) => void;
+  onDelete: (blockId: number) => void;
+}>) {
+  return (
+    <details className="relative shrink-0">
+      <summary className="flex h-7 w-7 cursor-pointer list-none items-center justify-center rounded-md border border-white/10 bg-white/[0.03] text-sm font-semibold text-neutral-300 hover:border-white/20 hover:text-white">
+        ...
+      </summary>
+      <div className="absolute right-0 top-8 z-20 w-28 rounded-lg border border-white/10 bg-neutral-950 p-1 shadow-xl shadow-black/40">
+        <button
+          type="button"
+          onClick={() => onEdit(block)}
+          className="block w-full rounded-md px-2 py-1 text-left text-xs font-semibold text-neutral-300 hover:bg-white/[0.06] hover:text-white"
+        >
+          Edit
+        </button>
+        {block.active ? (
+          <button
+            type="button"
+            onClick={() => onArchive(block)}
+            disabled={mutatingScheduleBlockId === block.id}
+            className="block w-full rounded-md px-2 py-1 text-left text-xs font-semibold text-amber-100 hover:bg-amber-300/10 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Archive
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => onDelete(block.id)}
+          disabled={mutatingScheduleBlockId === block.id}
+          className="block w-full rounded-md px-2 py-1 text-left text-xs font-semibold text-red-100 hover:bg-red-300/10 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Delete
+        </button>
+      </div>
+    </details>
+  );
+}
+
+function CalendarScheduleBlockCard({
+  block,
+  mutatingScheduleBlockId,
+  onEdit,
+  onArchive,
+  onDelete,
+  compact = false,
+}: Readonly<{
+  block: ScheduleBlock;
+  mutatingScheduleBlockId: number | null;
+  onEdit: (block: ScheduleBlock) => void;
+  onArchive: (block: ScheduleBlock) => void;
+  onDelete: (blockId: number) => void;
+  compact?: boolean;
+}>) {
+  return (
+    <article
+      className={`rounded-lg border ${
+        block.active
+          ? "border-cyan-300/15 bg-cyan-300/[0.06]"
+          : "border-white/5 bg-white/[0.02] opacity-60"
+      } ${compact ? "px-3 py-2" : "px-3 py-2.5"}`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h4 className="break-words text-sm font-semibold leading-5 text-neutral-100">
+            {getScheduleBlockLabel(block)}
+          </h4>
+          {block.notes && !compact ? (
+            <p className="mt-1 line-clamp-2 text-xs leading-5 text-neutral-500">
+              {block.notes}
+            </p>
+          ) : null}
+        </div>
+        <ScheduleBlockActionMenu
+          block={block}
+          mutatingScheduleBlockId={mutatingScheduleBlockId}
+          onEdit={onEdit}
+          onArchive={onArchive}
+          onDelete={onDelete}
+        />
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        <span className="rounded-full border border-cyan-300/15 bg-cyan-300/5 px-2 py-0.5 text-[11px] font-semibold text-cyan-100">
+          {formatBlockCardTiming(block)}
+        </span>
+        {block.block_type === "flexible" ? (
+          <span className="rounded-full border border-violet-300/20 bg-violet-300/10 px-2 py-0.5 text-[11px] font-semibold text-violet-100">
+            Flexible
+          </span>
+        ) : null}
+        <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] font-semibold text-neutral-400">
+          {formatStatus(block.category)}
+        </span>
+        <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] font-semibold text-neutral-400">
+          {formatStatus(block.priority)}
+        </span>
+      </div>
+    </article>
+  );
+}
+
 export default function OrbitBoard({
   majorEvents: initialMajorEvents,
   event: initialEvent,
@@ -805,6 +1057,9 @@ export default function OrbitBoard({
   );
   const [scheduleForm, setScheduleForm] =
     useState<ScheduleFormState>(emptyScheduleForm);
+  const [visibleWeekStart, setVisibleWeekStart] = useState(() =>
+    getWeekStart(new Date()),
+  );
   const [editingScheduleBlockId, setEditingScheduleBlockId] = useState<
     number | null
   >(null);
@@ -973,34 +1228,88 @@ export default function OrbitBoard({
       ),
     [eventMilestones],
   );
-  const groupedScheduleBlocks = useMemo(() => {
-    const groups = new Map<string, ScheduleBlock[]>();
+  const visibleWeekDays = useMemo(
+    () =>
+      dayOptions.map((day, index) => {
+        const date = addDays(visibleWeekStart, index);
+        return {
+          day,
+          date,
+          dateKey: toDateOnlyString(date),
+        };
+      }),
+    [visibleWeekStart],
+  );
+  const scheduleBlocksByDate = useMemo(() => {
+    const blocksByDate = new Map<string, ScheduleBlock[]>(
+      visibleWeekDays.map((day) => [day.dateKey, []]),
+    );
+    const dayToDateKey = new Map<DayOfWeek, string>(
+      visibleWeekDays.map((day) => [day.day, day.dateKey]),
+    );
 
     scheduleBlocks.forEach((block) => {
-      const groupKey =
-        block.block_type === "fixed"
-          ? (block.day_of_week ?? "unscheduled")
-          : block.category;
-      const label =
-        block.block_type === "fixed"
-          ? formatStatus(groupKey)
-          : `${formatStatus(groupKey)} Flexible`;
+      const dateKey = block.specific_date || null;
 
-      groups.set(label, [...(groups.get(label) ?? []), block]);
+      if (dateKey) {
+        if (blocksByDate.has(dateKey)) {
+          blocksByDate.set(dateKey, [...(blocksByDate.get(dateKey) ?? []), block]);
+        }
+        return;
+      }
+
+      if (block.day_of_week) {
+        const recurringDateKey = dayToDateKey.get(block.day_of_week);
+        if (recurringDateKey) {
+          blocksByDate.set(recurringDateKey, [
+            ...(blocksByDate.get(recurringDateKey) ?? []),
+            block,
+          ]);
+        }
+      }
     });
 
-    return Array.from(groups.entries()).map(([label, blocks]) => ({
-      label,
-      blocks: blocks.sort((left, right) => {
-        const leftTime = left.start_time ?? "";
-        const rightTime = right.start_time ?? "";
-        if (leftTime !== rightTime) {
-          return leftTime.localeCompare(rightTime);
+    visibleWeekDays.forEach((day) => {
+      blocksByDate.set(
+        day.dateKey,
+        [...(blocksByDate.get(day.dateKey) ?? [])].sort((left, right) => {
+          const leftTime = left.start_time ?? "";
+          const rightTime = right.start_time ?? "";
+          if (leftTime !== rightTime) {
+            return leftTime.localeCompare(rightTime);
+          }
+          return getScheduleBlockLabel(left).localeCompare(
+            getScheduleBlockLabel(right),
+          );
+        }),
+      );
+    });
+
+    return blocksByDate;
+  }, [scheduleBlocks, visibleWeekDays]);
+  const unplacedScheduleBlocks = useMemo(() => {
+    return scheduleBlocks
+      .filter(
+        (block) =>
+          block.block_type === "flexible" &&
+          !block.day_of_week &&
+          !block.specific_date,
+      )
+      .sort((left, right) => {
+        const leftPriority = priorityOptions.indexOf(left.priority);
+        const rightPriority = priorityOptions.indexOf(right.priority);
+        if (leftPriority !== rightPriority) {
+          return rightPriority - leftPriority;
         }
-        return left.title.localeCompare(right.title);
-      }),
-    }));
+        return getScheduleBlockLabel(left).localeCompare(
+          getScheduleBlockLabel(right),
+        );
+      });
   }, [scheduleBlocks]);
+  const currentScheduleMonthYear = useMemo(
+    () => formatWeekHeading(visibleWeekDays),
+    [visibleWeekDays],
+  );
 
   useEffect(() => {
     if (!toast) {
@@ -1421,17 +1730,21 @@ export default function OrbitBoard({
   }
 
   function getSchedulePayload() {
+    const durationMinutes =
+      scheduleForm.block_type === "flexible"
+        ? getDurationMinutesFromForm(scheduleForm)
+        : null;
+
     return {
       title: scheduleForm.title.trim(),
       block_type: scheduleForm.block_type,
       category: scheduleForm.category,
       day_of_week: scheduleForm.day_of_week || null,
+      specific_date: scheduleForm.specific_date || null,
       start_time: scheduleForm.start_time || null,
       end_time: scheduleForm.end_time || null,
-      duration_minutes: scheduleForm.duration_minutes
-        ? Number(scheduleForm.duration_minutes)
-        : null,
-      recurrence: scheduleForm.recurrence.trim() || null,
+      duration_minutes: durationMinutes,
+      recurrence: scheduleForm.recurrence,
       priority: scheduleForm.priority,
       notes: scheduleForm.notes.trim() || null,
       active: scheduleForm.active,
@@ -1439,33 +1752,37 @@ export default function OrbitBoard({
   }
 
   async function saveScheduleBlock() {
-    if (!scheduleForm.title.trim()) {
-      setToast({ message: "Schedule block title is required.", type: "error" });
-      return;
-    }
-
     if (
       scheduleForm.block_type === "fixed" &&
-      (!scheduleForm.day_of_week ||
+      ((!scheduleForm.day_of_week && !scheduleForm.specific_date) ||
         !scheduleForm.start_time ||
         !scheduleForm.end_time)
     ) {
       setToast({
-        message: "Fixed blocks need a day, start time, and end time.",
+        message: "Fixed blocks need a recurring day or date, plus start and end time.",
         type: "error",
       });
       return;
     }
 
-    if (
-      scheduleForm.block_type === "flexible" &&
-      !scheduleForm.duration_minutes
-    ) {
-      setToast({
-        message: "Flexible blocks need a duration.",
-        type: "error",
-      });
-      return;
+    if (scheduleForm.block_type === "flexible") {
+      const durationMinutes = getDurationMinutesFromForm(scheduleForm);
+
+      if (durationMinutes === null || durationMinutes <= 0) {
+        setToast({
+          message: "Flexible blocks need a duration greater than 0.",
+          type: "error",
+        });
+        return;
+      }
+
+      if (durationMinutes > maxScheduleDurationMinutes) {
+        setToast({
+          message: "Flexible blocks cannot exceed 8 hours.",
+          type: "error",
+        });
+        return;
+      }
     }
 
     setSavingScheduleBlock(true);
@@ -2115,7 +2432,7 @@ export default function OrbitBoard({
       ) : null}
 
       {activeTab === "Schedule" ? (
-        <div className="grid gap-3 lg:grid-cols-[0.9fr_1.1fr]">
+        <div className="space-y-3">
           <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -2154,14 +2471,14 @@ export default function OrbitBoard({
               </div>
             </div>
 
-            <div className="space-y-2">
+            <div className="grid gap-2 lg:grid-cols-[1.2fr_1fr_1fr]">
               <input
                 type="text"
                 value={scheduleForm.title}
                 onChange={(event) =>
                   setScheduleField("title", event.target.value)
                 }
-                placeholder="Title"
+                placeholder="Title optional"
                 className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
               />
               <div className="grid gap-2 sm:grid-cols-2">
@@ -2200,23 +2517,32 @@ export default function OrbitBoard({
               </div>
 
               {scheduleForm.block_type === "fixed" ? (
-                <div className="grid gap-2 sm:grid-cols-3">
+                <div className="grid gap-2 sm:grid-cols-2 lg:col-span-3 xl:grid-cols-4">
                   <select
                     value={scheduleForm.day_of_week}
                     onChange={(event) =>
                       setScheduleField(
                         "day_of_week",
-                        event.target.value as DayOfWeek,
+                        event.target.value as DayOfWeek | "",
                       )
                     }
                     className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
                   >
+                    <option value="">Recurring day</option>
                     {dayOptions.map((day) => (
                       <option key={day} value={day}>
                         {formatStatus(day)}
                       </option>
                     ))}
                   </select>
+                  <input
+                    type="date"
+                    value={scheduleForm.specific_date}
+                    onChange={(event) =>
+                      setScheduleField("specific_date", event.target.value)
+                    }
+                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                  />
                   <input
                     type="time"
                     value={scheduleForm.start_time}
@@ -2235,27 +2561,84 @@ export default function OrbitBoard({
                   />
                 </div>
               ) : (
-                <input
-                  type="number"
-                  min="1"
-                  value={scheduleForm.duration_minutes}
-                  onChange={(event) =>
-                    setScheduleField("duration_minutes", event.target.value)
-                  }
-                  placeholder="Duration minutes"
-                  className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
-                />
+                <div className="grid gap-2 sm:grid-cols-2 lg:col-span-3 xl:grid-cols-[minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(8rem,0.8fr)_8rem]">
+                  <select
+                    aria-label="Preferred day"
+                    value={scheduleForm.day_of_week}
+                    onChange={(event) =>
+                      setScheduleField(
+                        "day_of_week",
+                        event.target.value as DayOfWeek | "",
+                      )
+                    }
+                    className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                  >
+                    <option value="">Preferred day</option>
+                    {dayOptions.map((day) => (
+                      <option key={day} value={day}>
+                        {formatStatus(day)}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="date"
+                    value={scheduleForm.specific_date}
+                    onChange={(event) =>
+                      setScheduleField("specific_date", event.target.value)
+                    }
+                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                  />
+                  <input
+                    type="number"
+                    min="0.25"
+                    max={
+                      scheduleForm.duration_unit === "hours"
+                        ? maxScheduleDurationMinutes / 60
+                        : maxScheduleDurationMinutes
+                    }
+                    step={scheduleForm.duration_unit === "hours" ? "0.25" : "1"}
+                    value={scheduleForm.duration_value}
+                    onChange={(event) =>
+                      setScheduleField("duration_value", event.target.value)
+                    }
+                    placeholder="Duration"
+                    className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
+                  />
+                  <select
+                    value={scheduleForm.duration_unit}
+                    onChange={(event) =>
+                      setScheduleField(
+                        "duration_unit",
+                        event.target.value as DurationUnit,
+                      )
+                    }
+                    className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                  >
+                    {durationUnitOptions.map((unit) => (
+                      <option key={unit} value={unit}>
+                        {unit === "minutes" ? "Minutes" : "Hours"}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               )}
 
-              <input
-                type="text"
+              <select
                 value={scheduleForm.recurrence}
                 onChange={(event) =>
-                  setScheduleField("recurrence", event.target.value)
+                  setScheduleField(
+                    "recurrence",
+                    event.target.value as ScheduleFormState["recurrence"],
+                  )
                 }
-                placeholder="Recurrence"
-                className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
-              />
+                className="w-full rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+              >
+                {recurrenceOptions.map((recurrence) => (
+                  <option key={recurrence} value={recurrence}>
+                    {recurrenceLabels[recurrence]}
+                  </option>
+                ))}
+              </select>
               <textarea
                 value={scheduleForm.notes}
                 onChange={(event) =>
@@ -2263,7 +2646,7 @@ export default function OrbitBoard({
                 }
                 placeholder="Notes"
                 rows={3}
-                className="min-h-24 w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
+                className="min-h-20 w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50 lg:col-span-2"
               />
               <label className="flex items-center gap-2 text-xs text-neutral-400">
                 <input
@@ -2306,16 +2689,55 @@ export default function OrbitBoard({
           </section>
 
           <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-4">
-            <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h2 className="text-sm font-semibold text-neutral-100">
-                  Blocks
+                <h2 className="text-lg font-semibold text-neutral-100">
+                  {currentScheduleMonthYear}
                 </h2>
                 <p className="mt-1 text-xs text-neutral-500">
                   {scheduleBlocksError
                     ? "Schedule blocks are unavailable right now."
-                    : `${scheduleBlocks.length} block${scheduleBlocks.length === 1 ? "" : "s"}`}
+                    : `${scheduleBlocks.length} block${scheduleBlocks.length === 1 ? "" : "s"} saved`}
                 </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {unplacedScheduleBlocks.length > 0 ? (
+                  <span className="text-xs text-neutral-500">
+                    {unplacedScheduleBlocks.length} flexible block
+                    {unplacedScheduleBlocks.length === 1 ? "" : "s"} needs
+                    placement
+                  </span>
+                ) : null}
+                <div className="flex rounded-lg border border-white/10 bg-white/[0.03] p-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setVisibleWeekStart((current) => addDays(current, -7))
+                    }
+                    className="rounded-md px-2 py-1 text-xs font-semibold text-neutral-300 hover:bg-white/[0.06] hover:text-white"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVisibleWeekStart(getWeekStart(new Date()))}
+                    className="rounded-md px-2 py-1 text-xs font-semibold text-neutral-300 hover:bg-white/[0.06] hover:text-white"
+                  >
+                    Today
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setVisibleWeekStart((current) => addDays(current, 7))
+                    }
+                    className="rounded-md px-2 py-1 text-xs font-semibold text-neutral-300 hover:bg-white/[0.06] hover:text-white"
+                  >
+                    Next
+                  </button>
+                </div>
+                <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs font-semibold text-neutral-300">
+                  Monday-Sunday
+                </div>
               </div>
             </div>
 
@@ -2323,87 +2745,64 @@ export default function OrbitBoard({
               <p className="text-sm text-red-100">
                 Schedule blocks are unavailable right now.
               </p>
-            ) : groupedScheduleBlocks.length > 0 ? (
-              <div className="space-y-3">
-                {groupedScheduleBlocks.map((group) => (
-                  <div key={group.label}>
-                    <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                      {group.label}
-                    </h3>
-                    <div className="space-y-1.5">
-                      {group.blocks.map((block) => (
-                        <article
-                          key={block.id}
-                          className={`rounded-lg border px-3 py-2 ${
-                            block.active
-                              ? "border-white/10 bg-white/[0.03]"
-                              : "border-white/5 bg-black/20 opacity-60"
-                          }`}
-                        >
-                          <div className="flex flex-wrap items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <h4 className="text-sm font-semibold text-neutral-100">
-                                  {block.title}
-                                </h4>
-                                <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[11px] text-cyan-100">
-                                  {formatStatus(block.block_type)}
-                                </span>
-                                <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-400">
-                                  {formatStatus(block.priority)}
-                                </span>
-                              </div>
-                              <p className="mt-1 text-xs text-neutral-500">
-                                {formatBlockTiming(block)} |{" "}
-                                {formatStatus(block.category)}
-                                {block.recurrence
-                                  ? ` | ${block.recurrence}`
-                                  : ""}
-                              </p>
-                              {block.notes ? (
-                                <p className="mt-1 line-clamp-2 text-sm leading-5 text-neutral-400">
-                                  {block.notes}
-                                </p>
-                              ) : null}
-                            </div>
-                            <div className="flex shrink-0 flex-wrap gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => startScheduleBlockEdit(block)}
-                                className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white"
-                              >
-                                Edit
-                              </button>
-                              {block.active ? (
-                                <button
-                                  type="button"
-                                  onClick={() => archiveScheduleBlock(block)}
-                                  disabled={mutatingScheduleBlockId === block.id}
-                                  className="rounded-md border border-amber-300/25 bg-amber-300/10 px-2 py-1 text-xs font-semibold text-amber-100 hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-60"
-                                >
-                                  Archive
-                                </button>
-                              ) : null}
-                              <button
-                                type="button"
-                                onClick={() => deleteScheduleBlock(block.id)}
-                                disabled={mutatingScheduleBlockId === block.id}
-                                className="rounded-md border border-red-300/25 bg-red-300/10 px-2 py-1 text-xs font-semibold text-red-100 hover:bg-red-300/20 disabled:cursor-not-allowed disabled:opacity-60"
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
             ) : (
-              <p className="text-sm text-neutral-500">
-                No schedule blocks have been added yet.
-              </p>
+              <div className="space-y-3">
+                <div className="overflow-x-auto pb-1">
+                  <div className="grid min-w-[980px] grid-cols-7 gap-2">
+                    {visibleWeekDays.map((weekDay) => {
+                      const blocks =
+                        scheduleBlocksByDate.get(weekDay.dateKey) ?? [];
+                      const today = isSameDate(weekDay.date, new Date());
+
+                      return (
+                        <div
+                          key={weekDay.dateKey}
+                          className="min-h-[26rem] rounded-lg border border-white/10 bg-black/20"
+                        >
+                          <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
+                            <div>
+                              <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-300">
+                                {formatStatus(weekDay.day)}
+                              </h3>
+                              <p className="mt-0.5 text-xs text-neutral-500">
+                                {formatWeekDateLabel(weekDay.date)}
+                              </p>
+                            </div>
+                            {today ? (
+                              <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-cyan-100">
+                                Today
+                              </span>
+                            ) : null}
+                            <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-500">
+                              {blocks.length}
+                            </span>
+                          </div>
+                          <div className="space-y-2 p-2.5">
+                            {blocks.length > 0 ? (
+                              blocks.map((block) => (
+                                <CalendarScheduleBlockCard
+                                  key={block.id}
+                                  block={block}
+                                  mutatingScheduleBlockId={
+                                    mutatingScheduleBlockId
+                                  }
+                                  onEdit={startScheduleBlockEdit}
+                                  onArchive={archiveScheduleBlock}
+                                  onDelete={deleteScheduleBlock}
+                                />
+                              ))
+                            ) : (
+                              <p className="rounded-lg border border-dashed border-white/10 px-3 py-4 text-xs leading-5 text-neutral-600">
+                                No blocks scheduled.
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
             )}
           </section>
         </div>

@@ -200,6 +200,7 @@ def init_orbit_db() -> None:
             block_type TEXT NOT NULL,
             category TEXT NOT NULL,
             day_of_week TEXT,
+            specific_date TEXT,
             start_time TEXT,
             end_time TEXT,
             duration_minutes INTEGER,
@@ -237,6 +238,11 @@ def init_orbit_db() -> None:
             CHECK (active IN (0, 1))
         )
     """)
+
+    cursor.execute("PRAGMA table_info(schedule_blocks)")
+    schedule_block_columns = {row["name"] for row in cursor.fetchall()}
+    if "specific_date" not in schedule_block_columns:
+        cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN specific_date TEXT")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS agent_definitions (
