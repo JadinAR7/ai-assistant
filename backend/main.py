@@ -15,6 +15,10 @@ from notification_config import get_default_imessage_recipient, get_notification
 from agent_routes import router as agent_router
 from chat_intents import route_chat_intent
 from presence import get_presence, list_presence_modes, set_presence
+from scanner_settings import (
+    get_scanner_settings,
+    set_scanner_settings,
+)
 from orbit.database import init_orbit_db
 from orbit.routes import router as orbit_router
 
@@ -616,6 +620,10 @@ class PresenceRequest(BaseModel):
     mode: str
 
 
+class ScannerSettingsRequest(BaseModel):
+    default_symbol: str
+
+
 # -------------------------
 # Utility helpers
 # -------------------------
@@ -999,15 +1007,50 @@ async def analyze_image(
 # -------------------------
 # Scan endpoints
 # -------------------------
+@app.get("/scanner/settings")
+def scanner_settings():
+    current = get_scanner_settings()
+    return {
+        "success": True,
+        "default_symbol": current.get("default_symbol"),
+        "supported_symbols": current.get("supported_symbols"),
+        "updated_at": current.get("updated_at"),
+        "settings": current,
+    }
+
+
+@app.post("/scanner/settings")
+def update_scanner_settings(request: ScannerSettingsRequest):
+    try:
+        current = set_scanner_settings(request.default_symbol)
+        return {
+            "success": True,
+            "default_symbol": current.get("default_symbol"),
+            "supported_symbols": current.get("supported_symbols"),
+            "updated_at": current.get("updated_at"),
+            "settings": current,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
 @app.post("/scan/force")
-def force_scan(timeframe: str | None = None, multi_timeframe: bool = True):
+def force_scan(
+    timeframe: str | None = None,
+    multi_timeframe: bool = True,
+    symbol: str | None = None,
+):
     from scheduled_scan import SCAN_TIMEFRAME, run_scan
 
-    record = run_scan(
-        force=True,
-        timeframe=timeframe or SCAN_TIMEFRAME,
-        multi_timeframe=multi_timeframe,
-    )
+    try:
+        record = run_scan(
+            force=True,
+            timeframe=timeframe or SCAN_TIMEFRAME,
+            multi_timeframe=multi_timeframe,
+            symbol=symbol,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
     if not record:
         return {

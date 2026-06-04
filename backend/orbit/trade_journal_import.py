@@ -301,7 +301,7 @@ def _section_lines(text: str) -> list[str]:
 def _looks_like_duration_cell(value: str) -> bool:
     return bool(
         re.fullmatch(
-            r"\d+\s*(?:day|days|hr|hrs|hour|hours|min|mins|minute|minutes|sec|secs|second|seconds)",
+            r"(?:\d+\s*(?:day|days|hr|hrs|hour|hours|min|mins|minute|minutes|sec|secs|second|seconds)\s*)+",
             value.strip(),
             re.I,
         )

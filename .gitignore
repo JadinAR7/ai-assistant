@@ -45,3 +45,16 @@ random.txt
 
 # Logs
 backend/logs/*.log
+
+# Local scanner state
+backend/scanner_settings.json
+
+# Runtime scan state/logs
+backend/scan_history.jsonl
+backend/csv_refresh_status.json
+backend/.scanner_runtime*.json
+backend/logs/
+
+# Local screenshots/downloads
+backend/pictures/tradingview_screenshots/
+backend/downloads/
