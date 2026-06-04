@@ -16,6 +16,8 @@ const JOURNAL_URL = `${API_BASE}/orbit/trade-journal`;
 const IMPORT_URL = `${JOURNAL_URL}/import-pdf`;
 const IMPORT_SAVE_URL = `${IMPORT_URL}/save`;
 const TRADING_COACH_REVIEW_URL = `${API_BASE}/orbit/trading-coach/review`;
+const TRADING_CORRELATION_REVIEW_URL = `${API_BASE}/orbit/trading-correlation/review`;
+const PATTERN_DISCOVERY_REVIEW_URL = `${API_BASE}/orbit/pattern-discovery/review`;
 
 const directions = ["Long", "Short"] as const;
 const sessions = ["Asia", "London", "New York", "After Hours"] as const;
@@ -200,6 +202,48 @@ type TradingCoachReview = {
   };
   suggested_focus: string[];
   warnings: string[];
+  readable_summary: string;
+};
+
+type TradingCorrelationReview = {
+  summary: {
+    trades_reviewed: number;
+    trades_with_scan_match: number;
+    aligned_count: number;
+    partially_aligned_count: number;
+    conflicted_count: number;
+    insufficient_data_count: number;
+    common_mismatches: { reason: string; count: number }[];
+  };
+  correlations: {
+    journal_entry_id: number;
+    symbol: string;
+    trade_date: string;
+    direction: Direction;
+    result_dollars: number | null;
+    alignment_label: string;
+    match_confidence: string;
+    scanner_narrative_phase: string | null;
+    scanner_signal_level: string | null;
+  }[];
+  suggested_data_to_capture: string[];
+  readable_summary: string;
+};
+
+type PatternDiscoveryReview = {
+  summary: {
+    trades_reviewed: number;
+    total_pnl: number | null;
+    average_pnl: number | null;
+  };
+  sample_size_warning: string | null;
+  recurring_strengths: string[];
+  recurring_weaknesses: string[];
+  profitable_contexts: string[];
+  weak_contexts: string[];
+  missing_data_patterns: string[];
+  suggested_next_review_questions: string[];
+  pattern_confidence: string;
   readable_summary: string;
 };
 
@@ -571,6 +615,7 @@ export default function TradeJournalPage() {
   const [draftStatuses, setDraftStatuses] = useState<
     Record<string, DraftStatus>
   >({});
+  const [importWorkflowCollapsed, setImportWorkflowCollapsed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [previewingImport, setPreviewingImport] = useState(false);
@@ -584,6 +629,14 @@ export default function TradeJournalPage() {
   );
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
+  const [correlationReview, setCorrelationReview] =
+    useState<TradingCorrelationReview | null>(null);
+  const [correlationLoading, setCorrelationLoading] = useState(false);
+  const [correlationError, setCorrelationError] = useState<string | null>(null);
+  const [patternReview, setPatternReview] =
+    useState<PatternDiscoveryReview | null>(null);
+  const [patternLoading, setPatternLoading] = useState(false);
+  const [patternError, setPatternError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   const selectedEntry = useMemo(
@@ -596,6 +649,12 @@ export default function TradeJournalPage() {
     importDrafts.every(
       (draft) => (draftStatuses[draft.draft_id] ?? "pending") !== "pending",
     );
+  const savedDraftCount = importDrafts.filter(
+    (draft) => draftStatus(draft) === "saved",
+  ).length;
+  const skippedDraftCount = importDrafts.filter(
+    (draft) => draftStatus(draft) === "skipped",
+  ).length;
 
   useEffect(() => {
     let mounted = true;
@@ -687,6 +746,25 @@ export default function TradeJournalPage() {
     setImportDrafts([]);
     setActiveDraftIndex(0);
     setDraftStatuses({});
+    setImportWorkflowCollapsed(false);
+  }
+
+  function resetImportFiles() {
+    setPerformancePdf(null);
+    setOrdersPdf(null);
+    setImportError(null);
+    resetImportReview();
+    if (performanceInputRef.current) {
+      performanceInputRef.current.value = "";
+    }
+    if (ordersInputRef.current) {
+      ordersInputRef.current.value = "";
+    }
+  }
+
+  function viewJournalAfterImport() {
+    setImportWorkflowCollapsed(true);
+    setImportError(null);
   }
 
   function handlePerformanceFileChange(file: File | null) {
@@ -817,6 +895,7 @@ export default function TradeJournalPage() {
       setImportDrafts(preview.trade_drafts);
       setActiveDraftIndex(0);
       setDraftStatuses(statuses);
+      setImportWorkflowCollapsed(false);
       setToast("Import preview ready.");
     } catch (previewError) {
       setImportError(
@@ -938,6 +1017,56 @@ export default function TradeJournalPage() {
     }
   }
 
+  async function handleTradingCorrelationReview() {
+    setCorrelationLoading(true);
+    setCorrelationError(null);
+
+    try {
+      const response = await fetch(TRADING_CORRELATION_REVIEW_URL, {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        throw new Error(`Scanner Correlation API returned ${response.status}.`);
+      }
+
+      const review = (await response.json()) as TradingCorrelationReview;
+      setCorrelationReview(review);
+    } catch (reviewLoadError) {
+      setCorrelationError(
+        reviewLoadError instanceof Error
+          ? reviewLoadError.message
+          : "Scanner Correlation review could not be loaded.",
+      );
+    } finally {
+      setCorrelationLoading(false);
+    }
+  }
+
+  async function handlePatternDiscoveryReview() {
+    setPatternLoading(true);
+    setPatternError(null);
+
+    try {
+      const response = await fetch(PATTERN_DISCOVERY_REVIEW_URL, {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        throw new Error(`Pattern Discovery API returned ${response.status}.`);
+      }
+
+      const review = (await response.json()) as PatternDiscoveryReview;
+      setPatternReview(review);
+    } catch (reviewLoadError) {
+      setPatternError(
+        reviewLoadError instanceof Error
+          ? reviewLoadError.message
+          : "Pattern Discovery review could not be loaded.",
+      );
+    } finally {
+      setPatternLoading(false);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-[#05070b] text-white">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-[#05070b]/90 backdrop-blur">
@@ -980,7 +1109,12 @@ export default function TradeJournalPage() {
             <button
               key={mode}
               type="button"
-              onClick={() => setJournalMode(mode)}
+              onClick={() => {
+                setJournalMode(mode);
+                if (mode === "import") {
+                  setImportWorkflowCollapsed(false);
+                }
+              }}
               className={`rounded-md px-4 py-2 text-sm font-semibold transition ${
                 journalMode === mode
                   ? "bg-cyan-300 text-slate-950"
@@ -1092,51 +1226,284 @@ export default function TradeJournalPage() {
             )}
           </section>
 
-          {journalMode === "import" ? (
           <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="text-xs text-neutral-500">Import Trades</p>
+                <p className="text-xs text-neutral-500">Scanner Correlation</p>
                 <h2 className="mt-1 text-lg font-semibold text-white">
-                  PDF Import Preview
+                  Scanner + Journal Review
                 </h2>
               </div>
-              {importDrafts.length > 0 ? (
-                <p className="rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-neutral-300">
-                  Trade {Math.min(activeDraftIndex + 1, importDrafts.length)} of{" "}
-                  {importDrafts.length}
-                </p>
-              ) : null}
-            </div>
-
-            <form
-              onSubmit={(event) => void handleImportPreview(event)}
-              className="mt-4 grid gap-3"
-            >
-              <div className="grid gap-3 sm:grid-cols-2">
-                <PdfFilePicker
-                  label="Performance PDF"
-                  file={performancePdf}
-                  inputRef={performanceInputRef}
-                  onChange={handlePerformanceFileChange}
-                  onClear={clearPerformancePdf}
-                />
-                <PdfFilePicker
-                  label="Orders PDF"
-                  file={ordersPdf}
-                  inputRef={ordersInputRef}
-                  onChange={handleOrdersFileChange}
-                  onClear={clearOrdersPdf}
-                />
-              </div>
               <button
-                type="submit"
-                disabled={previewingImport}
+                type="button"
+                onClick={() => void handleTradingCorrelationReview()}
+                disabled={correlationLoading}
                 className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {previewingImport ? "Previewing..." : "Preview Import"}
+                {correlationLoading ? "Reviewing..." : "Review Scanner Match"}
               </button>
-            </form>
+            </div>
+
+            {correlationError ? (
+              <div className="mt-3 rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-2 text-sm text-red-100">
+                {correlationError}
+              </div>
+            ) : null}
+
+            {correlationReview ? (
+              <div className="mt-4 grid gap-3">
+                <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                  <DetailRow
+                    label="Trades"
+                    value={correlationReview.summary.trades_reviewed}
+                  />
+                  <DetailRow
+                    label="Matched scans"
+                    value={correlationReview.summary.trades_with_scan_match}
+                  />
+                  <DetailRow
+                    label="Aligned"
+                    value={correlationReview.summary.aligned_count}
+                  />
+                  <DetailRow
+                    label="Partial"
+                    value={correlationReview.summary.partially_aligned_count}
+                  />
+                  <DetailRow
+                    label="Conflicted"
+                    value={correlationReview.summary.conflicted_count}
+                  />
+                  <DetailRow
+                    label="Insufficient"
+                    value={correlationReview.summary.insufficient_data_count}
+                  />
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-2">
+                  <ReviewList
+                    title="Common Mismatches"
+                    values={
+                      correlationReview.summary.common_mismatches.length > 0
+                        ? correlationReview.summary.common_mismatches.map(
+                            (item) => `${item.reason} (${item.count})`,
+                          )
+                        : correlationReview.suggested_data_to_capture
+                    }
+                  />
+                  <section className="rounded-lg border border-white/10 bg-neutral-950 p-3">
+                    <h3 className="text-xs font-semibold uppercase text-neutral-500">
+                      Recent Correlated Trades
+                    </h3>
+                    {correlationReview.correlations.length === 0 ? (
+                      <p className="mt-2 text-sm leading-6 text-neutral-400">
+                        {correlationReview.readable_summary}
+                      </p>
+                    ) : (
+                      <div className="mt-2 grid gap-2">
+                        {correlationReview.correlations.slice(0, 5).map((item) => (
+                          <div
+                            key={item.journal_entry_id}
+                            className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-neutral-300"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="font-semibold text-neutral-100">
+                                {item.symbol} {item.direction}
+                              </span>
+                              <span className="text-xs capitalize text-cyan-100">
+                                {item.alignment_label.replaceAll("_", " ")}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-xs text-neutral-500">
+                              {item.trade_date} • {item.match_confidence} match •{" "}
+                              {item.scanner_narrative_phase?.replaceAll("_", " ") ??
+                                "no scanner phase"}{" "}
+                              • {item.scanner_signal_level ?? "no signal"}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-3 text-sm leading-6 text-neutral-400">
+                Compare recent journal entries against nearby scanner records.
+              </p>
+            )}
+          </section>
+
+          <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-xs text-neutral-500">Pattern Discovery</p>
+                <h2 className="mt-1 text-lg font-semibold text-white">
+                  Trade Pattern Review
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handlePatternDiscoveryReview()}
+                disabled={patternLoading}
+                className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {patternLoading ? "Reviewing..." : "Find Patterns"}
+              </button>
+            </div>
+
+            {patternError ? (
+              <div className="mt-3 rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-2 text-sm text-red-100">
+                {patternError}
+              </div>
+            ) : null}
+
+            {patternReview ? (
+              <div className="mt-4 grid gap-3">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <DetailRow
+                    label="Trades reviewed"
+                    value={patternReview.summary.trades_reviewed}
+                  />
+                  <DetailRow
+                    label="Pattern confidence"
+                    value={patternReview.pattern_confidence}
+                  />
+                  <DetailRow
+                    label="Average PnL"
+                    value={formatCurrency(patternReview.summary.average_pnl)}
+                  />
+                </div>
+
+                {patternReview.sample_size_warning ? (
+                  <p className="rounded-lg border border-amber-400/25 bg-amber-400/10 p-3 text-sm leading-6 text-amber-100">
+                    {patternReview.sample_size_warning}
+                  </p>
+                ) : null}
+
+                {patternReview.summary.trades_reviewed === 0 ? (
+                  <p className="rounded-lg border border-white/10 bg-neutral-950 p-3 text-sm text-neutral-300">
+                    {patternReview.readable_summary}
+                  </p>
+                ) : (
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    <ReviewList
+                      title="Recurring Strengths"
+                      values={patternReview.recurring_strengths}
+                    />
+                    <ReviewList
+                      title="Recurring Weaknesses"
+                      values={patternReview.recurring_weaknesses}
+                    />
+                    <ReviewList
+                      title="Profitable Contexts"
+                      values={
+                        patternReview.profitable_contexts.length > 0
+                          ? patternReview.profitable_contexts
+                          : patternReview.missing_data_patterns.slice(0, 4)
+                      }
+                    />
+                    <ReviewList
+                      title="Weak Contexts"
+                      values={
+                        patternReview.weak_contexts.length > 0
+                          ? patternReview.weak_contexts
+                          : patternReview.missing_data_patterns.slice(0, 4)
+                      }
+                    />
+                    <ReviewList
+                      title="Next Questions"
+                      values={patternReview.suggested_next_review_questions}
+                    />
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="mt-3 text-sm leading-6 text-neutral-400">
+                Look for early recurring patterns in saved trades and scanner
+                correlation.
+              </p>
+            )}
+          </section>
+
+          {journalMode === "import" && !importWorkflowCollapsed ? (
+          <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-4">
+            {importReviewComplete ? (
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-xs text-emerald-300">Import complete</p>
+                  <h2 className="mt-1 text-lg font-semibold text-white">
+                    {`Import complete — ${importDrafts.length} trade${
+                      importDrafts.length === 1 ? "" : "s"
+                    } processed.`}
+                  </h2>
+                  <p className="mt-2 text-sm text-neutral-400">
+                    {savedDraftCount} saved, {skippedDraftCount} skipped.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={resetImportFiles}
+                    className="rounded-lg bg-cyan-300 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200"
+                  >
+                    New Import
+                  </button>
+                  <button
+                    type="button"
+                    onClick={viewJournalAfterImport}
+                    className="rounded-lg border border-white/10 px-4 py-2 text-sm font-semibold text-neutral-100 transition hover:bg-white/10"
+                  >
+                    View Journal
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-xs text-neutral-500">Import Trades</p>
+                    <h2 className="mt-1 text-lg font-semibold text-white">
+                      PDF Import Preview
+                    </h2>
+                  </div>
+                  {importDrafts.length > 0 ? (
+                    <p className="rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-neutral-300">
+                      Trade {Math.min(activeDraftIndex + 1, importDrafts.length)} of{" "}
+                      {importDrafts.length}
+                    </p>
+                  ) : null}
+                </div>
+
+                <form
+                  onSubmit={(event) => void handleImportPreview(event)}
+                  className="mt-4 grid gap-3"
+                >
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <PdfFilePicker
+                      label="Performance PDF"
+                      file={performancePdf}
+                      inputRef={performanceInputRef}
+                      onChange={handlePerformanceFileChange}
+                      onClear={clearPerformancePdf}
+                    />
+                    <PdfFilePicker
+                      label="Orders PDF"
+                      file={ordersPdf}
+                      inputRef={ordersInputRef}
+                      onChange={handleOrdersFileChange}
+                      onClear={clearOrdersPdf}
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={previewingImport}
+                    className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {previewingImport ? "Previewing..." : "Preview Import"}
+                  </button>
+                </form>
+              </>
+            )}
 
             {importError ? (
               <div className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
@@ -1144,7 +1511,7 @@ export default function TradeJournalPage() {
               </div>
             ) : null}
 
-            {importPreview ? (
+            {importPreview && !importReviewComplete ? (
               <div className="mt-4 space-y-3">
                 <div className="rounded-lg border border-white/10 bg-neutral-950 p-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1249,12 +1616,6 @@ export default function TradeJournalPage() {
                         );
                       })}
                     </div>
-                  </div>
-                ) : null}
-
-                {importReviewComplete ? (
-                  <div className="rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-4 py-3 text-sm font-semibold text-emerald-100">
-                    Import review complete.
                   </div>
                 ) : null}
 

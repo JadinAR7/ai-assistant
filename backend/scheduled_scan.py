@@ -11,7 +11,12 @@ from zoneinfo import ZoneInfo
 from news_risk import build_news_risk_summary, format_news_risk_section
 from notification_config import get_default_imessage_recipient
 from presence import get_presence
-from scanner_settings import DEFAULT_SCANNER_SYMBOL, get_default_scanner_symbol, normalize_scanner_symbol
+from scanner_settings import (
+    DEFAULT_SCANNER_SYMBOL,
+    get_default_scanner_symbol,
+    get_scanner_settings,
+    normalize_scanner_symbol,
+)
 from tools import (
     analyze_tradingview,
     capture_tradingview,
@@ -3765,7 +3770,8 @@ def write_scanner_runtime_status(
 def get_scanner_runtime_status() -> dict:
     now = datetime.now(TIMEZONE)
     sessions = get_active_sessions(now)
-    symbol = get_default_scanner_symbol()
+    settings = get_scanner_settings()
+    symbol = str(settings.get("default_symbol") or get_default_scanner_symbol())
     latest_scan = load_latest_scan(symbol=symbol)
 
     runtime_status = {}
@@ -3787,6 +3793,7 @@ def get_scanner_runtime_status() -> dict:
         "success": True,
         "symbol": symbol,
         "default_symbol": symbol,
+        "supported_symbols": settings.get("supported_symbols") or [],
         "timestamp": now.isoformat(),
         "timezone": "America/Denver",
         "scanner_enabled": scanner_enabled,

@@ -112,6 +112,8 @@ Primary modules:
 * `backend/orbit/routes.py`: Orbit API surface, including schedule intelligence and Trade Journal endpoints.
 * `backend/orbit/trade_journal_import.py`: deterministic Trade Journal PDF import parser for Performance PDFs, Orders PDFs, preview generation, and draft enrichment.
 * `backend/trading_coach.py`: Trading Coach v2 / Journal Review Intelligence v1 read-only Trade Journal review service for Liquidity Narrative Continuation alignment, missing-context guidance, and deterministic coaching summaries.
+* `backend/trading_correlation.py`: Scanner + Journal Correlation v1 read-only service that matches Trade Journal entries to nearby scan history records by symbol, date/time, and session.
+* `backend/pattern_discovery.py`: Pattern Discovery v1 read-only service that analyzes Trade Journal and scanner-correlation data for early recurring behavior patterns with small-sample caution.
 * `backend/agent_service.py`: agent definitions, manual runs, stored outputs, agent prioritization, Web Search Agent output, and Readiness Advisory output.
 * `backend/agent_routes.py`: agent API surface.
 * `backend/scheduled_agents.py`: scheduled Morning Review, Evening Review, daily prioritization snapshot, and morning fallback check loop.
@@ -219,6 +221,8 @@ The following major feature milestones are complete as of this overview:
 * Trade Journal v1
 * Trade Journal PDF Import v1
 * Trading Coach v2 / Journal Review Intelligence v1
+* Scanner + Journal Correlation v1
+* Pattern Discovery v1
 * Trading Model Refinement v1
 * Scanner Refinement v1
 * Presence Modes v1
@@ -394,6 +398,53 @@ Boundaries:
 * Does not modify scanner triggers, scanner interval, default scanner symbol, presence modes, scanner notifications, PDF import parser, or Trade Journal import UX.
 * Does not auto-update the strategy model, auto-create tasks, send notifications, or write back to journal entries.
 
+## Scanner + Journal Correlation v1
+
+Scanner + Journal Correlation v1 is implemented as deterministic, read-only correlation between saved Trade Journal entries and scanner JSONL records.
+
+Current behavior:
+
+* Reads saved Trade Journal entries and `backend/scan_history.jsonl`.
+* Matches journal entries to nearby scanner records by symbol, trade date, entry time when available, and session.
+* Uses a default matching window of 90 minutes before trade entry and 30 minutes after trade entry.
+* If entry time is missing, falls back to same symbol, same date, and same session with lower confidence.
+* Returns per-trade scanner context: nearest before/after scans, narrative phase, signal level, liquidity draw, reaction zone, behavior, structure confirmation, execution readiness, alignment label, reasons, mismatches, and missing data.
+* Uses conservative labels: `aligned`, `partially_aligned`, `conflicted`, and `insufficient_data`.
+* Returns summary counts, common mismatches, suggested data to capture, and readable text through `GET /orbit/trading-correlation/review`.
+* Supports optional filters: `limit`, `symbol`, `session`, and `strategy_mode`.
+* Supports Command Router phrases such as `compare my trades to the scanner`, `did my trades align with Helix`, `scanner journal review`, `trade scanner correlation`, and `did I follow the scanner narrative`.
+* Displays a compact Scanner Correlation panel on the Trade Journal page.
+* Supports Trading Coach with an optional Scanner Correlation summary when matched scanner context exists.
+
+Boundaries:
+
+* Does not produce trade signals or financial advice.
+* Does not build Pattern Discovery.
+* Does not modify scanner triggers, scanner interval, scanner notifications, default scanner symbol, presence modes, PDF import parser, Trade Journal import UX, strategy model, tasks, or journal entries.
+
+## Pattern Discovery v1
+
+Pattern Discovery v1 is implemented as deterministic, read-only pattern detection from Trade Journal entries and optional Scanner + Journal Correlation results.
+
+Current behavior:
+
+* Reads saved Trade Journal entries, the Liquidity Narrative Continuation strategy profile, and Scanner + Journal Correlation review data when available.
+* Reviews recurring patterns across trade metadata, strategy context, narrative/review fields, and scanner-correlation fields.
+* Returns summary, sample-size warning, recurring strengths, recurring weaknesses, profitable contexts, weak contexts, best/weakest session so far, best/weakest strategy mode so far, scanner alignment observations, missing-data patterns, suggested next review questions, and pattern confidence.
+* Uses conservative pattern confidence: low under 10 trades, medium for 10-30 trades, and higher after 30 trades while still avoiding certainty.
+* Includes the warning `Sample size is small. Treat these as early observations, not conclusions.` when fewer than 10 trades are reviewed.
+* Uses cautious language such as early pattern, appears, so far, and worth watching.
+* Returns structured JSON plus a readable summary through `GET /orbit/pattern-discovery/review`.
+* Supports optional filters: `limit`, `symbol`, `session`, and `strategy_mode`.
+* Supports Command Router phrases such as `find patterns in my trades`, `what patterns do you see`, `what trading patterns are showing up`, `where am I doing best`, `where am I struggling`, and `pattern discovery`.
+* Displays a compact Pattern Discovery panel on the Trade Journal page.
+
+Boundaries:
+
+* Does not claim statistical certainty from small sample sizes.
+* Does not modify scanner triggers, scanner interval, scanner notifications, default scanner symbol, presence modes, PDF import parser, Trade Journal import UX, strategy model, tasks, or journal entries.
+* Does not auto-update the strategy model, auto-create tasks, send notifications, or build a performance analytics dashboard.
+
 ## Trade Journal PDF Import v1
 
 Trade Journal PDF Import v1 is implemented as a deterministic preview-and-confirm workflow.
@@ -437,6 +488,7 @@ Import UX refinement:
 * Saving advances to the next pending draft.
 * Skipped drafts are not saved.
 * Completion state appears after all drafts are saved or skipped.
+* Manual smoke coverage is documented in `docs/TRADE_JOURNAL_SMOKE_TEST.md`.
 
 Future source-of-truth role:
 
@@ -553,6 +605,17 @@ Supported natural language intents include:
 * `what should I improve in my trading`
 * `review my trade journal`
 * `trading coach review`
+* `compare my trades to the scanner`
+* `did my trades align with Helix`
+* `scanner journal review`
+* `trade scanner correlation`
+* `did I follow the scanner narrative`
+* `find patterns in my trades`
+* `what patterns do you see`
+* `what trading patterns are showing up`
+* `where am I doing best`
+* `where am I struggling`
+* `pattern discovery`
 * `I’m home`
 * `I’m trading`
 * `I’m away`
@@ -570,6 +633,8 @@ Routing behavior:
 * Readiness status phrases read readiness categories.
 * Readiness advisory phrases run the Readiness Advisory Agent.
 * Trading coach phrases read Trade Journal entries and return the Trading Coach v2 deterministic review summary.
+* Scanner correlation phrases read Trade Journal entries plus scanner history records and return a deterministic read-only correlation summary.
+* Pattern discovery phrases read Trade Journal and scanner-correlation evidence and return conservative early pattern observations.
 * Presence phrases read or update Presence Modes v1 through deterministic local storage.
 * Unmatched prompts preserve existing `/chat` behavior and fall back to Ollama/tool prompting.
 
@@ -653,6 +718,8 @@ Operational note: backend restart is required after Command Router changes becau
 * `POST /orbit/trade-sessions`
 * `GET/PATCH/DELETE /orbit/trade-sessions/{trade_session_id}`
 * `GET /orbit/trading-coach/review`
+* `GET /orbit/trading-correlation/review`
+* `GET /orbit/pattern-discovery/review`
 * `GET /orbit/trade-journal`
 * `POST /orbit/trade-journal`
 * `GET/PATCH/DELETE /orbit/trade-journal/{journal_entry_id}`
@@ -744,10 +811,12 @@ Operational note: backend restart is required after Command Router changes becau
 
 CSV refresh reminder:
 
-* CSV refresh must stay aligned with the selected/default scanner symbol.
+* CSV refresh follows the selected/default scanner symbol when no explicit symbol is provided.
+* CSV refresh can be forced for an explicit supported symbol such as `MNQ`, `MES`, `NQ`, or `ES`.
 * CSV remains the source of truth for historical structure, FVG mapping, liquidity mapping, and backup price-action context.
 * Vision remains responsible for live visible chart context and user markings.
 * Stale CSVs must not be treated as confirmed live price.
+* Watchlist refresh and refresh-all behavior are not implemented.
 
 ### Wake Listener
 
@@ -829,8 +898,12 @@ Implemented API behavior:
 * `POST /scanner/settings` updates the saved default symbol, for example `{ "default_symbol": "MNQ" }`.
 * `POST /scan/force` uses the saved default symbol.
 * `POST /scan/force?symbol=MES` can override the saved default for that forced scan.
+* `GET /scan/latest` returns the latest scan for the saved default symbol.
+* `GET /scan/latest?symbol=MNQ` returns the latest scan for that explicit supported symbol.
+* `POST /csv-refresh/force` refreshes CSVs for the saved default symbol.
+* `POST /csv-refresh/force?symbol=MNQ` refreshes CSVs for that explicit supported symbol.
 
-Scheduled scans, forced scans without an explicit symbol, scanner status, latest-scan lookup, screenshot cleanup, and scan history records use the configured default symbol. Changing the default symbol does not run a scan automatically, does not enable notifications, does not change scanner interval, and does not implement watchlist rotation.
+Scheduled scans, forced scans without an explicit symbol, CSV refresh without an explicit symbol, scanner status, latest-scan lookup, screenshot cleanup, and scan history records use the configured default symbol. Changing the default symbol does not run a scan automatically, does not enable notifications, does not change scanner interval, and does not implement watchlist rotation or refresh-all behavior.
 
 ## Presence Modes v1
 
@@ -1025,6 +1098,8 @@ Current role:
 * Convert broker Performance and Orders PDFs into user-confirmed journal entries.
 * Keep imported trades in preview/draft form until Jadin explicitly saves them.
 * Store execution facts and user reasoning for read-only Trading Coach v2 review.
+* Support read-only Scanner + Journal Correlation by comparing saved journal entries with nearby scan history records.
+* Support read-only Pattern Discovery with small-sample caution.
 * Help validate what Jadin actually trades versus what he thinks he trades without automatic scanner or strategy changes.
 
 Future role:
@@ -1032,21 +1107,22 @@ Future role:
 Trade Journal is now the primary source for:
 
 * Trading Coach v2 / Journal Review Intelligence v1
+* Scanner + Journal Correlation v1
+* Pattern Discovery v1
 
 Trade Journal remains the planned primary source for:
 
 * Future Trading Model Refinement
-* Future Scanner Refinement
+* Future Scanner Refinement after explicit approval workflow
 * Presence Modes
 * Narrative-Based Trading Analysis
-* Pattern Discovery
 * Performance Analytics
 
 Current boundaries:
 
 * Trade Journal data is not yet used for automatic scanner changes.
-* Trade Journal data is used for read-only coaching summaries only.
-* Trade Journal data is not yet used for automatic pattern discovery.
+* Trade Journal data is used for read-only coaching and scanner-correlation summaries only.
+* Trade Journal data is used for read-only Pattern Discovery only.
 * Trade Journal data is not used for automatic strategy model updates.
 * Screenshot, PDF, and CSV artifacts are referenced through paths but are not yet learned from directly by a model.
 
@@ -1072,7 +1148,8 @@ Current boundaries:
 * Narrative-Based Scanner v1 is implemented for narrative phase/state enrichment and latest-scan display.
 * Default Scanner Symbol v1 is implemented for MES, MNQ, ES, and NQ as selectable scanner defaults.
 * Trading Coach v2 / Journal Review Intelligence v1 is implemented as read-only Trade Journal review.
-* Pattern Discovery is not implemented.
+* Scanner + Journal Correlation v1 is implemented as read-only matching between journal entries and scanner records.
+* Pattern Discovery v1 is implemented as read-only early pattern observation with small-sample caution.
 * No automatic scanner refinement is implemented from Trade Journal data yet.
 * Advanced Trading Coach is not implemented.
 * No automatic strategy changes are implemented from Trade Journal data.
@@ -1100,16 +1177,14 @@ Current boundaries:
 
 # Current Roadmap
 
-Completed roadmap items removed from active priority lists include Agent Foundation v1, Web Search Agent v1 scaffolding, Readiness Advisory Agent v1, Agent Prioritization, Scheduled Agent Runs, Morning Check-In/Fallback Summary, Major Events Management v1, Calculated Major Event Progress, Schedule Blocks v1, Schedule Board v1, Schedule Intelligence v1, Trade Journal v1, Trade Journal PDF Import v1, Trading Coach v2 / Journal Review Intelligence v1, Trading Model Refinement v1, Scanner Refinement v1, Presence Modes v1, Narrative-Based Scanner v1, Default Scanner Symbol v1, Command Router v1, Voice Trigger Prototype, Wake Phrase Listener v1, TTS Routing, Morning Briefing Condenser, and Service Management / LaunchAgent support.
+Completed roadmap items removed from active priority lists include Agent Foundation v1, Web Search Agent v1 scaffolding, Readiness Advisory Agent v1, Agent Prioritization, Scheduled Agent Runs, Morning Check-In/Fallback Summary, Major Events Management v1, Calculated Major Event Progress, Schedule Blocks v1, Schedule Board v1, Schedule Intelligence v1, Trade Journal v1, Trade Journal PDF Import v1, Trading Coach v2 / Journal Review Intelligence v1, Scanner + Journal Correlation v1, Pattern Discovery v1, Trading Model Refinement v1, Scanner Refinement v1, Presence Modes v1, Narrative-Based Scanner v1, Default Scanner Symbol v1, Command Router v1, Voice Trigger Prototype, Wake Phrase Listener v1, TTS Routing, Morning Briefing Condenser, and Service Management / LaunchAgent support.
 
 ## Next Major Development Priorities
 
 Priority order:
 
-1. Pattern Discovery
-2. Scanner + Journal correlation
-3. Advanced scanner refinements
-4. Schedule Intelligence v2 later
+1. Advanced scanner refinements
+2. Schedule Intelligence v2 later
 
 ## Schedule Intelligence v2 (Future)
 
@@ -1140,6 +1215,9 @@ Completed:
 * Schedule Intelligence v1
 * Trade Journal v1
 * Trade Journal PDF Import v1
+* Trading Coach v2 / Journal Review Intelligence v1
+* Scanner + Journal Correlation v1
+* Pattern Discovery v1
 * Trading Model Refinement v1
 * Scanner Refinement v1
 * Presence Modes v1
@@ -1148,11 +1226,8 @@ Completed:
 
 Next:
 
-1. Trading Coach v2 / Journal Review Intelligence
-2. Pattern Discovery
-3. Scanner + Journal correlation
-4. Advanced scanner refinements
-5. Schedule Intelligence v2 later
+1. Advanced scanner refinements
+2. Schedule Intelligence v2 later
 
 ## Presence Modes (Future)
 

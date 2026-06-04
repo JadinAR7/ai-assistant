@@ -17,6 +17,7 @@ from chat_intents import route_chat_intent
 from presence import get_presence, list_presence_modes, set_presence
 from scanner_settings import (
     get_scanner_settings,
+    normalize_scanner_symbol,
     set_scanner_settings,
 )
 from orbit.database import init_orbit_db
@@ -1062,27 +1063,37 @@ def force_scan(
 
 
 @app.get("/scan/latest")
-def latest_scan():
+def latest_scan(symbol: str | None = None):
     from scheduled_scan import SCAN_HISTORY_PATH, load_latest_scan
+
+    try:
+        scan_symbol = normalize_scanner_symbol(
+            symbol or str(get_scanner_settings().get("default_symbol") or "")
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
     if not SCAN_HISTORY_PATH.exists():
         return {
             "success": False,
+            "symbol": scan_symbol,
             "message": "No scan history found yet.",
             "record": None,
         }
 
-    latest = load_latest_scan()
+    latest = load_latest_scan(symbol=scan_symbol)
 
     if not latest:
         return {
             "success": False,
+            "symbol": scan_symbol,
             "message": "No scan records found for symbol.",
             "record": None,
         }
 
     return {
         "success": True,
+        "symbol": scan_symbol,
         "record": latest,
     }
 
@@ -1105,10 +1116,13 @@ def csv_refresh_status():
 
 
 @app.post("/csv-refresh/force")
-def force_csv_refresh():
+def force_csv_refresh(symbol: str | None = None):
     from csv_refresh import run_csv_refresh
 
-    return run_csv_refresh(force=True)
+    try:
+        return run_csv_refresh(force=True, symbol=symbol)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 # -------------------------

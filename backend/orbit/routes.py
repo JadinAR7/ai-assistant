@@ -1,6 +1,8 @@
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
 import trading_coach
+import trading_correlation
+import pattern_discovery
 from . import service
 from . import trade_journal_import
 from .models import (
@@ -445,6 +447,36 @@ def get_trading_coach_review(
     strategy_mode: str | None = None,
 ):
     return trading_coach.generate_trading_coach_review(
+        limit=limit,
+        symbol=symbol,
+        session=session,
+        strategy_mode=strategy_mode,
+    )
+
+
+@router.get("/trading-correlation/review")
+def get_trading_correlation_review(
+    limit: int = 20,
+    symbol: str | None = None,
+    session: str | None = None,
+    strategy_mode: str | None = None,
+):
+    return trading_correlation.generate_trading_correlation_review(
+        limit=limit,
+        symbol=symbol,
+        session=session,
+        strategy_mode=strategy_mode,
+    )
+
+
+@router.get("/pattern-discovery/review")
+def get_pattern_discovery_review(
+    limit: int = 50,
+    symbol: str | None = None,
+    session: str | None = None,
+    strategy_mode: str | None = None,
+):
+    return pattern_discovery.generate_pattern_discovery_review(
         limit=limit,
         symbol=symbol,
         session=session,

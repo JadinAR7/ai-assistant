@@ -105,6 +105,15 @@ def generate_trading_coach_review(
         "recent_trades_reviewed": [_compact_trade(entry) for entry in filtered_entries],
         "warnings": warnings,
     }
+    correlation = _optional_scanner_correlation(
+        limit=len(filtered_entries),
+        symbol=symbol,
+        session=session,
+        strategy_mode=strategy_mode,
+        entries=filtered_entries,
+    )
+    if correlation is not None:
+        response["scanner_correlation"] = correlation
     response["readable_summary"] = format_trading_coach_summary(response)
     return response
 
@@ -141,6 +150,21 @@ def format_trading_coach_summary(review: dict[str, Any]) -> str:
         values = [str(value) for value in review.get(key, []) if str(value).strip()]
         if values:
             lines.extend(["", f"{heading}:", *[f"- {value}" for value in values[:4]]])
+
+    correlation = review.get("scanner_correlation") or {}
+    if correlation:
+        lines.extend(
+            [
+                "",
+                "Scanner Correlation:",
+                (
+                    f"- {correlation.get('trades_with_scan_match', 0)} matched scans; "
+                    f"{correlation.get('aligned_count', 0)} aligned, "
+                    f"{correlation.get('partially_aligned_count', 0)} partial, "
+                    f"{correlation.get('conflicted_count', 0)} conflicted."
+                ),
+            ]
+        )
 
     warnings = [str(value) for value in review.get("warnings", []) if str(value).strip()]
     if warnings:
@@ -396,3 +420,37 @@ def _has_value(value: Any) -> bool:
 
 def _zero_distribution(values: tuple[str, ...]) -> dict[str, int]:
     return {value: 0 for value in values}
+
+
+def _optional_scanner_correlation(
+    *,
+    limit: int,
+    symbol: str | None,
+    session: str | None,
+    strategy_mode: str | None,
+    entries: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    try:
+        import trading_correlation
+
+        review = trading_correlation.generate_trading_correlation_review(
+            limit=limit,
+            symbol=symbol,
+            session=session,
+            strategy_mode=strategy_mode,
+            entries=entries,
+        )
+    except Exception:
+        return None
+
+    summary = review.get("summary") or {}
+    if int(summary.get("trades_with_scan_match") or 0) <= 0:
+        return None
+    return {
+        "trades_reviewed": summary.get("trades_reviewed", 0),
+        "trades_with_scan_match": summary.get("trades_with_scan_match", 0),
+        "aligned_count": summary.get("aligned_count", 0),
+        "partially_aligned_count": summary.get("partially_aligned_count", 0),
+        "conflicted_count": summary.get("conflicted_count", 0),
+        "insufficient_data_count": summary.get("insufficient_data_count", 0),
+    }
