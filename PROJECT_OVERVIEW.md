@@ -115,7 +115,7 @@ Primary modules:
 * `backend/agent_routes.py`: agent API surface.
 * `backend/scheduled_agents.py`: scheduled Morning Review, Evening Review, daily prioritization snapshot, and morning fallback check loop.
 * `backend/morning_checkin.py`: Morning Check-In acknowledgement, Morning Review run reuse/creation, fallback state, iMessage fallback delivery, and speech condensation.
-* `backend/scheduled_scan.py`: MES scanner, chart capture, deterministic analysis, state comparison, Scanner Refinement v1 signal tiers, alert eligibility, repeat suppression, and gated scan notifications.
+* `backend/scheduled_scan.py`: configured-symbol scanner, chart capture, deterministic analysis, state comparison, Scanner Refinement v1 signal tiers, narrative state, alert eligibility, repeat suppression, and gated scan notifications.
 * `backend/csv_refresh.py`: scheduled and forced TradingView CSV refresh with verification before active file replacement.
 * `backend/tts.py`: speech formatter, macOS voice discovery/config, and TTS dispatch.
 * `backend/imessage_bridge.py`: local iMessage polling bridge and command router into backend endpoints.
@@ -217,6 +217,11 @@ The following major feature milestones are complete as of this overview:
 * Schedule Intelligence v1
 * Trade Journal v1
 * Trade Journal PDF Import v1
+* Trading Model Refinement v1
+* Scanner Refinement v1
+* Presence Modes v1
+* Narrative-Based Scanner v1
+* Default Scanner Symbol v1
 * Command Router v1
 * Voice Trigger Prototype
 * Wake Phrase Listener v1
@@ -705,6 +710,13 @@ Operational note: backend restart is required after Command Router changes becau
 * Active data directory: `backend/csv_data`
 * Logs: `backend/logs/csv-refresh.out.log`, `backend/logs/csv-refresh.err.log`
 
+CSV refresh reminder:
+
+* CSV refresh must stay aligned with the selected/default scanner symbol.
+* CSV remains the source of truth for historical structure, FVG mapping, liquidity mapping, and backup price-action context.
+* Vision remains responsible for live visible chart context and user markings.
+* Stale CSVs must not be treated as confirmed live price.
+
 ### Wake Listener
 
 * Service: manual local wake phrase listener prototype.
@@ -777,7 +789,14 @@ Supported default symbols:
 * `ES`
 * `NQ`
 
-The setting is stored locally in `backend/scanner_settings.json` as `default_symbol`, defaulting to `MES` when no settings file exists or when stored settings are invalid. The API surface is `GET /scanner/settings` and `POST /scanner/settings` with `{ "default_symbol": "MNQ" }`.
+The setting is stored locally in `backend/scanner_settings.json` as `default_symbol`, defaulting to `MES` when no settings file exists or when stored settings are invalid. The current tested default is `MNQ`.
+
+Implemented API behavior:
+
+* `GET /scanner/settings` returns the saved scanner settings.
+* `POST /scanner/settings` updates the saved default symbol, for example `{ "default_symbol": "MNQ" }`.
+* `POST /scan/force` uses the saved default symbol.
+* `POST /scan/force?symbol=MES` can override the saved default for that forced scan.
 
 Scheduled scans, forced scans without an explicit symbol, scanner status, latest-scan lookup, screenshot cleanup, and scan history records use the configured default symbol. Changing the default symbol does not run a scan automatically, does not enable notifications, does not change scanner interval, and does not implement watchlist rotation.
 
@@ -830,7 +849,24 @@ Scanner records now include `signal_level`, `signal_reason`, `narrative_state`, 
 
 Narrative-Based Scanner v1 makes scanner output track the Liquidity Narrative Continuation trade story instead of presenting isolated chart facts. It is scanner state and display enrichment only.
 
-Narrative fields include liquidity draw, draw direction, HTF reaction zone, reaction-zone timeframe/type/status, behavior inside the zone, structure confirmation, execution readiness, target liquidity, invalidation context, narrative phase, narrative confidence, and missing confirmations.
+Scanner records now include structured narrative state.
+
+Narrative fields:
+
+* `liquidity_draw`
+* `liquidity_draw_direction`
+* `htf_reaction_zone`
+* `reaction_zone_timeframe`
+* `reaction_zone_type`
+* `reaction_zone_status`
+* `behavior_inside_zone`
+* `structure_confirmation`
+* `execution_readiness`
+* `target_liquidity`
+* `invalidation_context`
+* `narrative_phase`
+* `narrative_confidence`
+* `missing_confirmations`
 
 Narrative phases:
 
@@ -843,6 +879,8 @@ Narrative phases:
 * `execution_watch`
 * `continuation_confirmed`
 * `narrative_invalidated`
+
+Scanner output now tracks the trade story rather than only isolated chart facts.
 
 The phase now influences scanner signal level conservatively: no clear narrative and draw-only states remain informational/watch context, reaction-zone approach/interaction stays watch, behavior and structure states move to review, execution watch can become review/alert depending confidence, continuation confirmed is alert, and invalidated narratives are review. Simple FVG contact is still not an alert.
 
@@ -996,6 +1034,7 @@ Current boundaries:
 * Trading Model Refinement v1 is implemented as a framework/profile refinement.
 * Scanner Refinement v1 is implemented for signal tiers, FVG reaction-zone alert quality, and repeat suppression.
 * Narrative-Based Scanner v1 is implemented for narrative phase/state enrichment and latest-scan display.
+* Default Scanner Symbol v1 is implemented for MES, MNQ, ES, and NQ as selectable scanner defaults.
 * No AI coaching is implemented from Trade Journal data yet.
 * Pattern Discovery is not implemented.
 * No automatic scanner refinement is implemented from Trade Journal data yet.
@@ -1024,15 +1063,17 @@ Current boundaries:
 
 # Current Roadmap
 
-Completed roadmap items removed from active priority lists include Agent Foundation v1, Web Search Agent v1 scaffolding, Readiness Advisory Agent v1, Agent Prioritization, Scheduled Agent Runs, Morning Check-In/Fallback Summary, Major Events Management v1, Calculated Major Event Progress, Schedule Blocks v1, Schedule Board v1, Schedule Intelligence v1, Trade Journal v1, Trade Journal PDF Import v1, Trading Model Refinement v1, Scanner Refinement v1, Presence Modes v1, Narrative-Based Scanner v1, Command Router v1, Voice Trigger Prototype, Wake Phrase Listener v1, TTS Routing, Morning Briefing Condenser, and Service Management / LaunchAgent support.
+Completed roadmap items removed from active priority lists include Agent Foundation v1, Web Search Agent v1 scaffolding, Readiness Advisory Agent v1, Agent Prioritization, Scheduled Agent Runs, Morning Check-In/Fallback Summary, Major Events Management v1, Calculated Major Event Progress, Schedule Blocks v1, Schedule Board v1, Schedule Intelligence v1, Trade Journal v1, Trade Journal PDF Import v1, Trading Model Refinement v1, Scanner Refinement v1, Presence Modes v1, Narrative-Based Scanner v1, Default Scanner Symbol v1, Command Router v1, Voice Trigger Prototype, Wake Phrase Listener v1, TTS Routing, Morning Briefing Condenser, and Service Management / LaunchAgent support.
 
 ## Next Major Development Priorities
 
 Priority order:
 
-1. Pattern Discovery
-2. Trading Coach v2
-3. Schedule Intelligence v2
+1. Trading Coach v2 / Journal Review Intelligence
+2. Pattern Discovery
+3. Scanner + Journal correlation
+4. Advanced scanner refinements
+5. Schedule Intelligence v2 later
 
 ## Schedule Intelligence v2 (Future)
 
@@ -1067,13 +1108,15 @@ Completed:
 * Scanner Refinement v1
 * Presence Modes v1
 * Narrative-Based Scanner v1
+* Default Scanner Symbol v1
 
 Next:
 
-* Pattern Discovery
-* Trading Coach v2
-* Performance Analytics
-* Automated Journal Insights
+1. Trading Coach v2 / Journal Review Intelligence
+2. Pattern Discovery
+3. Scanner + Journal correlation
+4. Advanced scanner refinements
+5. Schedule Intelligence v2 later
 
 ## Presence Modes (Future)
 

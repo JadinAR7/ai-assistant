@@ -1,0 +1,113 @@
+ALL TRADES
+Gross P/L
+$776.00
+# of Trades
+4
+# of Contracts
+32
+Avg. Trade Time
+4min 54sec
+Longest Trade Time
+8min 31sec
+% Profitable Trades
+100.00%
+Expectancy
+$194.00
+Trade Fees & Comm.
+$(16.64)
+Total P/L
+$759.36
+PROFIT TRADES
+Total Profit
+$776.00
+# of Winning Trades
+4
+# of Winning Contracts
+16
+Largest Winning Trade
+$380.00
+Avg. Winning Trade
+$194.00
+Std. Dev. Winning Trade
+$107.40
+Avg. Winning Trade Time
+4min 54sec
+Longest Winning Trade Time
+8min 31sec
+Max Run-up
+$763.52
+Max Run-up, from
+06/03/2026 02:04:16
+Max Run-up, to
+06/03/2026 08:43:13
+LOSING TRADES
+Total Loss
+# of Losing Trades
+0
+# of Losing Contracts
+Largest Losing Trade
+Avg. Losing Trade
+Std. Dev. Losing Trade
+Avg. Losing Trade Time
+Longest Losing Trade Time
+Max Drawdown
+$(4.16)
+Max Drawdown, from
+06/03/2026 02:11:37
+Max Drawdown, to
+06/03/2026 04:00:06
+WINNING VS LOSING TRADES
+Winning Trades: 100.00%
+P&L HISTORY
+P&L HISTORY (CUMULATIVE WITHOUT FEES)
+P&L HISTORY (CUMULATIVE WITH FEES)
+P&L DISTRIBUTION
+P&L PER TIME OF DAY
+GROSS LOSS BREAKDOWN (LOSS TRADES, TRADE FEES & COMM.)
+Commission: 100.00%
+TRADES
+Symbol
+Qty
+Buy Price
+Buy Time
+Duration
+Sell Time
+Sell Price
+P&L
+MNQM6
+4
+30707.25
+06/03/2026 02:02:17
+1min
+59sec
+06/03/2026 02:04:16
+30723.50
+$130.00
+MNQM6
+4
+30724.75
+06/03/2026 02:09:39
+1min
+58sec
+06/03/2026 02:11:37
+30741.50
+$134.00
+MNQM6
+4
+30731.00
+06/03/2026 04:00:06
+8min
+31sec
+06/03/2026 03:51:34
+30747.50
+$132.00
+MNQM6
+4
+30685.00
+06/03/2026 08:36:04
+7min 8sec
+06/03/2026 08:43:13
+30732.50
+$380.00
+D:20260603175805+00'00'
+openhtmltopdf.com
