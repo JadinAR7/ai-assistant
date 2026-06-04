@@ -797,9 +797,9 @@ ${record.message || "No scan message returned."}`;
   const presenceModes = ["home", "trading", "away", "focus"];
 
   return (
-    <main className="min-h-screen bg-neutral-950 text-white">
+    <main className="min-h-screen overflow-x-hidden bg-neutral-950 text-white">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-neutral-950/80 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
+        <div className="mx-auto flex max-w-7xl flex-col gap-3 px-3 py-3 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:py-4">
           <div>
             <h1 className="text-lg font-semibold">Helix Command Center</h1>
             <p className="text-sm text-neutral-400">
@@ -807,38 +807,38 @@ ${record.message || "No scan message returned."}`;
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="-mx-1 flex max-w-full gap-2 overflow-x-auto px-1 pb-1">
             <Link
               href="/"
-              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+              className="shrink-0 rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
             >
               Core
             </Link>
 
             <Link
               href="/orbit"
-              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+              className="shrink-0 rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
             >
               Orbit
             </Link>
 
             <Link
               href="/trade-journal"
-              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+              className="shrink-0 rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
             >
               Trade Journal
             </Link>
 
             <button
               onClick={loadScanStatus}
-              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+              className="shrink-0 rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
             >
               Refresh Status
             </button>
 
             <button
               onClick={clearChat}
-              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+              className="shrink-0 rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
             >
               Clear
             </button>
@@ -846,11 +846,11 @@ ${record.message || "No scan message returned."}`;
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 px-4 py-4 pb-36 lg:grid-cols-[1fr_380px]">
-        <section className="min-h-[70vh] overflow-hidden rounded-2xl border border-white/10 bg-neutral-950">
+      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-3 px-3 py-3 pb-40 sm:px-4 lg:grid-cols-[1fr_380px] lg:gap-4 lg:py-4">
+        <section className="min-h-[56vh] overflow-hidden rounded-2xl border border-white/10 bg-neutral-950 lg:min-h-[70vh]">
           <div
             ref={messagesContainerRef}
-            className="flex max-h-[calc(100vh-190px)] flex-col gap-4 overflow-y-auto px-4 py-6"
+            className="flex max-h-[calc(100vh-230px)] flex-col gap-3 overflow-y-auto px-3 py-4 sm:px-4 sm:py-6 lg:max-h-[calc(100vh-190px)] lg:gap-4"
           >
             {messages.map((msg) => (
               <div
@@ -860,7 +860,7 @@ ${record.message || "No scan message returned."}`;
                 }`}
               >
                 <div
-                  className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-lg ${
+                  className={`max-w-[92%] rounded-2xl px-3 py-3 text-sm leading-relaxed shadow-lg sm:max-w-[85%] sm:px-4 ${
                     msg.role === "user"
                       ? "bg-blue-600 text-white"
                       : msg.error
@@ -924,8 +924,8 @@ ${record.message || "No scan message returned."}`;
           </div>
         </section>
 
-        <aside className="flex flex-col gap-4">
-          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-4">
+        <aside className="flex flex-col gap-3 lg:gap-4">
+          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-3 sm:p-4">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-sm font-semibold">Presence Mode</h2>
@@ -940,7 +940,7 @@ ${record.message || "No scan message returned."}`;
               </span>
             </div>
 
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {presenceModes.map((mode) => {
                 const active = presence?.mode === mode;
 
@@ -949,7 +949,7 @@ ${record.message || "No scan message returned."}`;
                     key={mode}
                     onClick={() => setPresenceMode(mode)}
                     disabled={presenceLoading}
-                    className={`rounded-lg border px-2 py-2 text-xs font-semibold transition ${
+                    className={`rounded-lg border px-2 py-3 text-xs font-semibold transition sm:py-2 ${
                       active
                         ? "border-blue-400/40 bg-blue-500/20 text-blue-100"
                         : "border-white/10 bg-neutral-950 text-neutral-300 hover:bg-white/10"
@@ -991,8 +991,8 @@ ${record.message || "No scan message returned."}`;
             </div>
           </section>
 
-          <section className="rounded-2xl border border-blue-500/30 bg-blue-950/20 p-4">
-            <div className="mb-3 flex items-center justify-between">
+          <section className="rounded-2xl border border-blue-500/30 bg-blue-950/20 p-3 sm:p-4">
+            <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-sm font-semibold text-blue-100">
                   {scannerSymbol} Scanner
@@ -1012,7 +1012,7 @@ ${record.message || "No scan message returned."}`;
                 Status unavailable.
               </div>
             ) : (
-              <div className="mb-3 grid grid-cols-2 gap-2 text-xs">
+              <div className="mb-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
                 <div className="rounded-xl bg-neutral-950/70 p-3">
                   <p className="text-neutral-500">Process</p>
                   <p className="mt-1 font-semibold text-neutral-100">
@@ -1066,7 +1066,7 @@ ${record.message || "No scan message returned."}`;
 
             <div className="mb-3">
               <p className="mb-2 text-xs text-blue-200/70">Default symbol</p>
-              <div className="grid grid-cols-4 gap-2">
+              <div className="flex flex-wrap gap-2">
                 {scannerSupportedSymbols.map((symbol) => {
                   const active = symbol === scannerSymbol;
 
@@ -1076,7 +1076,7 @@ ${record.message || "No scan message returned."}`;
                       type="button"
                       onClick={() => updateScannerDefaultSymbol(symbol)}
                       disabled={scannerSettingsLoading}
-                      className={`rounded-lg border px-2 py-2 text-xs font-semibold transition ${
+                      className={`min-w-14 flex-1 rounded-lg border px-3 py-3 text-xs font-semibold transition sm:flex-none sm:py-2 ${
                         active
                           ? "border-blue-400/40 bg-blue-500/20 text-blue-100"
                           : "border-white/10 bg-neutral-950/70 text-neutral-300 hover:bg-white/10"
@@ -1096,11 +1096,11 @@ ${record.message || "No scan message returned."}`;
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid gap-2 sm:grid-cols-2">
               <button
                 onClick={forceScanDefaultSymbol}
                 disabled={scanLoading || loading}
-                className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-xl bg-blue-600 px-3 py-3 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50 sm:py-2"
               >
                 {scanLoading ? "Scanning..." : `Scan ${scannerSymbol}`}
               </button>
@@ -1118,14 +1118,14 @@ ${record.message || "No scan message returned."}`;
                     );
                   }
                 }}
-                className="rounded-xl border border-white/10 px-3 py-2 text-sm text-neutral-200 hover:bg-white/10"
+                className="rounded-xl border border-white/10 px-3 py-3 text-sm text-neutral-200 hover:bg-white/10 sm:py-2"
               >
                 Latest Scan
               </button>
             </div>
           </section>
 
-          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-4">
+          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-3 sm:p-4">
             <h2 className="mb-3 text-sm font-semibold">Latest Scan Summary</h2>
 
             <div className="rounded-xl border border-white/10 bg-neutral-950 p-3 text-sm text-neutral-200">
@@ -1133,12 +1133,12 @@ ${record.message || "No scan message returned."}`;
             </div>
           </section>
 
-          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-4">
+          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-3 sm:p-4">
             <h2 className="mb-3 text-sm font-semibold">Latest State</h2>
 
             {latestScan ? (
               <div className="space-y-3 text-sm">
-                <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
                   <div className="rounded-xl bg-neutral-950 p-3">
                     <p className="text-neutral-500">HTF bias</p>
                     <span
@@ -1180,7 +1180,7 @@ ${record.message || "No scan message returned."}`;
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
                   <div className="rounded-xl bg-neutral-950 p-3">
                     <p className="text-neutral-500">Narrative Phase</p>
                     <p className="mt-2 font-semibold text-neutral-200">
@@ -1288,7 +1288,7 @@ ${record.message || "No scan message returned."}`;
             )}
           </section>
 
-          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-4">
+          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-3 sm:p-4">
             <h2 className="mb-3 text-sm font-semibold">Alert Decision</h2>
 
             {latestScan?.alert ? (
@@ -1329,7 +1329,7 @@ ${record.message || "No scan message returned."}`;
       </div>
 
       <footer className="fixed bottom-0 left-0 right-0 border-t border-white/10 bg-neutral-950/90 backdrop-blur">
-        <div className="mx-auto max-w-7xl px-4 py-4">
+        <div className="mx-auto max-w-7xl px-3 py-3 sm:px-4 sm:py-4">
           {attachedFile && (
             <div className="mb-2 flex items-center justify-between rounded-xl border border-white/10 bg-neutral-900 px-3 py-2 text-xs text-neutral-300">
               <span className="truncate">Attached: {attachedFile.name}</span>
@@ -1344,11 +1344,11 @@ ${record.message || "No scan message returned."}`;
             </div>
           )}
 
-          <div className="flex gap-2 rounded-2xl border border-white/10 bg-neutral-900 p-2 shadow-2xl">
+          <div className="grid gap-2 rounded-2xl border border-white/10 bg-neutral-900 p-2 shadow-2xl sm:flex">
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="rounded-xl border border-white/10 px-3 text-lg text-neutral-400 hover:bg-white/10"
+              className="min-h-11 rounded-xl border border-white/10 px-3 text-lg text-neutral-400 hover:bg-white/10"
               title="Attach file"
             >
               +
@@ -1372,7 +1372,7 @@ ${record.message || "No scan message returned."}`;
             <select
               value={toolMode}
               onChange={(e) => setToolMode(e.target.value)}
-              className="rounded-xl border border-white/10 bg-neutral-950 px-2 text-xs text-neutral-300 outline-none"
+              className="min-h-11 rounded-xl border border-white/10 bg-neutral-950 px-2 text-xs text-neutral-300 outline-none"
             >
               <option value="auto">Auto</option>
               <option value="market_csv">Market CSV</option>
@@ -1395,7 +1395,7 @@ ${record.message || "No scan message returned."}`;
 
             <button
               onClick={loading ? stopResponse : () => sendMessage()}
-              className={`rounded-xl px-4 py-2 text-sm font-semibold ${
+              className={`min-h-11 rounded-xl px-4 py-2 text-sm font-semibold ${
                 loading ? "bg-red-500 text-white" : "bg-white text-black"
               }`}
             >

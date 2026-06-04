@@ -147,8 +147,8 @@ export default async function HelixCorePage() {
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,#14315f55,transparent_34%),linear-gradient(135deg,#07111f_0%,#05070b_45%,#0b1117_100%)]" />
       <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.035)_1px,transparent_1px)] bg-[size:48px_48px] opacity-30" />
 
-      <section className="relative mx-auto flex min-h-screen max-w-7xl flex-col px-4 py-5 sm:px-6 lg:px-8">
-        <header className="flex items-center justify-between border-b border-white/10 pb-4">
+      <section className="relative mx-auto flex min-h-screen max-w-7xl flex-col px-3 py-4 sm:px-6 lg:px-8">
+        <header className="flex items-center justify-between gap-3 border-b border-white/10 pb-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.28em] text-cyan-300">
               Helix
@@ -158,12 +158,12 @@ export default async function HelixCorePage() {
             </h1>
           </div>
 
-          <div className="rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-xs font-semibold text-emerald-200">
+          <div className="shrink-0 rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-3 py-2 text-xs font-semibold text-emerald-200">
             System online
           </div>
         </header>
 
-        <div className="grid flex-1 items-center gap-8 py-6 lg:grid-cols-[0.95fr_1.05fr]">
+        <div className="grid flex-1 items-start gap-5 py-5 lg:grid-cols-[0.95fr_1.05fr] lg:items-center lg:gap-8 lg:py-6">
           <div className="max-w-2xl">
             <p className="text-sm font-semibold uppercase tracking-[0.24em] text-cyan-300">
               Assistant operating layer
@@ -175,22 +175,22 @@ export default async function HelixCorePage() {
               Helix online. What would you like to access today?
             </p>
 
-            <div className="mt-8 flex flex-wrap gap-3">
+            <div className="mt-6 grid gap-3 sm:flex sm:flex-wrap">
               <Link
                 href="/command-center"
-                className="rounded-lg bg-cyan-300 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200"
+                className="rounded-lg bg-cyan-300 px-4 py-3 text-center text-sm font-semibold text-slate-950 transition hover:bg-cyan-200"
               >
                 Open Command Center
               </Link>
               <Link
                 href="/orbit"
-                className="rounded-lg border border-white/15 px-4 py-3 text-sm font-semibold text-neutral-100 transition hover:bg-white/10"
+                className="rounded-lg border border-white/15 px-4 py-3 text-center text-sm font-semibold text-neutral-100 transition hover:bg-white/10"
               >
                 Open Orbit
               </Link>
               <Link
                 href="/trade-journal"
-                className="rounded-lg border border-white/15 px-4 py-3 text-sm font-semibold text-neutral-100 transition hover:bg-white/10"
+                className="rounded-lg border border-white/15 px-4 py-3 text-center text-sm font-semibold text-neutral-100 transition hover:bg-white/10"
               >
                 Open Trade Journal
               </Link>
@@ -198,10 +198,10 @@ export default async function HelixCorePage() {
           </div>
 
           <div className="relative">
-            <div className="rounded-lg border border-cyan-300/20 bg-slate-950/70 px-6 py-7 shadow-2xl shadow-cyan-950/40 backdrop-blur">
+            <div className="rounded-lg border border-cyan-300/20 bg-slate-950/70 px-4 py-5 shadow-2xl shadow-cyan-950/40 backdrop-blur sm:px-6 sm:py-7">
               <div className="grid place-items-center">
-                <div className="grid h-48 w-48 place-items-center rounded-full border border-cyan-300/30 bg-cyan-300/[0.03] shadow-[inset_0_0_54px_rgba(34,211,238,0.16),0_0_70px_rgba(34,211,238,0.08)]">
-                  <div className="grid h-28 w-28 place-items-center rounded-full border border-emerald-300/30 bg-emerald-300/10 shadow-[0_0_42px_rgba(110,231,183,0.14)]">
+                <div className="grid h-36 w-36 place-items-center rounded-full border border-cyan-300/30 bg-cyan-300/[0.03] shadow-[inset_0_0_54px_rgba(34,211,238,0.16),0_0_70px_rgba(34,211,238,0.08)] sm:h-48 sm:w-48">
+                  <div className="grid h-20 w-20 place-items-center rounded-full border border-emerald-300/30 bg-emerald-300/10 shadow-[0_0_42px_rgba(110,231,183,0.14)] sm:h-28 sm:w-28">
                     <span className="text-2xl font-semibold tracking-[0.16em] text-cyan-100">
                       HX
                     </span>

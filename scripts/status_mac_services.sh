@@ -8,6 +8,7 @@ USER_ID="$(id -u)"
 
 SERVICES=(
   "com.helix.backend"
+  "com.helix.frontend"
   "com.helix.scheduled-agents"
   "com.helix.imessage-bridge"
   "com.helix.scanner"
@@ -17,6 +18,8 @@ SERVICES=(
 LOG_FILES=(
   "backend.out.log"
   "backend.err.log"
+  "frontend.out.log"
+  "frontend.err.log"
   "scanner.out.log"
   "scanner.err.log"
   "csv-refresh.out.log"
@@ -97,6 +100,9 @@ log_prefix() {
   case "$1" in
     com.helix.backend)
       printf "backend"
+      ;;
+    com.helix.frontend)
+      printf "frontend"
       ;;
     com.helix.scheduled-agents)
       printf "scheduled-agents"

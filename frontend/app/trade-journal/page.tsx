@@ -62,7 +62,24 @@ type Direction = (typeof directions)[number];
 type TradeSession = (typeof sessions)[number];
 type HtfBias = (typeof htfBiasOptions)[number];
 type StrategyMode = (typeof strategyModeOptions)[number];
-type JournalMode = "import" | "manual";
+type TradeJournalSection =
+  | "home"
+  | "import"
+  | "manual"
+  | "entries"
+  | "coach"
+  | "scanner"
+  | "patterns";
+
+const sectionNavItems: { id: TradeJournalSection; label: string }[] = [
+  { id: "home", label: "Home" },
+  { id: "import", label: "Import" },
+  { id: "manual", label: "Manual" },
+  { id: "entries", label: "Entries" },
+  { id: "coach", label: "Coach" },
+  { id: "scanner", label: "Scanner Match" },
+  { id: "patterns", label: "Patterns" },
+];
 type DraftStatus = "pending" | "saved" | "skipped";
 
 type TradeJournalEntry = {
@@ -600,7 +617,8 @@ function PdfFilePicker({
 export default function TradeJournalPage() {
   const performanceInputRef = useRef<HTMLInputElement | null>(null);
   const ordersInputRef = useRef<HTMLInputElement | null>(null);
-  const [journalMode, setJournalMode] = useState<JournalMode>("import");
+  const [activeSection, setActiveSection] =
+    useState<TradeJournalSection>("home");
   const [entries, setEntries] = useState<TradeJournalEntry[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -760,11 +778,13 @@ export default function TradeJournalPage() {
     if (ordersInputRef.current) {
       ordersInputRef.current.value = "";
     }
+    setActiveSection("import");
   }
 
   function viewJournalAfterImport() {
     setImportWorkflowCollapsed(true);
     setImportError(null);
+    setActiveSection("entries");
   }
 
   function handlePerformanceFileChange(file: File | null) {
@@ -841,6 +861,7 @@ export default function TradeJournalPage() {
       setEditingId(null);
       setForm(emptyForm());
       setToast("Journal entry saved.");
+      setActiveSection("entries");
     } catch (saveError) {
       setError(
         saveError instanceof Error
@@ -1068,9 +1089,9 @@ export default function TradeJournalPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[#05070b] text-white">
+    <main className="min-h-screen overflow-x-hidden bg-[#05070b] text-white">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-[#05070b]/90 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="mx-auto flex max-w-7xl flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-4 sm:py-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-300">
               Orbit
@@ -1080,22 +1101,22 @@ export default function TradeJournalPage() {
             </h1>
           </div>
 
-          <nav className="flex flex-wrap items-center gap-2">
+          <nav className="-mx-1 flex max-w-full gap-2 overflow-x-auto px-1 pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
             <Link
               href="/"
-              className="rounded-lg border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+              className="shrink-0 rounded-lg border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
             >
               Core
             </Link>
             <Link
               href="/command-center"
-              className="rounded-lg border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+              className="shrink-0 rounded-lg border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
             >
               Command Center
             </Link>
             <Link
               href="/orbit"
-              className="rounded-lg border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+              className="shrink-0 rounded-lg border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
             >
               Orbit
             </Link>
@@ -1103,62 +1124,182 @@ export default function TradeJournalPage() {
         </div>
       </header>
 
-      <div className="mx-auto flex max-w-7xl px-4 pt-4">
-        <div className="grid w-full gap-2 rounded-lg border border-white/10 bg-neutral-900/80 p-1 sm:w-auto sm:grid-cols-2">
-          {(["import", "manual"] as const).map((mode) => (
+      <div className="mx-auto flex max-w-7xl flex-col gap-3 px-3 pt-3 sm:flex-row sm:items-center sm:justify-between sm:px-4 sm:pt-4">
+        <div className="-mx-1 flex max-w-full gap-2 overflow-x-auto rounded-lg border border-white/10 bg-neutral-900/80 p-1 sm:mx-0 sm:flex-wrap sm:overflow-visible">
+          {sectionNavItems.map((item) => (
             <button
-              key={mode}
+              key={item.id}
               type="button"
               onClick={() => {
-                setJournalMode(mode);
-                if (mode === "import") {
+                setActiveSection(item.id);
+                if (item.id === "import") {
                   setImportWorkflowCollapsed(false);
                 }
+                if (item.id === "manual") {
+                  beginCreate();
+                }
               }}
-              className={`rounded-md px-4 py-2 text-sm font-semibold transition ${
-                journalMode === mode
+              className={`shrink-0 rounded-md px-3 py-2.5 text-xs font-semibold transition sm:py-2 sm:text-sm ${
+                activeSection === item.id
                   ? "bg-cyan-300 text-slate-950"
                   : "text-neutral-300 hover:bg-white/10 hover:text-white"
               }`}
             >
-              {mode === "import" ? "Import Trades" : "Manual Entry"}
+              {item.label}
             </button>
           ))}
         </div>
+        <button
+          type="button"
+          onClick={() => setActiveSection("entries")}
+          className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-3 text-center text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 sm:py-2"
+        >
+          Actual Trades
+        </button>
       </div>
 
-      <div
-        className={`mx-auto max-w-7xl gap-4 px-4 py-4 ${
-          journalMode === "manual"
-            ? "grid xl:grid-cols-[0.9fr_1.15fr]"
-            : "grid"
-        }`}
-      >
+      <div className="mx-auto grid max-w-7xl gap-3 px-3 py-3 sm:gap-4 sm:px-4 sm:py-4">
+        {toast ? (
+          <div className="rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-100">
+            {toast}
+          </div>
+        ) : null}
+
+        {error ? (
+          <div className="rounded-lg border border-red-500/30 bg-red-950/20 px-4 py-3 text-sm text-red-100">
+            {error}
+          </div>
+        ) : null}
+
+        {activeSection === "home" ? (
         <section className="space-y-4">
-          <div className="rounded-lg border border-cyan-300/20 bg-cyan-300/5 p-5">
+          <div className="rounded-lg border border-cyan-300/20 bg-cyan-300/5 p-4 sm:p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <p className="text-sm text-cyan-100/80">
                   Data capture foundation
                 </p>
                 <h2 className="mt-2 text-2xl font-semibold tracking-tight">
-                  Journal List View
+                  Trade Journal
                 </h2>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-neutral-300">
+                  Capture trades, review execution quality, and keep the coaching
+                  rooms close without stacking every workflow on one screen.
+                </p>
               </div>
               <button
                 type="button"
-                onClick={() => {
-                  setJournalMode("manual");
-                  beginCreate();
-                }}
-                className="rounded-lg bg-cyan-300 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200"
+                onClick={() => setActiveSection("entries")}
+                className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-3 text-center text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 sm:py-2"
               >
-                Create Entry
+                View Journal Entries
               </button>
             </div>
           </div>
 
-          <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-4">
+          <div className="grid gap-3 md:grid-cols-3">
+            <button
+              type="button"
+              onClick={() => {
+                setImportWorkflowCollapsed(false);
+                setActiveSection("import");
+              }}
+              className="rounded-lg border border-white/10 bg-neutral-900/80 p-4 text-left transition hover:border-cyan-300/40 hover:bg-cyan-300/10"
+            >
+              <p className="text-xs text-neutral-500">Workflow</p>
+              <h3 className="mt-1 text-base font-semibold text-white">
+                Import Trades
+              </h3>
+              <p className="mt-2 text-sm leading-6 text-neutral-400">
+                Preview PDFs and save each draft into the journal.
+              </p>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                beginCreate();
+                setActiveSection("manual");
+              }}
+              className="rounded-lg border border-white/10 bg-neutral-900/80 p-4 text-left transition hover:border-cyan-300/40 hover:bg-cyan-300/10"
+            >
+              <p className="text-xs text-neutral-500">Workflow</p>
+              <h3 className="mt-1 text-base font-semibold text-white">
+                Manual Entry
+              </h3>
+              <p className="mt-2 text-sm leading-6 text-neutral-400">
+                Create a journal entry directly from your trade context.
+              </p>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveSection("entries")}
+              className="rounded-lg border border-white/10 bg-neutral-900/80 p-4 text-left transition hover:border-cyan-300/40 hover:bg-cyan-300/10"
+            >
+              <p className="text-xs text-neutral-500">Actual Trades</p>
+              <h3 className="mt-1 text-base font-semibold text-white">
+                View Journal Entries
+              </h3>
+              <p className="mt-2 text-sm leading-6 text-neutral-400">
+                {entries.length} saved trade{entries.length === 1 ? "" : "s"}.
+              </p>
+            </button>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-3">
+            <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-4">
+              <p className="text-xs text-neutral-500">Trading Coach Review</p>
+              <h3 className="mt-1 text-base font-semibold text-white">
+                Model Alignment
+              </h3>
+              <p className="mt-2 text-sm leading-6 text-neutral-400">
+                Review saved entries against Liquidity Narrative Continuation.
+              </p>
+              <button
+                type="button"
+                onClick={() => setActiveSection("coach")}
+                className="mt-3 rounded-lg bg-cyan-300 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200 sm:py-2"
+              >
+                Open Coach
+              </button>
+            </section>
+            <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-4">
+              <p className="text-xs text-neutral-500">Scanner + Journal Review</p>
+              <h3 className="mt-1 text-base font-semibold text-white">
+                Scanner Match
+              </h3>
+              <p className="mt-2 text-sm leading-6 text-neutral-400">
+                Compare journal entries with nearby scanner context.
+              </p>
+              <button
+                type="button"
+                onClick={() => setActiveSection("scanner")}
+                className="mt-3 rounded-lg bg-cyan-300 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200 sm:py-2"
+              >
+                Open Scanner Match
+              </button>
+            </section>
+            <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-4">
+              <p className="text-xs text-neutral-500">Pattern Discovery</p>
+              <h3 className="mt-1 text-base font-semibold text-white">
+                Early Patterns
+              </h3>
+              <p className="mt-2 text-sm leading-6 text-neutral-400">
+                Look for recurring behavior in the saved trading record.
+              </p>
+              <button
+                type="button"
+                onClick={() => setActiveSection("patterns")}
+                className="mt-3 rounded-lg bg-cyan-300 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200 sm:py-2"
+              >
+                Open Patterns
+              </button>
+            </section>
+          </div>
+        </section>
+        ) : null}
+
+        {activeSection === "coach" ? (
+          <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-3 sm:p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <p className="text-xs text-neutral-500">Trading Coach</p>
@@ -1170,7 +1311,7 @@ export default function TradeJournalPage() {
                 type="button"
                 onClick={() => void handleTradingCoachReview()}
                 disabled={reviewLoading}
-                className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-3 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50 sm:py-2"
               >
                 {reviewLoading ? "Reviewing..." : "Review Trades"}
               </button>
@@ -1226,7 +1367,10 @@ export default function TradeJournalPage() {
             )}
           </section>
 
-          <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-4">
+        ) : null}
+
+        {activeSection === "scanner" ? (
+          <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-3 sm:p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <p className="text-xs text-neutral-500">Scanner Correlation</p>
@@ -1238,7 +1382,7 @@ export default function TradeJournalPage() {
                 type="button"
                 onClick={() => void handleTradingCorrelationReview()}
                 disabled={correlationLoading}
-                className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-3 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50 sm:py-2"
               >
                 {correlationLoading ? "Reviewing..." : "Review Scanner Match"}
               </button>
@@ -1333,7 +1477,10 @@ export default function TradeJournalPage() {
             )}
           </section>
 
-          <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-4">
+        ) : null}
+
+        {activeSection === "patterns" ? (
+          <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-3 sm:p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <p className="text-xs text-neutral-500">Pattern Discovery</p>
@@ -1345,7 +1492,7 @@ export default function TradeJournalPage() {
                 type="button"
                 onClick={() => void handlePatternDiscoveryReview()}
                 disabled={patternLoading}
-                className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-3 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50 sm:py-2"
               >
                 {patternLoading ? "Reviewing..." : "Find Patterns"}
               </button>
@@ -1425,8 +1572,10 @@ export default function TradeJournalPage() {
             )}
           </section>
 
-          {journalMode === "import" && !importWorkflowCollapsed ? (
-          <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-4">
+        ) : null}
+
+          {activeSection === "import" && !importWorkflowCollapsed ? (
+          <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-3 sm:p-4">
             {importReviewComplete ? (
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                 <div>
@@ -1444,14 +1593,14 @@ export default function TradeJournalPage() {
                   <button
                     type="button"
                     onClick={resetImportFiles}
-                    className="rounded-lg bg-cyan-300 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200"
+                    className="rounded-lg bg-cyan-300 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200 sm:py-2"
                   >
                     New Import
                   </button>
                   <button
                     type="button"
                     onClick={viewJournalAfterImport}
-                    className="rounded-lg border border-white/10 px-4 py-2 text-sm font-semibold text-neutral-100 transition hover:bg-white/10"
+                    className="rounded-lg border border-white/10 px-4 py-3 text-sm font-semibold text-neutral-100 transition hover:bg-white/10 sm:py-2"
                   >
                     View Journal
                   </button>
@@ -1497,7 +1646,7 @@ export default function TradeJournalPage() {
                   <button
                     type="submit"
                     disabled={previewingImport}
-                    className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-3 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50 sm:py-2"
                   >
                     {previewingImport ? "Previewing..." : "Preview Import"}
                   </button>
@@ -1959,19 +2108,27 @@ export default function TradeJournalPage() {
           </section>
           ) : null}
 
-          {toast ? (
-            <div className="rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-100">
-              {toast}
-            </div>
-          ) : null}
-
-          {error ? (
-            <div className="rounded-lg border border-red-500/30 bg-red-950/20 px-4 py-3 text-sm text-red-100">
-              {error}
-            </div>
-          ) : null}
-
+        {activeSection === "entries" ? (
+        <section className="grid gap-4 xl:grid-cols-[0.85fr_1.15fr]">
           <div className="rounded-lg border border-white/10 bg-neutral-900/80 p-3">
+            <div className="mb-3 flex flex-col gap-3 px-1 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-xs text-neutral-500">Journal List View</p>
+                <h2 className="mt-1 text-lg font-semibold text-white">
+                  Actual Trades
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  beginCreate();
+                  setActiveSection("manual");
+                }}
+                className="rounded-lg bg-cyan-300 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200"
+              >
+                Create Entry
+              </button>
+            </div>
             {loading ? (
               <p className="p-3 text-sm text-neutral-400">Loading entries...</p>
             ) : entries.length === 0 ? (
@@ -2046,17 +2203,17 @@ export default function TradeJournalPage() {
                   <button
                     type="button"
                     onClick={() => {
-                      setJournalMode("manual");
+                      setActiveSection("manual");
                       beginEdit(selectedEntry);
                     }}
-                    className="rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-neutral-100 hover:bg-white/10"
+                    className="rounded-lg border border-white/10 px-3 py-2.5 text-xs font-semibold text-neutral-100 hover:bg-white/10"
                   >
                     Edit
                   </button>
                   <button
                     type="button"
                     onClick={() => void handleDelete(selectedEntry.id)}
-                    className="rounded-lg border border-red-400/30 px-3 py-2 text-xs font-semibold text-red-100 hover:bg-red-500/10"
+                    className="rounded-lg border border-red-400/30 px-3 py-2.5 text-xs font-semibold text-red-100 hover:bg-red-500/10"
                   >
                     Delete
                   </button>
@@ -2136,8 +2293,9 @@ export default function TradeJournalPage() {
             </section>
           ) : null}
         </section>
+        ) : null}
 
-        {journalMode === "manual" ? (
+        {activeSection === "manual" ? (
         <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-4">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>

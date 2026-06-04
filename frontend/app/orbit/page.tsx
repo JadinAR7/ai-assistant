@@ -348,9 +348,9 @@ export default async function OrbitPage() {
   }
 
   return (
-    <main className="min-h-screen bg-neutral-950 text-white">
+    <main className="min-h-screen overflow-x-hidden bg-neutral-950 text-white">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-neutral-950/80 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
+        <div className="mx-auto flex max-w-6xl flex-col gap-3 px-3 py-3 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:py-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-cyan-300">
               Orbit
@@ -358,24 +358,24 @@ export default async function OrbitPage() {
             <h1 className="text-lg font-semibold">Operating Board</h1>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="-mx-1 flex max-w-full gap-2 overflow-x-auto px-1 pb-1 sm:mx-0 sm:overflow-visible sm:pb-0">
             <Link
               href="/"
-              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+              className="shrink-0 rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
             >
               Core
             </Link>
 
             <Link
               href="/command-center"
-              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+              className="shrink-0 rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
             >
               Command Center
             </Link>
 
             <Link
               href="/trade-journal"
-              className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
+              className="shrink-0 rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-300 hover:bg-white/10"
             >
               Trade Journal
             </Link>
@@ -383,7 +383,7 @@ export default async function OrbitPage() {
         </div>
       </header>
 
-      <div className="mx-auto max-w-6xl px-4 py-4">
+      <div className="mx-auto max-w-6xl px-3 py-3 sm:px-4 sm:py-4">
         <OrbitBoard
           majorEvents={orbitData.majorEvents}
           event={orbitData.event}

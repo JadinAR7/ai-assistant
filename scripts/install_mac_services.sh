@@ -8,6 +8,7 @@ USER_ID="$(id -u)"
 
 ALL_SERVICES=(
   "com.helix.backend"
+  "com.helix.frontend"
   "com.helix.scheduled-agents"
   "com.helix.imessage-bridge"
   "com.helix.scanner"
@@ -16,6 +17,7 @@ ALL_SERVICES=(
 
 CORE_SERVICES=(
   "com.helix.backend"
+  "com.helix.frontend"
   "com.helix.scheduled-agents"
   "com.helix.imessage-bridge"
 )
@@ -25,11 +27,12 @@ usage() {
 Usage: scripts/install_mac_services.sh [all|core|SERVICE...]
 
 Groups:
-  all    Install backend, scheduled-agents, imessage-bridge, scanner, and csv-refresh. Default.
-  core   Install backend, scheduled-agents, and imessage-bridge.
+  all    Install backend, frontend, scheduled-agents, imessage-bridge, scanner, and csv-refresh. Default.
+  core   Install backend, frontend, scheduled-agents, and imessage-bridge.
 
 Services:
   backend
+  frontend
   scheduled-agents
   imessage-bridge
   scanner
@@ -42,7 +45,7 @@ service_label() {
     com.helix.*)
       printf "%s" "$1"
       ;;
-    backend|scheduled-agents|imessage-bridge|scanner|csv-refresh)
+    backend|frontend|scheduled-agents|imessage-bridge|scanner|csv-refresh)
       printf "com.helix.%s" "$1"
       ;;
     *)
@@ -82,6 +85,7 @@ done < <(selected_services "$@")
 mkdir -p "${LAUNCH_AGENTS_DIR}" "${PROJECT_ROOT}/backend/logs"
 chmod +x \
   "${PROJECT_ROOT}/scripts/start_backend.sh" \
+  "${PROJECT_ROOT}/scripts/start_frontend.sh" \
   "${PROJECT_ROOT}/scripts/start_scheduled_agents.sh" \
   "${PROJECT_ROOT}/scripts/start_imessage_bridge.sh" \
   "${PROJECT_ROOT}/scripts/start_scanner.sh" \

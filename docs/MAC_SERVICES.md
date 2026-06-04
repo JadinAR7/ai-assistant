@@ -8,7 +8,8 @@ This runbook manages LaunchAgent support only. It does not start services unless
 
 Always-on recommended:
 
-- `com.helix.backend`: FastAPI backend on `127.0.0.1:8000`.
+- `com.helix.backend`: FastAPI backend on `0.0.0.0:8000` for local and LAN/phone access.
+- `com.helix.frontend`: Next.js frontend on `0.0.0.0:3000`, available from the phone at `http://192.168.8.119:3000`.
 - `com.helix.scheduled-agents`: Morning Review, Evening Review, daily prioritization snapshot, and Morning Check-In fallback check loop.
 - `com.helix.imessage-bridge`: local iMessage command/reply bridge, if Messages permissions and allowed-sender config are stable.
 
@@ -19,7 +20,6 @@ Optional always-on:
 
 Manual/optional:
 
-- Frontend dev server: run from `frontend` with `npm run dev`.
 - Wake listener v1: run manually with `python3 backend/wake_listener.py --once` or `--loop`.
 - Voice trigger prototype: run manually with `python3 backend/voice_trigger.py`.
 
@@ -32,12 +32,27 @@ Required external dependency:
 | Service | Start script | LaunchAgent template | Logs |
 | --- | --- | --- | --- |
 | `com.helix.backend` | `scripts/start_backend.sh` | `scripts/launchagents/com.helix.backend.plist` | `backend/logs/backend.out.log`, `backend/logs/backend.err.log` |
+| `com.helix.frontend` | `scripts/start_frontend.sh` | `scripts/launchagents/com.helix.frontend.plist` | `backend/logs/frontend.out.log`, `backend/logs/frontend.err.log` |
 | `com.helix.scheduled-agents` | `scripts/start_scheduled_agents.sh` | `scripts/launchagents/com.helix.scheduled-agents.plist` | `backend/logs/scheduled-agents.out.log`, `backend/logs/scheduled-agents.err.log` |
 | `com.helix.imessage-bridge` | `scripts/start_imessage_bridge.sh` | `scripts/launchagents/com.helix.imessage-bridge.plist` | `backend/logs/imessage-bridge.out.log`, `backend/logs/imessage-bridge.err.log` |
 | `com.helix.scanner` | `scripts/start_scanner.sh` | `scripts/launchagents/com.helix.scanner.plist` | `backend/logs/scanner.out.log`, `backend/logs/scanner.err.log` |
 | `com.helix.csv-refresh` | `scripts/start_csv_refresh.sh` | `scripts/launchagents/com.helix.csv-refresh.plist` | `backend/logs/csv-refresh.out.log`, `backend/logs/csv-refresh.err.log` |
 
-All managed services run from `/Users/jadinrobinson/ai-assistant/backend`.
+Most managed services run from `/Users/jadinrobinson/ai-assistant/backend`. The frontend service runs from `/Users/jadinrobinson/ai-assistant/frontend`.
+
+The frontend service prefers production mode when `.next` exists:
+
+```bash
+npm run start -- -H 0.0.0.0 -p 3000
+```
+
+If `.next` is missing, it safely falls back to dev mode:
+
+```bash
+npm run dev -- -H 0.0.0.0 -p 3000
+```
+
+`NEXT_PUBLIC_API_URL` is set to `http://192.168.8.119:8000`. The backend must remain bound to `0.0.0.0:8000` for phone access.
 
 ## Install
 
@@ -64,6 +79,7 @@ scripts/install_mac_services.sh all
 Install explicit services:
 
 ```bash
+scripts/install_mac_services.sh frontend
 scripts/install_mac_services.sh backend scheduled-agents imessage-bridge
 scripts/install_mac_services.sh scanner csv-refresh
 ```
@@ -73,6 +89,7 @@ The install script copies plist templates from `scripts/launchagents/` into `~/L
 The install script handles:
 
 - `com.helix.backend`
+- `com.helix.frontend`
 - `com.helix.scheduled-agents`
 - `com.helix.imessage-bridge`
 - `com.helix.scanner`
@@ -162,6 +179,27 @@ Expected response:
 
 ```json
 {"status":"backend running"}
+```
+
+The backend also needs to remain reachable on the LAN address for phone access:
+
+```bash
+curl http://192.168.8.119:8000/
+```
+
+## Verify Frontend
+
+The normal local and phone URL is:
+
+```text
+http://192.168.8.119:3000
+```
+
+tmux is no longer required for normal frontend startup once `com.helix.frontend` is installed. Check logs:
+
+```bash
+tail -n 80 backend/logs/frontend.out.log
+tail -n 80 backend/logs/frontend.err.log
 ```
 
 ## Verify Scheduled Agents
@@ -281,6 +319,8 @@ Files:
 
 - `backend.out.log`
 - `backend.err.log`
+- `frontend.out.log`
+- `frontend.err.log`
 - `scanner.out.log`
 - `scanner.err.log`
 - `csv-refresh.out.log`
@@ -300,6 +340,7 @@ scripts/status_mac_services.sh tail
 
 - If a service is `not loaded`, run `scripts/install_mac_services.sh`.
 - If backend health fails, check `backend/logs/backend.err.log`, confirm `backend/.venv/bin/uvicorn` exists, and confirm Ollama is running for chat/model routes.
+- If the frontend is unavailable, check `backend/logs/frontend.err.log`, confirm `frontend/node_modules` exists, and confirm the backend is reachable at `http://192.168.8.119:8000`.
 - If scheduled agents do not run, check `backend/logs/scheduled-agents.err.log`, `backend/.scheduled_agents_status.json`, and `GET /agents/scheduled/status`.
 - If iMessage bridge does not reply, check Messages permissions, `backend/logs/imessage-bridge.err.log`, and backend health.
 - If scanner status shows no heartbeat, check `backend/logs/scanner.err.log` and `backend/scan_runtime_status.json`.

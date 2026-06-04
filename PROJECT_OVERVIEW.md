@@ -159,6 +159,7 @@ Current frontend capabilities:
 * Schedule Board v1 supports fixed and flexible schedule blocks, week navigation, date-aware placement, recurring day-of-week display, specific-date blocks, active/archive state, editing, deletion, category/priority metadata, subtle current-day column highlighting, and compact Schedule Intelligence display.
 * Trade Journal supports manual create/edit/delete/detail, import preview, step-by-step imported draft review, and save-from-import confirmation.
 * Agent views expose Morning Check-In, scheduled-agent checks, prioritization, manual agent runs, Web Search Agent output, Readiness Advisory suggestions, and recent run summaries.
+* Mobile UI Pass v1 improves phone testing usability with tighter page shells, scrollable navigation, stacked mobile layouts, larger tap targets, and preserved desktop layouts across Core, Command Center, Orbit, Schedule rooms, and Trade Journal rooms.
 
 ## Voice
 
@@ -749,9 +750,10 @@ Operational note: backend restart is required after Command Router changes becau
 
 * Service: FastAPI app from `backend/main.py`
 * Local URL: `http://127.0.0.1:8000`
+* LAN/phone URL: `http://192.168.8.119:8000`
 * Start script: `scripts/start_backend.sh`
 * LaunchAgent: `scripts/launchagents/com.helix.backend.plist`
-* Command: `backend/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000`
+* Command: `backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000`
 * Logs: `backend/logs/backend.out.log`, `backend/logs/backend.err.log`
 
 ### Ollama
@@ -776,16 +778,19 @@ Operational note: backend restart is required after Command Router changes becau
 * LaunchAgent: `scripts/launchagents/com.helix.imessage-bridge.plist`
 * Logs: `backend/logs/imessage-bridge.out.log`, `backend/logs/imessage-bridge.err.log`
 
-## Optional / Manual
-
-### Frontend Dev Server
+### Frontend
 
 * Service: Next.js frontend.
-* Local URL: `http://localhost:3000`
+* LAN/phone URL: `http://192.168.8.119:3000`
+* Start script: `scripts/start_frontend.sh`
+* LaunchAgent: `scripts/launchagents/com.helix.frontend.plist`
 * Directory: `frontend`
-* Command: `npm run dev`
-* Backend base URL: `NEXT_PUBLIC_API_URL` or `http://127.0.0.1:8000`
-* Classification: manual/optional during local development.
+* Command: `npm run start -- -H 0.0.0.0 -p 3000` when `.next` exists; otherwise `npm run dev -- -H 0.0.0.0 -p 3000`
+* Backend base URL: `NEXT_PUBLIC_API_URL=http://192.168.8.119:8000`
+* Logs: `backend/logs/frontend.out.log`, `backend/logs/frontend.err.log`
+* Classification: always-on recommended; tmux is no longer required for normal frontend startup after the LaunchAgent is installed.
+
+## Optional / Manual
 
 ### Scheduled Scanner
 
@@ -1134,6 +1139,7 @@ Current boundaries:
 
 * Schedule Intelligence v1 is implemented as read-only recommendation logic only.
 * Schedule Board displays stored blocks and Schedule Intelligence v1 output, but it does not automatically place, move, or rebalance blocks.
+* Mobile UI Pass v1 is a real-world testing pass, not final app-quality mobile polish; remaining mobile refinements should be collected during actual phone usage.
 * Conflict detection is not implemented.
 * Protected time, recovery buffers, and workload balancing are not implemented.
 * Auto Schedule Placement is not implemented.
@@ -1177,7 +1183,7 @@ Current boundaries:
 
 # Current Roadmap
 
-Completed roadmap items removed from active priority lists include Agent Foundation v1, Web Search Agent v1 scaffolding, Readiness Advisory Agent v1, Agent Prioritization, Scheduled Agent Runs, Morning Check-In/Fallback Summary, Major Events Management v1, Calculated Major Event Progress, Schedule Blocks v1, Schedule Board v1, Schedule Intelligence v1, Trade Journal v1, Trade Journal PDF Import v1, Trading Coach v2 / Journal Review Intelligence v1, Scanner + Journal Correlation v1, Pattern Discovery v1, Trading Model Refinement v1, Scanner Refinement v1, Presence Modes v1, Narrative-Based Scanner v1, Default Scanner Symbol v1, Command Router v1, Voice Trigger Prototype, Wake Phrase Listener v1, TTS Routing, Morning Briefing Condenser, and Service Management / LaunchAgent support.
+Completed roadmap items removed from active priority lists include Agent Foundation v1, Web Search Agent v1 scaffolding, Readiness Advisory Agent v1, Agent Prioritization, Scheduled Agent Runs, Morning Check-In/Fallback Summary, Major Events Management v1, Calculated Major Event Progress, Schedule Blocks v1, Schedule Board v1, Schedule Intelligence v1, Trade Journal v1, Trade Journal PDF Import v1, Trading Coach v2 / Journal Review Intelligence v1, Scanner + Journal Correlation v1, Pattern Discovery v1, Trading Model Refinement v1, Scanner Refinement v1, Presence Modes v1, Narrative-Based Scanner v1, Default Scanner Symbol v1, Command Router v1, Voice Trigger Prototype, Wake Phrase Listener v1, TTS Routing, Morning Briefing Condenser, Service Management / LaunchAgent support, and Mobile UI Pass v1.
 
 ## Next Major Development Priorities
 
@@ -1255,14 +1261,15 @@ Goals:
 * Running LaunchAgent processes do not automatically import changed Python files until restarted.
 * Use `scripts/status_mac_services.sh restart` to kickstart loaded services.
 * Confirm backend health with `GET http://127.0.0.1:8000/`.
+* Confirm phone frontend access at `http://192.168.8.119:3000/`.
 * Confirm deterministic router behavior through `/chat` after restart.
 
 ## LaunchAgent Setup
 
 Install services:
 
-* `scripts/install_mac_services.sh core`: backend, scheduled agents, iMessage bridge.
-* `scripts/install_mac_services.sh all`: backend, scheduled agents, iMessage bridge, scanner, CSV refresh.
+* `scripts/install_mac_services.sh core`: backend, frontend, scheduled agents, iMessage bridge.
+* `scripts/install_mac_services.sh all`: backend, frontend, scheduled agents, iMessage bridge, scanner, CSV refresh.
 * `scripts/install_mac_services.sh SERVICE...`: selected services.
 
 Uninstall services:
@@ -1279,6 +1286,7 @@ Status/log management:
 ## Logging Locations
 
 * Backend: `backend/logs/backend.out.log`, `backend/logs/backend.err.log`
+* Frontend: `backend/logs/frontend.out.log`, `backend/logs/frontend.err.log`
 * Scheduled agents: `backend/logs/scheduled-agents.out.log`, `backend/logs/scheduled-agents.err.log`
 * iMessage bridge: `backend/logs/imessage-bridge.out.log`, `backend/logs/imessage-bridge.err.log`
 * Scanner: `backend/logs/scanner.out.log`, `backend/logs/scanner.err.log`

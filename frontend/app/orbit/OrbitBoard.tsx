@@ -408,6 +408,7 @@ const tabs = [
   "Agents",
 ] as const;
 type Tab = (typeof tabs)[number];
+type ScheduleSection = "calendar" | "add" | "intelligence" | "blocks";
 type Toast = {
   message: string;
   type: "success" | "error";
@@ -447,6 +448,12 @@ const categoryOptions: ScheduleBlockCategory[] = [
   "other",
 ];
 const priorityOptions: ScheduleBlockPriority[] = ["low", "medium", "high"];
+const scheduleSectionItems: { id: ScheduleSection; label: string }[] = [
+  { id: "calendar", label: "Calendar" },
+  { id: "add", label: "Add Block" },
+  { id: "intelligence", label: "Intelligence" },
+  { id: "blocks", label: "Blocks" },
+];
 const durationUnitOptions = ["minutes", "hours"] as const;
 type DurationUnit = (typeof durationUnitOptions)[number];
 const maxScheduleDurationMinutes = 480;
@@ -1110,6 +1117,8 @@ export default function OrbitBoard({
   );
   const [scheduleForm, setScheduleForm] =
     useState<ScheduleFormState>(emptyScheduleForm);
+  const [activeScheduleSection, setActiveScheduleSection] =
+    useState<ScheduleSection>("calendar");
   const [visibleWeekStart, setVisibleWeekStart] = useState(() =>
     getWeekStart(new Date()),
   );
@@ -1359,6 +1368,18 @@ export default function OrbitBoard({
         );
       });
   }, [scheduleBlocks]);
+  const scheduleBlockGroups = useMemo(
+    () => ({
+      fixed: scheduleBlocks.filter(
+        (block) => block.block_type === "fixed" && block.active,
+      ),
+      flexible: scheduleBlocks.filter(
+        (block) => block.block_type === "flexible" && block.active,
+      ),
+      archived: scheduleBlocks.filter((block) => !block.active),
+    }),
+    [scheduleBlocks],
+  );
   const currentScheduleMonthYear = useMemo(
     () => formatWeekHeading(visibleWeekDays),
     [visibleWeekDays],
@@ -1775,11 +1796,13 @@ export default function OrbitBoard({
       block_type: blockType,
       day_of_week: blockType === "fixed" ? "monday" : "",
     });
+    setActiveScheduleSection("add");
   }
 
   function startScheduleBlockEdit(block: ScheduleBlock) {
     setEditingScheduleBlockId(block.id);
     setScheduleForm(scheduleFormFromBlock(block));
+    setActiveScheduleSection("add");
   }
 
   function getSchedulePayload() {
@@ -1886,6 +1909,7 @@ export default function OrbitBoard({
     setEditingScheduleBlockId(null);
     setToast({ message: "Schedule block saved.", type: "success" });
     setSavingScheduleBlock(false);
+    setActiveScheduleSection("calendar");
     router.refresh();
   }
 
@@ -1948,7 +1972,7 @@ export default function OrbitBoard({
   }
 
   return (
-    <section className="relative rounded-2xl border border-white/10 bg-neutral-900/80 p-4 shadow-2xl shadow-black/30">
+    <section className="relative overflow-hidden rounded-2xl border border-white/10 bg-neutral-900/80 p-3 shadow-2xl shadow-black/30 sm:p-4">
       {toast ? (
         <div
           className={`absolute right-4 top-4 z-30 max-w-72 rounded-xl border px-3 py-2 text-sm shadow-2xl backdrop-blur ${
@@ -1962,13 +1986,13 @@ export default function OrbitBoard({
         </div>
       ) : null}
 
-      <div className="mb-4 flex flex-wrap gap-2">
+      <div className="-mx-1 mb-4 flex gap-2 overflow-x-auto px-1 pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
         {tabs.map((tab) => (
           <button
             key={tab}
             type="button"
             onClick={() => setActiveTab(tab)}
-            className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+            className={`shrink-0 rounded-full border px-3 py-2 text-xs font-semibold transition sm:py-1.5 ${
               activeTab === tab
                 ? "border-cyan-300/50 bg-cyan-300/15 text-cyan-100"
                 : "border-white/10 bg-white/[0.03] text-neutral-400 hover:border-white/20 hover:text-white"
@@ -2486,7 +2510,36 @@ export default function OrbitBoard({
 
       {activeTab === "Schedule" ? (
         <div className="space-y-3">
-          <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-4">
+          <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="-mx-1 flex max-w-full gap-2 overflow-x-auto px-1 pb-1 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:pb-0">
+                {scheduleSectionItems.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setActiveScheduleSection(item.id)}
+                    className={`shrink-0 rounded-lg border px-3 py-2.5 text-xs font-semibold transition sm:py-2 ${
+                      activeScheduleSection === item.id
+                        ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-100"
+                        : "border-white/10 bg-white/[0.03] text-neutral-400 hover:text-white"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-neutral-500">
+                {currentScheduleMonthYear} · {scheduleBlocks.length} block
+                {scheduleBlocks.length === 1 ? "" : "s"} saved
+                {unplacedScheduleBlocks.length > 0
+                  ? ` · ${unplacedScheduleBlocks.length} flexible needs placement`
+                  : ""}
+              </p>
+            </div>
+          </section>
+
+          {activeScheduleSection === "add" ? (
+          <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-3 sm:p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-sm font-semibold text-neutral-100">
@@ -2498,43 +2551,51 @@ export default function OrbitBoard({
                     : "Create a fixed or flexible block"}
                 </p>
               </div>
-              <div className="flex gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => startScheduleBlockCreate("fixed")}
-                  className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold ${
-                    scheduleForm.block_type === "fixed"
-                      ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-100"
-                      : "border-white/10 bg-white/[0.03] text-neutral-400 hover:text-white"
-                  }`}
-                >
-                  Fixed
-                </button>
-                <button
-                  type="button"
-                  onClick={() => startScheduleBlockCreate("flexible")}
-                  className={`rounded-lg border px-2.5 py-1.5 text-xs font-semibold ${
-                    scheduleForm.block_type === "flexible"
-                      ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-100"
-                      : "border-white/10 bg-white/[0.03] text-neutral-400 hover:text-white"
-                  }`}
-                >
-                  Flexible
-                </button>
-              </div>
             </div>
 
-            <div className="grid gap-2 lg:grid-cols-[1.2fr_1fr_1fr]">
-              <input
-                type="text"
-                value={scheduleForm.title}
-                onChange={(event) =>
-                  setScheduleField("title", event.target.value)
-                }
-                placeholder="Title optional"
-                className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
-              />
-              <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-3">
+              <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                <span>Type</span>
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => startScheduleBlockCreate("fixed")}
+                    className={`rounded-lg border px-4 py-3 text-xs font-semibold sm:py-2 ${
+                      scheduleForm.block_type === "fixed"
+                        ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-100"
+                        : "border-white/10 bg-white/[0.03] text-neutral-400 hover:text-white"
+                    }`}
+                  >
+                    Fixed
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => startScheduleBlockCreate("flexible")}
+                    className={`rounded-lg border px-4 py-3 text-xs font-semibold sm:py-2 ${
+                      scheduleForm.block_type === "flexible"
+                        ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-100"
+                        : "border-white/10 bg-white/[0.03] text-neutral-400 hover:text-white"
+                    }`}
+                  >
+                    Flexible
+                  </button>
+                </div>
+              </label>
+
+              <div className="grid gap-3 lg:grid-cols-[1.2fr_1fr_1fr]">
+                <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                  <span>Title optional</span>
+                  <input
+                    type="text"
+                    value={scheduleForm.title}
+                    onChange={(event) =>
+                      setScheduleField("title", event.target.value)
+                    }
+                    className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                  />
+                </label>
+                <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                  <span>Category</span>
                 <select
                   value={scheduleForm.category}
                   onChange={(event) =>
@@ -2551,6 +2612,9 @@ export default function OrbitBoard({
                     </option>
                   ))}
                 </select>
+                </label>
+                <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                  <span>Priority</span>
                 <select
                   value={scheduleForm.priority}
                   onChange={(event) =>
@@ -2567,115 +2631,141 @@ export default function OrbitBoard({
                     </option>
                   ))}
                 </select>
+                </label>
               </div>
 
               {scheduleForm.block_type === "fixed" ? (
-                <div className="grid gap-2 sm:grid-cols-2 lg:col-span-3 xl:grid-cols-4">
-                  <select
-                    value={scheduleForm.day_of_week}
-                    onChange={(event) =>
-                      setScheduleField(
-                        "day_of_week",
-                        event.target.value as DayOfWeek | "",
-                      )
-                    }
-                    className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
-                  >
-                    <option value="">Recurring day</option>
-                    {dayOptions.map((day) => (
-                      <option key={day} value={day}>
-                        {formatStatus(day)}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    type="date"
-                    value={scheduleForm.specific_date}
-                    onChange={(event) =>
-                      setScheduleField("specific_date", event.target.value)
-                    }
-                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
-                  />
-                  <input
-                    type="time"
-                    value={scheduleForm.start_time}
-                    onChange={(event) =>
-                      setScheduleField("start_time", event.target.value)
-                    }
-                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
-                  />
-                  <input
-                    type="time"
-                    value={scheduleForm.end_time}
-                    onChange={(event) =>
-                      setScheduleField("end_time", event.target.value)
-                    }
-                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
-                  />
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                    <span>Day</span>
+                    <select
+                      value={scheduleForm.day_of_week}
+                      onChange={(event) =>
+                        setScheduleField(
+                          "day_of_week",
+                          event.target.value as DayOfWeek | "",
+                        )
+                      }
+                      className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                    >
+                      <option value="">Recurring day</option>
+                      {dayOptions.map((day) => (
+                        <option key={day} value={day}>
+                          {formatStatus(day)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                    <span>Specific Date</span>
+                    <input
+                      type="date"
+                      value={scheduleForm.specific_date}
+                      onChange={(event) =>
+                        setScheduleField("specific_date", event.target.value)
+                      }
+                      className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                    />
+                  </label>
+                  <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                    <span>Start Time</span>
+                    <input
+                      type="time"
+                      value={scheduleForm.start_time}
+                      onChange={(event) =>
+                        setScheduleField("start_time", event.target.value)
+                      }
+                      className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                    />
+                  </label>
+                  <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                    <span>End Time</span>
+                    <input
+                      type="time"
+                      value={scheduleForm.end_time}
+                      onChange={(event) =>
+                        setScheduleField("end_time", event.target.value)
+                      }
+                      className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                    />
+                  </label>
                 </div>
               ) : (
-                <div className="grid gap-2 sm:grid-cols-2 lg:col-span-3 xl:grid-cols-[minmax(10rem,1fr)_minmax(10rem,1fr)_minmax(8rem,0.8fr)_8rem]">
-                  <select
-                    aria-label="Preferred day"
-                    value={scheduleForm.day_of_week}
-                    onChange={(event) =>
-                      setScheduleField(
-                        "day_of_week",
-                        event.target.value as DayOfWeek | "",
-                      )
-                    }
-                    className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
-                  >
-                    <option value="">Preferred day</option>
-                    {dayOptions.map((day) => (
-                      <option key={day} value={day}>
-                        {formatStatus(day)}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    type="date"
-                    value={scheduleForm.specific_date}
-                    onChange={(event) =>
-                      setScheduleField("specific_date", event.target.value)
-                    }
-                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
-                  />
-                  <input
-                    type="number"
-                    min="0.25"
-                    max={
-                      scheduleForm.duration_unit === "hours"
-                        ? maxScheduleDurationMinutes / 60
-                        : maxScheduleDurationMinutes
-                    }
-                    step={scheduleForm.duration_unit === "hours" ? "0.25" : "1"}
-                    value={scheduleForm.duration_value}
-                    onChange={(event) =>
-                      setScheduleField("duration_value", event.target.value)
-                    }
-                    placeholder="Duration"
-                    className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
-                  />
-                  <select
-                    value={scheduleForm.duration_unit}
-                    onChange={(event) =>
-                      setScheduleField(
-                        "duration_unit",
-                        event.target.value as DurationUnit,
-                      )
-                    }
-                    className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
-                  >
-                    {durationUnitOptions.map((unit) => (
-                      <option key={unit} value={unit}>
-                        {unit === "minutes" ? "Minutes" : "Hours"}
-                      </option>
-                    ))}
-                  </select>
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                    <span>Preferred Day</span>
+                    <select
+                      value={scheduleForm.day_of_week}
+                      onChange={(event) =>
+                        setScheduleField(
+                          "day_of_week",
+                          event.target.value as DayOfWeek | "",
+                        )
+                      }
+                      className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                    >
+                      <option value="">Preferred day</option>
+                      {dayOptions.map((day) => (
+                        <option key={day} value={day}>
+                          {formatStatus(day)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                    <span>Specific Date</span>
+                    <input
+                      type="date"
+                      value={scheduleForm.specific_date}
+                      onChange={(event) =>
+                        setScheduleField("specific_date", event.target.value)
+                      }
+                      className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                    />
+                  </label>
+                  <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                    <span>Duration</span>
+                    <input
+                      type="number"
+                      min="0.25"
+                      max={
+                        scheduleForm.duration_unit === "hours"
+                          ? maxScheduleDurationMinutes / 60
+                          : maxScheduleDurationMinutes
+                      }
+                      step={scheduleForm.duration_unit === "hours" ? "0.25" : "1"}
+                      value={scheduleForm.duration_value}
+                      onChange={(event) =>
+                        setScheduleField("duration_value", event.target.value)
+                      }
+                      className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                    />
+                  </label>
+                  <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                    <span>Duration Unit</span>
+                    <select
+                      value={scheduleForm.duration_unit}
+                      onChange={(event) =>
+                        setScheduleField(
+                          "duration_unit",
+                          event.target.value as DurationUnit,
+                        )
+                      }
+                      className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                    >
+                      {durationUnitOptions.map((unit) => (
+                        <option key={unit} value={unit}>
+                          {unit === "minutes" ? "Minutes" : "Hours"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
               )}
 
+              <div className="grid gap-3 lg:grid-cols-[1fr_1.5fr]">
+              <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                <span>Recurrence</span>
               <select
                 value={scheduleForm.recurrence}
                 onChange={(event) =>
@@ -2692,15 +2782,19 @@ export default function OrbitBoard({
                   </option>
                 ))}
               </select>
+              </label>
+              <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                <span>Notes</span>
               <textarea
                 value={scheduleForm.notes}
                 onChange={(event) =>
                   setScheduleField("notes", event.target.value)
                 }
-                placeholder="Notes"
                 rows={3}
-                className="min-h-20 w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50 lg:col-span-2"
+                className="min-h-20 w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
               />
+              </label>
+              </div>
               <label className="flex items-center gap-2 text-xs text-neutral-400">
                 <input
                   type="checkbox"
@@ -2717,7 +2811,7 @@ export default function OrbitBoard({
                   type="button"
                   onClick={saveScheduleBlock}
                   disabled={savingScheduleBlock}
-                  className="rounded-lg border border-emerald-300/25 bg-emerald-300/10 px-3 py-2 text-xs font-semibold text-emerald-100 hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="rounded-lg border border-emerald-300/25 bg-emerald-300/10 px-4 py-3 text-xs font-semibold text-emerald-100 hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-60 sm:py-2"
                 >
                   {savingScheduleBlock
                     ? "Saving..."
@@ -2731,8 +2825,9 @@ export default function OrbitBoard({
                     onClick={() => {
                       setEditingScheduleBlockId(null);
                       setScheduleForm(emptyScheduleForm);
+                      setActiveScheduleSection("calendar");
                     }}
-                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white"
+                    className="rounded-lg border border-white/10 bg-white/[0.03] px-4 py-3 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white sm:py-2"
                   >
                     Cancel
                   </button>
@@ -2740,8 +2835,10 @@ export default function OrbitBoard({
               </div>
             </div>
           </section>
+          ) : null}
 
-          <section className="rounded-xl border border-cyan-300/15 bg-cyan-300/[0.04] p-4">
+          {activeScheduleSection === "intelligence" ? (
+          <section className="rounded-xl border border-cyan-300/15 bg-cyan-300/[0.04] p-3 sm:p-4">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-sm font-semibold text-neutral-100">
@@ -2761,6 +2858,7 @@ export default function OrbitBoard({
                 Schedule intelligence is unavailable right now.
               </p>
             ) : scheduleIntelligence ? (
+              <div className="grid gap-3">
               <div className="grid gap-2 lg:grid-cols-4">
                 <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
                   <p className="text-[11px] uppercase tracking-wide text-neutral-500">
@@ -2800,47 +2898,79 @@ export default function OrbitBoard({
                   </p>
                 </div>
               </div>
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                    Best Windows
+                  </h3>
+                  {scheduleIntelligence.available_windows.length > 0 ? (
+                    <div className="mt-2 grid gap-2">
+                      {scheduleIntelligence.available_windows.slice(0, 5).map((window) => (
+                        <p
+                          key={`${window.date}-${window.start_time}-${window.end_time}`}
+                          className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-neutral-300"
+                        >
+                          {formatStatus(window.day)} · {formatTime(window.start_time)}
+                          -{formatTime(window.end_time)} ·{" "}
+                          {formatDuration(window.duration_minutes)}
+                        </p>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-sm text-neutral-500">
+                      No open windows surfaced for this week.
+                    </p>
+                  )}
+                </div>
+                <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                    Recommendations
+                  </h3>
+                  {scheduleIntelligence.recommendations.length > 0 ? (
+                    <ul className="mt-2 grid gap-2 text-sm leading-6 text-neutral-300">
+                      {scheduleIntelligence.recommendations.map((recommendation) => (
+                        <li
+                          key={recommendation}
+                          className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-2"
+                        >
+                          {recommendation}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-2 text-sm text-neutral-500">
+                      No recommendations for this week yet.
+                    </p>
+                  )}
+                </div>
+              </div>
+              </div>
             ) : (
               <p className="text-sm text-neutral-500">
                 Schedule intelligence has not loaded yet.
               </p>
             )}
           </section>
+          ) : null}
 
-          <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-4">
+          {activeScheduleSection === "calendar" ? (
+          <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-3 sm:p-4">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-semibold text-neutral-100">
-                  {currentScheduleMonthYear}
-                </h2>
-                <p className="mt-1 text-xs text-neutral-500">
-                  {scheduleBlocksError
-                    ? "Schedule blocks are unavailable right now."
-                    : `${scheduleBlocks.length} block${scheduleBlocks.length === 1 ? "" : "s"} saved`}
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                {unplacedScheduleBlocks.length > 0 ? (
-                  <span className="text-xs text-neutral-500">
-                    {unplacedScheduleBlocks.length} flexible block
-                    {unplacedScheduleBlocks.length === 1 ? "" : "s"} needs
-                    placement
-                  </span>
-                ) : null}
-                <div className="flex rounded-lg border border-white/10 bg-white/[0.03] p-1">
+              <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+                <div className="grid w-full grid-cols-3 rounded-lg border border-white/10 bg-white/[0.03] p-1 sm:flex sm:w-auto">
                   <button
                     type="button"
                     onClick={() =>
                       setVisibleWeekStart((current) => addDays(current, -7))
                     }
-                    className="rounded-md px-2 py-1 text-xs font-semibold text-neutral-300 hover:bg-white/[0.06] hover:text-white"
+                    className="rounded-md px-3 py-2 text-xs font-semibold text-neutral-300 hover:bg-white/[0.06] hover:text-white sm:px-2 sm:py-1"
                   >
                     Previous
                   </button>
                   <button
                     type="button"
                     onClick={() => setVisibleWeekStart(getWeekStart(new Date()))}
-                    className="rounded-md px-2 py-1 text-xs font-semibold text-neutral-300 hover:bg-white/[0.06] hover:text-white"
+                    className="rounded-md px-3 py-2 text-xs font-semibold text-neutral-300 hover:bg-white/[0.06] hover:text-white sm:px-2 sm:py-1"
                   >
                     Today
                   </button>
@@ -2849,12 +2979,12 @@ export default function OrbitBoard({
                     onClick={() =>
                       setVisibleWeekStart((current) => addDays(current, 7))
                     }
-                    className="rounded-md px-2 py-1 text-xs font-semibold text-neutral-300 hover:bg-white/[0.06] hover:text-white"
+                    className="rounded-md px-3 py-2 text-xs font-semibold text-neutral-300 hover:bg-white/[0.06] hover:text-white sm:px-2 sm:py-1"
                   >
                     Next
                   </button>
                 </div>
-                <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs font-semibold text-neutral-300">
+                <div className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-center text-xs font-semibold text-neutral-300 sm:w-auto sm:py-1.5">
                   Monday-Sunday
                 </div>
               </div>
@@ -2866,8 +2996,64 @@ export default function OrbitBoard({
               </p>
             ) : (
               <div className="space-y-3">
-                <div className="overflow-x-auto pb-1">
-                  <div className="grid min-w-[980px] grid-cols-7 gap-2">
+                <div className="space-y-3 sm:hidden">
+                  {visibleWeekDays.map((weekDay) => {
+                    const blocks =
+                      scheduleBlocksByDate.get(weekDay.dateKey) ?? [];
+                    const today = isSameDate(weekDay.date, new Date());
+
+                    return (
+                      <section
+                        key={weekDay.dateKey}
+                        className={`rounded-lg border ${
+                          today
+                            ? "border-cyan-300/35 bg-cyan-300/[0.05]"
+                            : "border-white/10 bg-black/20"
+                        }`}
+                      >
+                        <div
+                          className={`flex items-center justify-between gap-3 border-b px-3 py-2.5 ${
+                            today ? "border-cyan-300/20" : "border-white/10"
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <h3 className="text-sm font-semibold text-neutral-100">
+                              {formatStatus(weekDay.day)}{" "}
+                              <span className="text-neutral-500">
+                                {formatWeekDateLabel(weekDay.date)}
+                              </span>
+                            </h3>
+                          </div>
+                          <span className="shrink-0 rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-500">
+                            {blocks.length}
+                          </span>
+                        </div>
+                        <div className="space-y-2 p-2.5">
+                          {blocks.length > 0 ? (
+                            blocks.map((block) => (
+                              <CalendarScheduleBlockCard
+                                key={block.id}
+                                block={block}
+                                mutatingScheduleBlockId={
+                                  mutatingScheduleBlockId
+                                }
+                                onEdit={startScheduleBlockEdit}
+                                onArchive={archiveScheduleBlock}
+                                onDelete={deleteScheduleBlock}
+                              />
+                            ))
+                          ) : (
+                            <p className="rounded-lg border border-dashed border-white/10 px-3 py-3 text-xs leading-5 text-neutral-600">
+                              No blocks scheduled.
+                            </p>
+                          )}
+                        </div>
+                      </section>
+                    );
+                  })}
+                </div>
+                <div className="hidden overflow-x-auto pb-1 sm:block">
+                  <div className="grid min-w-[760px] grid-cols-7 gap-2 lg:min-w-[980px]">
                     {visibleWeekDays.map((weekDay) => {
                       const blocks =
                         scheduleBlocksByDate.get(weekDay.dateKey) ?? [];
@@ -2876,7 +3062,7 @@ export default function OrbitBoard({
                       return (
                         <div
                           key={weekDay.dateKey}
-                          className={`min-h-[26rem] rounded-lg border ${
+                          className={`min-h-[22rem] rounded-lg border lg:min-h-[26rem] ${
                             today
                               ? "border-cyan-300/35 bg-cyan-300/[0.05]"
                               : "border-white/10 bg-black/20"
@@ -2927,6 +3113,80 @@ export default function OrbitBoard({
               </div>
             )}
           </section>
+          ) : null}
+
+          {activeScheduleSection === "blocks" ? (
+          <section className="rounded-xl border border-white/10 bg-neutral-950/70 p-3 sm:p-4">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold text-neutral-100">
+                  Schedule Blocks
+                </h2>
+                <p className="mt-1 text-xs text-neutral-500">
+                  Manage fixed, flexible, and inactive blocks.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => startScheduleBlockCreate("fixed")}
+                className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-3 py-2 text-xs font-semibold text-cyan-100 hover:bg-cyan-300/20"
+              >
+                Add Block
+              </button>
+            </div>
+
+            {scheduleBlocksError ? (
+              <p className="text-sm text-red-100">
+                Schedule blocks are unavailable right now.
+              </p>
+            ) : (
+              <div className="grid gap-4 lg:grid-cols-3">
+                {[
+                  ["Fixed Blocks", scheduleBlockGroups.fixed],
+                  ["Flexible Blocks", scheduleBlockGroups.flexible],
+                  ["Archived / Inactive", scheduleBlockGroups.archived],
+                ].map(([title, blocks]) => {
+                  const typedBlocks = blocks as ScheduleBlock[];
+
+                  return (
+                    <section
+                      key={title as string}
+                      className="rounded-lg border border-white/10 bg-black/20 p-3"
+                    >
+                      <div className="mb-3 flex items-center justify-between gap-2">
+                        <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                          {title as string}
+                        </h3>
+                        <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-500">
+                          {typedBlocks.length}
+                        </span>
+                      </div>
+                      {typedBlocks.length > 0 ? (
+                        <div className="grid gap-2">
+                          {typedBlocks.map((block) => (
+                            <CalendarScheduleBlockCard
+                              key={block.id}
+                              block={block}
+                              compact
+                              mutatingScheduleBlockId={mutatingScheduleBlockId}
+                              onEdit={startScheduleBlockEdit}
+                              onArchive={archiveScheduleBlock}
+                              onDelete={deleteScheduleBlock}
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="rounded-lg border border-dashed border-white/10 px-3 py-4 text-xs leading-5 text-neutral-600">
+                          No blocks in this group.
+                        </p>
+                      )}
+                    </section>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+          ) : null}
         </div>
       ) : null}
 
