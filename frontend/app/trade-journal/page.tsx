@@ -15,6 +15,7 @@ const API_BASE =
 const JOURNAL_URL = `${API_BASE}/orbit/trade-journal`;
 const IMPORT_URL = `${JOURNAL_URL}/import-pdf`;
 const IMPORT_SAVE_URL = `${IMPORT_URL}/save`;
+const TRADING_COACH_REVIEW_URL = `${API_BASE}/orbit/trading-coach/review`;
 
 const directions = ["Long", "Short"] as const;
 const sessions = ["Asia", "London", "New York", "After Hours"] as const;
@@ -176,6 +177,30 @@ type ImportPreview = {
 type ImportSaveResponse = {
   created_entries: TradeJournalEntry[];
   warnings: string[];
+};
+
+type TradingCoachReview = {
+  summary: {
+    total_trades_reviewed: number;
+    wins: number | null;
+    losses: number | null;
+    total_pnl: number | null;
+    average_pnl: number | null;
+    strategy_mode_distribution: Record<string, number>;
+    session_distribution: Record<string, number>;
+  };
+  strengths: string[];
+  weaknesses: string[];
+  missing_data: string[];
+  model_alignment: {
+    label: string;
+    score: number;
+    complete_context_trades: number;
+    weak_context_trades: number;
+  };
+  suggested_focus: string[];
+  warnings: string[];
+  readable_summary: string;
 };
 
 type JournalForm = {
@@ -458,6 +483,28 @@ function ChipList({ values }: Readonly<{ values: string[] }>) {
   );
 }
 
+function ReviewList({
+  title,
+  values,
+}: Readonly<{ title: string; values: string[] }>) {
+  return (
+    <section className="rounded-lg border border-white/10 bg-neutral-950 p-3">
+      <h3 className="text-xs font-semibold uppercase text-neutral-500">
+        {title}
+      </h3>
+      {values.length === 0 ? (
+        <p className="mt-2 text-sm text-neutral-500">--</p>
+      ) : (
+        <ul className="mt-2 grid gap-2 text-sm leading-6 text-neutral-300">
+          {values.slice(0, 4).map((value) => (
+            <li key={value}>{value}</li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function PdfFilePicker({
   label,
   file,
@@ -532,6 +579,11 @@ export default function TradeJournalPage() {
   );
   const [error, setError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [coachReview, setCoachReview] = useState<TradingCoachReview | null>(
+    null,
+  );
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   const selectedEntry = useMemo(
@@ -861,6 +913,31 @@ export default function TradeJournalPage() {
     }
   }
 
+  async function handleTradingCoachReview() {
+    setReviewLoading(true);
+    setReviewError(null);
+
+    try {
+      const response = await fetch(TRADING_COACH_REVIEW_URL, {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        throw new Error(`Trading Coach API returned ${response.status}.`);
+      }
+
+      const review = (await response.json()) as TradingCoachReview;
+      setCoachReview(review);
+    } catch (reviewLoadError) {
+      setReviewError(
+        reviewLoadError instanceof Error
+          ? reviewLoadError.message
+          : "Trading Coach review could not be loaded.",
+      );
+    } finally {
+      setReviewLoading(false);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-[#05070b] text-white">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-[#05070b]/90 backdrop-blur">
@@ -946,6 +1023,74 @@ export default function TradeJournalPage() {
               </button>
             </div>
           </div>
+
+          <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-xs text-neutral-500">Trading Coach</p>
+                <h2 className="mt-1 text-lg font-semibold text-white">
+                  Journal Review
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleTradingCoachReview()}
+                disabled={reviewLoading}
+                className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {reviewLoading ? "Reviewing..." : "Review Trades"}
+              </button>
+            </div>
+
+            {reviewError ? (
+              <div className="mt-3 rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-2 text-sm text-red-100">
+                {reviewError}
+              </div>
+            ) : null}
+
+            {coachReview ? (
+              <div className="mt-4 grid gap-3">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <DetailRow
+                    label="Trades reviewed"
+                    value={coachReview.summary.total_trades_reviewed}
+                  />
+                  <DetailRow
+                    label="Model alignment"
+                    value={`${coachReview.model_alignment.label} (${coachReview.model_alignment.score}%)`}
+                  />
+                  <DetailRow
+                    label="Average PnL"
+                    value={formatCurrency(coachReview.summary.average_pnl)}
+                  />
+                </div>
+
+                {coachReview.summary.total_trades_reviewed === 0 ? (
+                  <p className="rounded-lg border border-white/10 bg-neutral-950 p-3 text-sm text-neutral-300">
+                    No journal entries available yet. Import or create trades first.
+                  </p>
+                ) : (
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    <ReviewList title="Strengths" values={coachReview.strengths} />
+                    <ReviewList title="Weaknesses" values={coachReview.weaknesses} />
+                    <ReviewList
+                      title="Suggested Focus"
+                      values={coachReview.suggested_focus}
+                    />
+                    <ReviewList
+                      title="Missing Data"
+                      values={coachReview.missing_data}
+                    />
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="mt-3 text-sm leading-6 text-neutral-400">
+                Run a read-only review of recent journal entries against Liquidity
+                Narrative Continuation.
+              </p>
+            )}
+          </section>
 
           {journalMode === "import" ? (
           <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-4">

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
+import trading_coach
 from . import service
 from . import trade_journal_import
 from .models import (
@@ -434,6 +435,21 @@ def create_trade_journal_entry(payload: TradeJournalCreate):
 @router.get("/trade-journal", response_model=list[TradeJournalRead])
 def list_trade_journal_entries():
     return service.list_trade_journal_entries()
+
+
+@router.get("/trading-coach/review")
+def get_trading_coach_review(
+    limit: int = 20,
+    symbol: str | None = None,
+    session: str | None = None,
+    strategy_mode: str | None = None,
+):
+    return trading_coach.generate_trading_coach_review(
+        limit=limit,
+        symbol=symbol,
+        session=session,
+        strategy_mode=strategy_mode,
+    )
 
 
 @router.post("/trade-journal/import-pdf", response_model=TradeJournalImportPreview)

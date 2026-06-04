@@ -1,6 +1,6 @@
 # Helix Project Overview
 
-Last refreshed: June 3, 2026
+Last refreshed: June 4, 2026
 
 Helix is Jadin's local-first assistant and operating layer. It combines a chat assistant, Orbit life operating system, agent framework, trading assistant, schedule platform, voice/TTS surface, and local messaging workflows into one system.
 
@@ -111,6 +111,7 @@ Primary modules:
 * `backend/orbit/service.py`: Orbit data access, calculated progress, recommendations, priority scoring, morning briefing, daily closeout, schedule blocks, Schedule Intelligence v1, Trade Journal CRUD, import-save behavior, and readiness logic.
 * `backend/orbit/routes.py`: Orbit API surface, including schedule intelligence and Trade Journal endpoints.
 * `backend/orbit/trade_journal_import.py`: deterministic Trade Journal PDF import parser for Performance PDFs, Orders PDFs, preview generation, and draft enrichment.
+* `backend/trading_coach.py`: Trading Coach v2 / Journal Review Intelligence v1 read-only Trade Journal review service for Liquidity Narrative Continuation alignment, missing-context guidance, and deterministic coaching summaries.
 * `backend/agent_service.py`: agent definitions, manual runs, stored outputs, agent prioritization, Web Search Agent output, and Readiness Advisory output.
 * `backend/agent_routes.py`: agent API surface.
 * `backend/scheduled_agents.py`: scheduled Morning Review, Evening Review, daily prioritization snapshot, and morning fallback check loop.
@@ -217,6 +218,7 @@ The following major feature milestones are complete as of this overview:
 * Schedule Intelligence v1
 * Trade Journal v1
 * Trade Journal PDF Import v1
+* Trading Coach v2 / Journal Review Intelligence v1
 * Trading Model Refinement v1
 * Scanner Refinement v1
 * Presence Modes v1
@@ -368,7 +370,29 @@ Current behavior:
 * Narrative and review fields preserve Jadin's own reasoning, intent, liquidity target, what went well, what went wrong, and lesson learned.
 * Attachment path fields support screenshot and CSV references.
 
-Trade Journal v1 is intentionally data capture only. It does not provide AI coaching, pattern discovery, automatic scanner refinement, or performance analytics yet.
+Trade Journal v1 is the coaching source data for Trading Coach v2 / Journal Review Intelligence v1. It does not provide pattern discovery, automatic scanner refinement, automatic strategy changes, or performance analytics dashboards.
+
+## Trading Coach v2 / Journal Review Intelligence v1
+
+Trading Coach v2 is implemented as deterministic, read-only journal review.
+
+Current behavior:
+
+* Reads saved Trade Journal entries and the Liquidity Narrative Continuation strategy profile.
+* Reviews total trades, wins/losses when result data exists, total PnL, average PnL, strategy mode distribution, session distribution, common behavior tags, common execution tags, common liquidity draws, common reaction zones, recurring lessons, and missing narrative/context fields.
+* Compares journal entries against required model context: HTF bias, draw on liquidity, reaction zone, behavior tags, execution tags, narrative explanation, target liquidity, and review/lesson.
+* Returns structured JSON plus a readable coaching summary through `GET /orbit/trading-coach/review`.
+* Supports optional filters: `limit`, `symbol`, `session`, and `strategy_mode`.
+* Supports Command Router phrases such as `review my trades`, `how did I trade today`, `what did I do well trading`, `what should I improve in my trading`, `review my trade journal`, and `trading coach review`.
+* Displays a compact Trading Coach Review panel on the Trade Journal page.
+* Returns the empty state `No journal entries available yet. Import or create trades first.` when no journal entries are available.
+
+Boundaries:
+
+* Does not produce trade signals or financial advice.
+* Does not build Pattern Discovery.
+* Does not modify scanner triggers, scanner interval, default scanner symbol, presence modes, scanner notifications, PDF import parser, or Trade Journal import UX.
+* Does not auto-update the strategy model, auto-create tasks, send notifications, or write back to journal entries.
 
 ## Trade Journal PDF Import v1
 
@@ -523,6 +547,12 @@ Supported natural language intents include:
 * `how ready am I`
 * `check readiness`
 * `readiness advisory`
+* `review my trades`
+* `how did I trade today`
+* `what did I do well trading`
+* `what should I improve in my trading`
+* `review my trade journal`
+* `trading coach review`
 * `I’m home`
 * `I’m trading`
 * `I’m away`
@@ -539,6 +569,7 @@ Routing behavior:
 * Major event phrases read major events and selected/Corporate Escape status.
 * Readiness status phrases read readiness categories.
 * Readiness advisory phrases run the Readiness Advisory Agent.
+* Trading coach phrases read Trade Journal entries and return the Trading Coach v2 deterministic review summary.
 * Presence phrases read or update Presence Modes v1 through deterministic local storage.
 * Unmatched prompts preserve existing `/chat` behavior and fall back to Ollama/tool prompting.
 
@@ -621,6 +652,7 @@ Operational note: backend restart is required after Command Router changes becau
 * `GET /orbit/trade-sessions`
 * `POST /orbit/trade-sessions`
 * `GET/PATCH/DELETE /orbit/trade-sessions/{trade_session_id}`
+* `GET /orbit/trading-coach/review`
 * `GET /orbit/trade-journal`
 * `POST /orbit/trade-journal`
 * `GET/PATCH/DELETE /orbit/trade-journal/{journal_entry_id}`
@@ -992,26 +1024,30 @@ Current role:
 * Attach the Liquidity Narrative Continuation strategy profile and strategy mode where available.
 * Convert broker Performance and Orders PDFs into user-confirmed journal entries.
 * Keep imported trades in preview/draft form until Jadin explicitly saves them.
-* Store execution facts and user reasoning without coaching or model interpretation.
-* Help validate what Jadin actually trades versus what he thinks he trades once analytics are added.
+* Store execution facts and user reasoning for read-only Trading Coach v2 review.
+* Help validate what Jadin actually trades versus what he thinks he trades without automatic scanner or strategy changes.
 
 Future role:
 
-Trade Journal will become the primary source for:
+Trade Journal is now the primary source for:
 
-* Trading Model Refinement
-* Scanner Refinement
+* Trading Coach v2 / Journal Review Intelligence v1
+
+Trade Journal remains the planned primary source for:
+
+* Future Trading Model Refinement
+* Future Scanner Refinement
 * Presence Modes
 * Narrative-Based Trading Analysis
 * Pattern Discovery
-* Trading Coach v2
 * Performance Analytics
 
 Current boundaries:
 
 * Trade Journal data is not yet used for automatic scanner changes.
-* Trade Journal data is not yet used for AI coaching.
+* Trade Journal data is used for read-only coaching summaries only.
 * Trade Journal data is not yet used for automatic pattern discovery.
+* Trade Journal data is not used for automatic strategy model updates.
 * Screenshot, PDF, and CSV artifacts are referenced through paths but are not yet learned from directly by a model.
 
 ---
@@ -1035,13 +1071,14 @@ Current boundaries:
 * Scanner Refinement v1 is implemented for signal tiers, FVG reaction-zone alert quality, and repeat suppression.
 * Narrative-Based Scanner v1 is implemented for narrative phase/state enrichment and latest-scan display.
 * Default Scanner Symbol v1 is implemented for MES, MNQ, ES, and NQ as selectable scanner defaults.
-* No AI coaching is implemented from Trade Journal data yet.
+* Trading Coach v2 / Journal Review Intelligence v1 is implemented as read-only Trade Journal review.
 * Pattern Discovery is not implemented.
 * No automatic scanner refinement is implemented from Trade Journal data yet.
-* Advanced Trade Coach is not implemented.
+* Advanced Trading Coach is not implemented.
+* No automatic strategy changes are implemented from Trade Journal data.
 * No direct screenshot/PDF/CSV model learning is implemented yet.
 * User still provides strategy context and narrative manually after import.
-* Trade Journal strategy mode classification is available as backend logic, but no automatic coaching or scanner refinement uses it yet.
+* Trade Journal strategy mode classification is available as backend logic, and Trading Coach counts saved strategy modes without changing them.
 * Scanner alerts are chart-review notifications, not trade entries.
 
 ## Agents
@@ -1063,17 +1100,16 @@ Current boundaries:
 
 # Current Roadmap
 
-Completed roadmap items removed from active priority lists include Agent Foundation v1, Web Search Agent v1 scaffolding, Readiness Advisory Agent v1, Agent Prioritization, Scheduled Agent Runs, Morning Check-In/Fallback Summary, Major Events Management v1, Calculated Major Event Progress, Schedule Blocks v1, Schedule Board v1, Schedule Intelligence v1, Trade Journal v1, Trade Journal PDF Import v1, Trading Model Refinement v1, Scanner Refinement v1, Presence Modes v1, Narrative-Based Scanner v1, Default Scanner Symbol v1, Command Router v1, Voice Trigger Prototype, Wake Phrase Listener v1, TTS Routing, Morning Briefing Condenser, and Service Management / LaunchAgent support.
+Completed roadmap items removed from active priority lists include Agent Foundation v1, Web Search Agent v1 scaffolding, Readiness Advisory Agent v1, Agent Prioritization, Scheduled Agent Runs, Morning Check-In/Fallback Summary, Major Events Management v1, Calculated Major Event Progress, Schedule Blocks v1, Schedule Board v1, Schedule Intelligence v1, Trade Journal v1, Trade Journal PDF Import v1, Trading Coach v2 / Journal Review Intelligence v1, Trading Model Refinement v1, Scanner Refinement v1, Presence Modes v1, Narrative-Based Scanner v1, Default Scanner Symbol v1, Command Router v1, Voice Trigger Prototype, Wake Phrase Listener v1, TTS Routing, Morning Briefing Condenser, and Service Management / LaunchAgent support.
 
 ## Next Major Development Priorities
 
 Priority order:
 
-1. Trading Coach v2 / Journal Review Intelligence
-2. Pattern Discovery
-3. Scanner + Journal correlation
-4. Advanced scanner refinements
-5. Schedule Intelligence v2 later
+1. Pattern Discovery
+2. Scanner + Journal correlation
+3. Advanced scanner refinements
+4. Schedule Intelligence v2 later
 
 ## Schedule Intelligence v2 (Future)
 

@@ -7,6 +7,7 @@ from typing import Any, Callable
 import agent_service
 import morning_checkin
 import presence
+import trading_coach
 import trading_strategy
 from orbit import service as orbit_service
 
@@ -47,6 +48,9 @@ def route_chat_intent(message: str) -> dict[str, Any] | None:
 
     if _is_readiness_status_intent(normalized):
         return _readiness_status_response()
+
+    if _is_trading_coach_intent(normalized):
+        return _trading_coach_response(normalized)
 
     if _is_trading_strategy_intent(normalized):
         return _trading_strategy_response(normalized)
@@ -192,6 +196,20 @@ def _is_trading_strategy_intent(message: str) -> bool:
     )
 
 
+def _is_trading_coach_intent(message: str) -> bool:
+    return _contains_any(
+        message,
+        [
+            "review my trades",
+            "how did i trade today",
+            "what did i do well trading",
+            "what should i improve in my trading",
+            "review my trade journal",
+            "trading coach review",
+        ],
+    )
+
+
 def _success_response(intent: str, message: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "success": True,
@@ -330,6 +348,17 @@ def _trading_strategy_response(message_text: str) -> dict[str, Any]:
         "trading_strategy",
         message,
         {"strategy_profile": profile, "strategy_modes": modes},
+    )
+
+
+def _trading_coach_response(message_text: str) -> dict[str, Any]:
+    review = trading_coach.generate_trading_coach_review(
+        today_only="today" in message_text,
+    )
+    return _success_response(
+        "trading_coach_review",
+        str(review.get("readable_summary") or "").strip(),
+        {"trading_coach_review": review},
     )
 
 
