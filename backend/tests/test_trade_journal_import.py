@@ -104,10 +104,10 @@ class TradeJournalImportParserTests(unittest.TestCase):
         self.assertTrue(trade_four.stop_canceled)
         self.assertFalse(trade_four.market_entry)
         self.assertFalse(trade_four.market_exit)
-        self.assertIn("504924261435", trade_four.related_order_ids)
-        self.assertIn("504924261438", trade_four.related_order_ids)
-        self.assertIn("504924261440", trade_four.related_order_ids)
-        self.assertTrue({"504924261435", "504924261438", "504924261440"} <= matched_order_ids)
+        self.assertIn("900000000009", trade_four.related_order_ids)
+        self.assertIn("900000000010", trade_four.related_order_ids)
+        self.assertIn("900000000011", trade_four.related_order_ids)
+        self.assertTrue({"900000000009", "900000000010", "900000000011"} <= matched_order_ids)
 
 
 if __name__ == "__main__":

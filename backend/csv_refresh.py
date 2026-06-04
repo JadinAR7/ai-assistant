@@ -6,6 +6,8 @@ from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from scanner_settings import get_default_scanner_symbol, normalize_scanner_symbol
+
 
 # -------------------------
 # CSV refresh configuration
@@ -16,10 +18,13 @@ CSV_DATA_DIR = BASE_DIR / "csv_data"
 CSV_REFRESH_STATUS_PATH = BASE_DIR / "csv_refresh_status.json"
 CSV_REFRESH_TEMP_ROOT = BASE_DIR / "downloads" / "csv_refresh_tmp"
 
-DEFAULT_SYMBOL = "MES"
 REFRESH_TIMEFRAMES = ["1D", "4H", "1H", "15M", "5M", "1M"]
 
 REQUIRED_CSV_COLUMNS = {"open", "high", "low", "close"}
+
+
+def _resolve_symbol(symbol: str | None = None) -> str:
+    return normalize_scanner_symbol(symbol or get_default_scanner_symbol())
 
 
 # -------------------------
@@ -127,6 +132,7 @@ def _next_expected_window(now: datetime | None = None) -> dict:
 def _default_status(now: datetime | None = None) -> dict:
     return {
         "enabled": True,
+        "symbol": _resolve_symbol(),
         "last_attempt": None,
         "last_success": None,
         "last_error": None,
@@ -149,6 +155,7 @@ def _read_status() -> dict:
 
     status = _default_status()
     status.update(stored if isinstance(stored, dict) else {})
+    status["symbol"] = status.get("symbol") or _resolve_symbol()
     status["next_expected_window"] = _next_expected_window()
 
     return status
@@ -170,8 +177,8 @@ def get_csv_refresh_status() -> dict:
 # -------------------------
 # Future-safe file handling
 # -------------------------
-def _expected_csv_names(symbol: str = DEFAULT_SYMBOL) -> dict[str, str]:
-    symbol = symbol.upper()
+def _expected_csv_names(symbol: str) -> dict[str, str]:
+    symbol = normalize_scanner_symbol(symbol)
     return {
         timeframe: f"{symbol}_{timeframe}.csv"
         for timeframe in REFRESH_TIMEFRAMES
@@ -210,7 +217,7 @@ def _verify_csv_file(path: Path) -> tuple[bool, str | None]:
     return True, None
 
 
-def _verify_replacement_set(temp_dir: Path, symbol: str = DEFAULT_SYMBOL) -> tuple[bool, dict, dict]:
+def _verify_replacement_set(temp_dir: Path, symbol: str) -> tuple[bool, dict, dict]:
     verified = {}
     failures = {}
 
@@ -228,7 +235,7 @@ def _verify_replacement_set(temp_dir: Path, symbol: str = DEFAULT_SYMBOL) -> tup
 
 def _replace_active_csvs_after_verification(
     verified_files: dict,
-    symbol: str = DEFAULT_SYMBOL,
+    symbol: str,
     logs: list[str] | None = None,
 ) -> list[str]:
     """
@@ -255,7 +262,7 @@ def _replace_active_csvs_after_verification(
 # -------------------------
 # Refresh runner
 # -------------------------
-def _run_tradingview_export(temp_dir: Path, symbol: str = DEFAULT_SYMBOL) -> dict:
+def _run_tradingview_export(temp_dir: Path, symbol: str) -> dict:
     from tools import export_tradingview_csv
 
     exported = {}
@@ -296,13 +303,15 @@ def _run_tradingview_export(temp_dir: Path, symbol: str = DEFAULT_SYMBOL) -> dic
     }
 
 
-def run_csv_refresh(force: bool = False, exporter=None) -> dict:
+def run_csv_refresh(force: bool = False, symbol: str | None = None, exporter=None) -> dict:
     now = _normalize_now()
+    refresh_symbol = _resolve_symbol(symbol)
     status = _read_status()
     logs = []
 
     if not status.get("enabled", True):
         status.update({
+            "symbol": refresh_symbol,
             "last_attempt": now.isoformat(),
             "last_error": "CSV refresh is disabled.",
             "last_refresh_reason": "disabled",
@@ -315,6 +324,7 @@ def run_csv_refresh(force: bool = False, exporter=None) -> dict:
         return {
             "success": False,
             "skipped": True,
+            "symbol": refresh_symbol,
             "status": status,
             "message": "CSV refresh is disabled.",
         }
@@ -323,6 +333,7 @@ def run_csv_refresh(force: bool = False, exporter=None) -> dict:
 
     if not force and not scheduled_reason:
         status.update({
+            "symbol": refresh_symbol,
             "last_attempt": now.isoformat(),
             "last_error": None,
             "last_refresh_reason": "outside_refresh_window",
@@ -335,6 +346,7 @@ def run_csv_refresh(force: bool = False, exporter=None) -> dict:
         return {
             "success": True,
             "skipped": True,
+            "symbol": refresh_symbol,
             "status": status,
             "message": "Outside CSV refresh window. No CSV refresh ran.",
         }
@@ -346,7 +358,7 @@ def run_csv_refresh(force: bool = False, exporter=None) -> dict:
     with tempfile.TemporaryDirectory(prefix="csv_refresh_", dir=CSV_REFRESH_TEMP_ROOT) as temp_path:
         temp_dir = Path(temp_path)
         _append_log(logs, f"temp export path: {temp_dir}")
-        export_result = exporter(temp_dir, DEFAULT_SYMBOL)
+        export_result = exporter(temp_dir, refresh_symbol)
         for export_log in export_result.get("logs") or []:
             _append_log(logs, export_log)
 
@@ -355,7 +367,7 @@ def run_csv_refresh(force: bool = False, exporter=None) -> dict:
 
         verified_all, verified_files, verification_failures = _verify_replacement_set(
             temp_dir,
-            DEFAULT_SYMBOL,
+            refresh_symbol,
         )
         _append_log(logs, f"files verified: {sorted(verified_files.keys())}")
 
@@ -376,7 +388,7 @@ def run_csv_refresh(force: bool = False, exporter=None) -> dict:
         if export_result.get("success") and verified_all:
             files_refreshed = _replace_active_csvs_after_verification(
                 verified_files,
-                DEFAULT_SYMBOL,
+                refresh_symbol,
                 logs=logs,
             )
 
@@ -392,6 +404,7 @@ def run_csv_refresh(force: bool = False, exporter=None) -> dict:
         message = "CSV refresh failed verification. Existing CSVs were left untouched."
 
     status.update({
+        "symbol": refresh_symbol,
         "last_attempt": now.isoformat(),
         "last_success": now.isoformat() if success else status.get("last_success"),
         "last_error": error,
@@ -405,9 +418,11 @@ def run_csv_refresh(force: bool = False, exporter=None) -> dict:
     return {
         "success": success,
         "implemented": bool(export_result.get("implemented", True)),
+        "symbol": refresh_symbol,
         "refresh_reason": refresh_reason,
         "status": status,
         "files_refreshed": files_refreshed,
+        "refreshed_files": files_refreshed,
         "logs": logs,
         "verification": {
             "verified_all": verified_all,

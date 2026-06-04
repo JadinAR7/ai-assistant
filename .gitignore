@@ -8,9 +8,7 @@ __pycache__/
 backend/.venv/
 backend/.env
 backend/assistant.db
-backend/*.jsonl
-# Future runtime state files
-backend/*_status.json
+assistant.db
 
 # Frontend
 frontend/node_modules/
@@ -28,33 +26,21 @@ backend/csv_data/
 venv/
 **/venv/
 
-
-# Playwright browser profile
+# Local browser/runtime state
 backend/playwright_tradingview_profile/
-
-# TradingView screenshots
-backend/pictures/tradingview_screenshots/
-
-# Runtime downloads
-backend/downloads/debug_exports/
-backend/downloads/csv_refresh_tmp/
-
-# macOS junk
-.DS_Store
-random.txt
-
-# Logs
-backend/logs/*.log
-
-# Local scanner state
 backend/scanner_settings.json
-
-# Runtime scan state/logs
 backend/scan_history.jsonl
+backend/scan_runtime_status.json
 backend/csv_refresh_status.json
+backend/presence_status.json
+backend/.scheduled_agents_status.json
+backend/.morning_checkin_status.json
+backend/*_status.json
 backend/.scanner_runtime*.json
 backend/logs/
-
-# Local screenshots/downloads
 backend/pictures/tradingview_screenshots/
+backend/csv_data/
 backend/downloads/
+
+# Local scratch
+random.txt

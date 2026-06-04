@@ -6,7 +6,10 @@ from typing import Any, Callable
 
 import agent_service
 import morning_checkin
+import pattern_discovery
 import presence
+import trading_coach
+import trading_correlation
 import trading_strategy
 from orbit import service as orbit_service
 
@@ -47,6 +50,15 @@ def route_chat_intent(message: str) -> dict[str, Any] | None:
 
     if _is_readiness_status_intent(normalized):
         return _readiness_status_response()
+
+    if _is_trading_correlation_intent(normalized):
+        return _trading_correlation_response()
+
+    if _is_pattern_discovery_intent(normalized):
+        return _pattern_discovery_response()
+
+    if _is_trading_coach_intent(normalized):
+        return _trading_coach_response(normalized)
 
     if _is_trading_strategy_intent(normalized):
         return _trading_strategy_response(normalized)
@@ -192,6 +204,47 @@ def _is_trading_strategy_intent(message: str) -> bool:
     )
 
 
+def _is_trading_coach_intent(message: str) -> bool:
+    return _contains_any(
+        message,
+        [
+            "review my trades",
+            "how did i trade today",
+            "what did i do well trading",
+            "what should i improve in my trading",
+            "review my trade journal",
+            "trading coach review",
+        ],
+    )
+
+
+def _is_trading_correlation_intent(message: str) -> bool:
+    return _contains_any(
+        message,
+        [
+            "compare my trades to the scanner",
+            "did my trades align with helix",
+            "scanner journal review",
+            "trade scanner correlation",
+            "did i follow the scanner narrative",
+        ],
+    )
+
+
+def _is_pattern_discovery_intent(message: str) -> bool:
+    return _contains_any(
+        message,
+        [
+            "find patterns in my trades",
+            "what patterns do you see",
+            "what trading patterns are showing up",
+            "where am i doing best",
+            "where am i struggling",
+            "pattern discovery",
+        ],
+    )
+
+
 def _success_response(intent: str, message: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "success": True,
@@ -330,6 +383,35 @@ def _trading_strategy_response(message_text: str) -> dict[str, Any]:
         "trading_strategy",
         message,
         {"strategy_profile": profile, "strategy_modes": modes},
+    )
+
+
+def _trading_coach_response(message_text: str) -> dict[str, Any]:
+    review = trading_coach.generate_trading_coach_review(
+        today_only="today" in message_text,
+    )
+    return _success_response(
+        "trading_coach_review",
+        str(review.get("readable_summary") or "").strip(),
+        {"trading_coach_review": review},
+    )
+
+
+def _trading_correlation_response() -> dict[str, Any]:
+    review = trading_correlation.generate_trading_correlation_review()
+    return _success_response(
+        "trading_correlation_review",
+        str(review.get("readable_summary") or "").strip(),
+        {"trading_correlation_review": review},
+    )
+
+
+def _pattern_discovery_response() -> dict[str, Any]:
+    review = pattern_discovery.generate_pattern_discovery_review()
+    return _success_response(
+        "pattern_discovery_review",
+        str(review.get("readable_summary") or "").strip(),
+        {"pattern_discovery_review": review},
     )
 
 
