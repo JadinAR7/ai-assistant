@@ -43,10 +43,10 @@ USAGE
 service_label() {
   case "$1" in
     com.helix.*)
-      printf "%s" "$1"
+      printf "%s\n" "$1"
       ;;
     backend|frontend|scheduled-agents|imessage-bridge|scanner|csv-refresh)
-      printf "com.helix.%s" "$1"
+      printf "com.helix.%s\n" "$1"
       ;;
     *)
       echo "Unknown service: $1" >&2
@@ -77,11 +77,6 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
   exit 0
 fi
 
-SERVICES=()
-while IFS= read -r service; do
-  SERVICES+=("${service}")
-done < <(selected_services "$@")
-
 mkdir -p "${LAUNCH_AGENTS_DIR}" "${PROJECT_ROOT}/backend/logs"
 chmod +x \
   "${PROJECT_ROOT}/scripts/start_backend.sh" \
@@ -94,7 +89,9 @@ chmod +x \
   "${PROJECT_ROOT}/scripts/uninstall_mac_services.sh" \
   "${PROJECT_ROOT}/scripts/status_mac_services.sh"
 
-for service in "${SERVICES[@]}"; do
+while IFS= read -r service; do
+  [[ -n "${service}" ]] || continue
+
   source_plist="${TEMPLATE_DIR}/${service}.plist"
   target_plist="${LAUNCH_AGENTS_DIR}/${service}.plist"
 
@@ -113,6 +110,6 @@ for service in "${SERVICES[@]}"; do
   launchctl bootstrap "gui/${USER_ID}" "${target_plist}"
   launchctl enable "gui/${USER_ID}/${service}"
   echo "Loaded ${service}"
-done
+done < <(selected_services "$@")
 
 echo "Helix LaunchAgents installed."
