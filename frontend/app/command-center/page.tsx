@@ -17,7 +17,22 @@ type Message = {
   content: string;
   error?: boolean;
   retryText?: string;
+  createdAt?: string;
+  source?: ResponseSource;
 };
+
+type ResponseSource =
+  | "Intent"
+  | "Scanner"
+  | "CSV"
+  | "Vision"
+  | "Chat"
+  | "Tool"
+  | "System"
+  | "User";
+
+const LONG_RESPONSE_CHAR_LIMIT = 1200;
+const LONG_RESPONSE_LINE_LIMIT = 18;
 
 type ScanRecord = {
   timestamp?: string;
@@ -141,6 +156,31 @@ function formatTimestamp(timestamp?: string) {
   }
 }
 
+function formatMessageTimestamp(timestamp?: string) {
+  if (!timestamp) return "";
+
+  try {
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return "";
+
+    const now = new Date();
+    const sameDay =
+      date.getFullYear() === now.getFullYear() &&
+      date.getMonth() === now.getMonth() &&
+      date.getDate() === now.getDate();
+
+    return new Intl.DateTimeFormat("en-US", {
+      month: sameDay ? undefined : "short",
+      day: sameDay ? undefined : "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }).format(date);
+  } catch {
+    return "";
+  }
+}
+
 function getFileName(path?: string) {
   if (!path) return "None";
   return path.split("/").pop() || path;
@@ -232,12 +272,238 @@ function buildCompactScanSummary(record: ScanRecord | null) {
   return `Signal ${signal}. Phase ${phase}. HTF ${htf}, execution ${execution}. Price relation: ${relation}. Behavior: ${behavior}. Readiness: ${readiness}. Alert eligibility: ${eligibility}; ${presence}.`;
 }
 
+function inferMessageSource(
+  content: string,
+  role: Message["role"],
+  preferred?: ResponseSource
+): ResponseSource {
+  if (preferred) return preferred;
+  if (role === "user") return "User";
+
+  const lower = content.toLowerCase();
+
+  if (lower.startsWith("tool:") || lower.includes("tool output")) return "Tool";
+  if (lower.includes("## latest") && lower.includes("scan")) return "Scanner";
+  if (
+    lower.includes("csv structural read") ||
+    lower.includes("csv reference zones") ||
+    lower.includes("stale csv reference close") ||
+    lower.includes("analyze_market_csv")
+  ) {
+    return "CSV";
+  }
+  if (lower.includes("visual markings check") || lower.includes("image analysis")) {
+    return "Vision";
+  }
+  if (
+    lower.includes("presence mode") ||
+    lower.includes("trading coach") ||
+    lower.includes("pattern discovery") ||
+    lower.includes("scanner correlation")
+  ) {
+    return "Intent";
+  }
+  if (lower.includes("backend connection failed") || lower.includes("chat cleared")) {
+    return "System";
+  }
+
+  return "Chat";
+}
+
+function isLongResponse(content: string) {
+  return (
+    content.length > LONG_RESPONSE_CHAR_LIMIT ||
+    content.split(/\r?\n/).length > LONG_RESPONSE_LINE_LIMIT
+  );
+}
+
+function sourceBadgeClass(source: ResponseSource) {
+  switch (source) {
+    case "Scanner":
+      return "border-cyan-300/20 bg-cyan-300/10 text-cyan-100";
+    case "CSV":
+      return "border-amber-300/20 bg-amber-300/10 text-amber-100";
+    case "Vision":
+      return "border-violet-300/20 bg-violet-300/10 text-violet-100";
+    case "Intent":
+      return "border-emerald-300/20 bg-emerald-300/10 text-emerald-100";
+    case "Tool":
+      return "border-blue-300/20 bg-blue-300/10 text-blue-100";
+    case "User":
+      return "border-blue-200/20 bg-blue-200/15 text-blue-50";
+    case "System":
+      return "border-neutral-300/15 bg-neutral-300/10 text-neutral-200";
+    default:
+      return "border-white/10 bg-white/[0.04] text-neutral-200";
+  }
+}
+
+function ResponseContent({
+  content,
+  collapsed,
+}: Readonly<{
+  content: string;
+  collapsed: boolean;
+}>) {
+  const displayedContent =
+    collapsed && isLongResponse(content)
+      ? content.split(/\r?\n/).slice(0, 18).join("\n").slice(0, LONG_RESPONSE_CHAR_LIMIT)
+      : content;
+
+  if (displayedContent.startsWith("TOOL:")) {
+    return <p className="text-neutral-400">Using tool...</p>;
+  }
+
+  return (
+    <div className="prose prose-invert max-w-full overflow-x-hidden break-words prose-p:my-2 prose-headings:mb-2 prose-headings:mt-4 prose-h2:border-t prose-h2:border-white/10 prose-h2:pt-3 prose-h2:text-sm prose-h2:font-semibold prose-h2:text-cyan-100 prose-pre:max-w-full prose-pre:overflow-x-auto prose-code:break-words prose-ul:my-2 prose-li:my-1 prose-strong:text-neutral-100 [overflow-wrap:anywhere]">
+      <ReactMarkdown>{displayedContent}</ReactMarkdown>
+      {collapsed && isLongResponse(content) ? (
+        <div className="mt-3 border-t border-white/10 pt-3 text-xs text-neutral-500">
+          Response collapsed for readability.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MessageCard({
+  msg,
+  onDelete,
+  onRetry,
+}: Readonly<{
+  msg: Message;
+  onDelete: (id: string) => void;
+  onRetry: (text: string) => void;
+}>) {
+  const longResponse = isLongResponse(msg.content);
+  const [expanded, setExpanded] = useState(!longResponse);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const source = inferMessageSource(msg.content, msg.role, msg.source);
+  const timestamp = formatMessageTimestamp(msg.createdAt);
+
+  async function copyMessage() {
+    try {
+      await navigator.clipboard.writeText(msg.content);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+
+    window.setTimeout(() => setCopyState("idle"), 1800);
+  }
+
+  return (
+    <div
+      className={`group flex min-w-0 max-w-full overflow-x-hidden ${
+        msg.role === "user" ? "justify-end" : "justify-start"
+      }`}
+    >
+      <article
+        className={`min-w-0 max-w-full overflow-x-hidden break-words rounded-2xl px-3 py-3 text-sm leading-relaxed shadow-lg [overflow-wrap:anywhere] sm:max-w-[85%] sm:px-4 ${
+          msg.role === "user"
+            ? "bg-blue-600 text-white"
+            : msg.error
+            ? "border border-red-500/30 bg-red-950/40 text-red-100"
+            : "border border-white/10 bg-neutral-900 text-neutral-100"
+        }`}
+      >
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span
+              className={`rounded-full border px-2 py-1 text-[11px] font-semibold uppercase tracking-wide ${sourceBadgeClass(
+                source
+              )}`}
+            >
+              {source}
+            </span>
+            {msg.error ? (
+              <span className="rounded-full border border-red-300/20 bg-red-300/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-red-100">
+                Error
+              </span>
+            ) : null}
+          </div>
+          {timestamp ? (
+            <time
+              dateTime={msg.createdAt}
+              className={`shrink-0 text-[11px] ${
+                msg.role === "user" ? "text-blue-100/75" : "text-neutral-500"
+              }`}
+            >
+              {timestamp}
+            </time>
+          ) : null}
+        </div>
+
+        <ResponseContent content={msg.content} collapsed={!expanded} />
+
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+          <button
+            type="button"
+            onClick={copyMessage}
+            title="Copy full response text"
+            aria-label="Copy full response text"
+            className={`min-h-9 rounded-lg border px-3 py-2 font-semibold transition ${
+              msg.role === "user"
+                ? "border-blue-100/20 bg-blue-100/10 text-blue-50 hover:bg-blue-100/20"
+                : "border-white/10 bg-white/[0.03] text-neutral-300 hover:bg-white/[0.08] hover:text-white"
+            }`}
+          >
+            {copyState === "copied"
+              ? "Copied"
+              : copyState === "failed"
+              ? "Copy failed"
+              : "Copy"}
+          </button>
+
+          {longResponse ? (
+            <button
+              type="button"
+              onClick={() => setExpanded((value) => !value)}
+              className={`min-h-9 rounded-lg border px-3 py-2 font-semibold transition ${
+                msg.role === "user"
+                  ? "border-blue-100/20 bg-blue-100/10 text-blue-50 hover:bg-blue-100/20"
+                  : "border-white/10 bg-white/[0.03] text-neutral-300 hover:bg-white/[0.08] hover:text-white"
+              }`}
+            >
+              {expanded ? "Show less" : "Show more"}
+            </button>
+          ) : null}
+
+          {msg.error && msg.retryText ? (
+            <button
+              type="button"
+              onClick={() => onRetry(msg.retryText || "")}
+              className="min-h-9 rounded-lg border border-red-300/20 bg-red-300/10 px-3 py-2 font-semibold text-red-100"
+            >
+              Retry
+            </button>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={() => onDelete(msg.id)}
+            className={`min-h-9 rounded-lg border px-3 py-2 font-semibold transition ${
+              msg.role === "user"
+                ? "border-blue-100/20 bg-blue-100/10 text-blue-50 hover:bg-blue-100/20"
+                : "border-white/10 bg-white/[0.03] text-neutral-300 hover:bg-white/[0.08] hover:text-white"
+            }`}
+          >
+            Delete
+          </button>
+        </div>
+      </article>
+    </div>
+  );
+}
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: generateId(),
       role: "assistant",
       content: "What’s good, Jadin? Helix is online.",
+      createdAt: new Date().toISOString(),
+      source: "System",
     },
   ]);
 
@@ -257,7 +523,7 @@ export default function Home() {
   const abortRef = useRef<AbortController | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
 
-  const [toolMode, setToolMode] = useState("auto");
+  const [activeView, setActiveView] = useState<"chat" | "system">("chat");
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
 
   useEffect(() => {
@@ -280,7 +546,11 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, []);
 
-  function addAssistantMessage(content: string, error = false) {
+  function addAssistantMessage(
+    content: string,
+    error = false,
+    source?: ResponseSource
+  ) {
     setMessages((prev) => [
       ...prev,
       {
@@ -288,6 +558,8 @@ export default function Home() {
         role: "assistant",
         content,
         error,
+        createdAt: new Date().toISOString(),
+        source: inferMessageSource(content, "assistant", source),
       },
     ]);
   }
@@ -501,6 +773,8 @@ ${record.message || "No scan message returned."}`;
       id: generateId(),
       role: "user",
       content: `Force scan ${symbol}`,
+      createdAt: new Date().toISOString(),
+      source: "User",
     };
 
     setMessages((prev) => [...prev, userMessage]);
@@ -527,6 +801,8 @@ ${record.message || "No scan message returned."}`;
           id: generateId(),
           role: "assistant",
           content: formatScanSummary(record),
+          createdAt: new Date().toISOString(),
+          source: "Scanner",
         },
       ]);
     } catch {
@@ -549,6 +825,8 @@ ${record.message || "No scan message returned."}`;
       id: generateId(),
       role: "user",
       content: text || `Analyze attached image: ${attachedFile?.name}`,
+      createdAt: new Date().toISOString(),
+      source: "User",
     };
 
     setMessages((prev) => [...prev, userMessage]);
@@ -583,6 +861,8 @@ ${record.message || "No scan message returned."}`;
             id: generateId(),
             role: "assistant",
             content: data.message || "No image analysis returned.",
+            createdAt: new Date().toISOString(),
+            source: "Vision",
           },
         ]);
 
@@ -597,7 +877,7 @@ ${record.message || "No scan message returned."}`;
         },
         body: JSON.stringify({
           message: text,
-          tool_mode: toolMode,
+          tool_mode: "auto",
         }),
         signal: controller.signal,
       });
@@ -607,13 +887,16 @@ ${record.message || "No scan message returned."}`;
       }
 
       const data = await res.json();
+      const responseContent = data.message || "No response.";
 
       setMessages((prev) => [
         ...prev,
         {
           id: generateId(),
           role: "assistant",
-          content: data.message || "No response.",
+          content: responseContent,
+          createdAt: new Date().toISOString(),
+          source: inferMessageSource(responseContent, "assistant"),
         },
       ]);
     } catch {
@@ -627,6 +910,8 @@ ${record.message || "No scan message returned."}`;
             : "Backend connection failed. Check FastAPI.",
           error: true,
           retryText: text,
+          createdAt: new Date().toISOString(),
+          source: "System",
         },
       ]);
     } finally {
@@ -660,6 +945,8 @@ ${record.message || "No scan message returned."}`;
         id: generateId(),
         role: "assistant",
         content: "Chat cleared. Backend memory reset too.",
+        createdAt: new Date().toISOString(),
+        source: "System",
       },
     ]);
 
@@ -677,11 +964,17 @@ ${record.message || "No scan message returned."}`;
       if (!data.history?.length) return;
 
       const loadedMessages: Message[] = data.history.map(
-        (item: { role: string; content: string }) => ({
+        (item: { role: string; content: string; timestamp?: string; created_at?: string }) => {
+          const role = item.role.toLowerCase() === "user" ? "user" : "assistant";
+
+          return {
           id: generateId(),
-          role: item.role.toLowerCase() === "user" ? "user" : "assistant",
+          role,
           content: item.content,
-        })
+          createdAt: item.timestamp || item.created_at || new Date().toISOString(),
+          source: inferMessageSource(item.content, role),
+        };
+        }
       );
 
       setMessages(loadedMessages);
@@ -725,6 +1018,8 @@ ${record.message || "No scan message returned."}`;
         id: generateId(),
         role: "assistant",
         content: `Attachment "${file.name}" is not supported yet.`,
+        createdAt: new Date().toISOString(),
+        source: "System",
       },
     ]);
   }
@@ -797,9 +1092,9 @@ ${record.message || "No scan message returned."}`;
   const presenceModes = ["home", "trading", "away", "focus"];
 
   return (
-    <main className="min-h-screen overflow-x-hidden bg-neutral-950 text-white">
+    <main className="min-h-screen w-full max-w-full overflow-x-hidden bg-neutral-950 text-white">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-neutral-950/80 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl flex-col gap-3 px-3 py-3 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:py-4">
+        <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 px-3 py-3 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:py-4">
           <div>
             <h1 className="text-lg font-semibold">Helix Command Center</h1>
             <p className="text-sm text-neutral-400">
@@ -846,62 +1141,54 @@ ${record.message || "No scan message returned."}`;
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-3 px-3 py-3 pb-40 sm:px-4 lg:grid-cols-[1fr_380px] lg:gap-4 lg:py-4">
-        <section className="min-h-[56vh] overflow-hidden rounded-2xl border border-white/10 bg-neutral-950 lg:min-h-[70vh]">
-          <div
-            ref={messagesContainerRef}
-            className="flex max-h-[calc(100vh-230px)] flex-col gap-3 overflow-y-auto px-3 py-4 sm:px-4 sm:py-6 lg:max-h-[calc(100vh-190px)] lg:gap-4"
-          >
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`group flex ${
-                  msg.role === "user" ? "justify-end" : "justify-start"
+      <div className="mx-auto grid w-full max-w-7xl min-w-0 grid-cols-1 gap-3 overflow-x-hidden px-3 py-3 pb-32 sm:px-4 lg:grid-cols-[minmax(0,1fr)_380px] lg:gap-4 lg:py-4">
+        <div className="min-w-0 max-w-full lg:hidden">
+          <div className="grid w-full min-w-0 grid-cols-2 gap-2 rounded-2xl border border-white/10 bg-neutral-900 p-1">
+            {(["chat", "system"] as const).map((view) => (
+              <button
+                key={view}
+                type="button"
+                onClick={() => setActiveView(view)}
+                className={`min-h-11 rounded-xl px-3 py-2 text-sm font-semibold transition ${
+                  activeView === view
+                    ? "bg-blue-500/20 text-blue-100 ring-1 ring-blue-400/30"
+                    : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-100"
                 }`}
               >
-                <div
-                  className={`max-w-[92%] rounded-2xl px-3 py-3 text-sm leading-relaxed shadow-lg sm:max-w-[85%] sm:px-4 ${
-                    msg.role === "user"
-                      ? "bg-blue-600 text-white"
-                      : msg.error
-                      ? "border border-red-500/30 bg-red-950/40 text-red-100"
-                      : "border border-white/10 bg-neutral-900 text-neutral-100"
-                  }`}
-                >
-                  <div className="prose prose-invert max-w-none prose-p:my-2 prose-headings:my-3 prose-ul:my-2 prose-li:my-1">
-                    {msg.content.startsWith("TOOL:") ? (
-                      "Using tool..."
-                    ) : (
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
-                    )}
-                  </div>
+                {view === "chat" ? "Chat" : "System"}
+              </button>
+            ))}
+          </div>
+        </div>
 
-                  <div className="mt-2 flex gap-3 opacity-70">
-                    <button
-                      onClick={() => navigator.clipboard.writeText(msg.content)}
-                      className="text-xs text-neutral-400 underline underline-offset-4 hover:text-white"
-                    >
-                      Copy
-                    </button>
-
-                    {msg.error && msg.retryText && (
-                      <button
-                        onClick={() => sendMessage(msg.retryText)}
-                        className="text-xs text-red-200 underline underline-offset-4"
-                      >
-                        Retry
-                      </button>
-                    )}
-
-                    <button
-                      onClick={() => deleteMessage(msg.id)}
-                      className="text-xs text-neutral-400 underline underline-offset-4 hover:text-white"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              </div>
+        <section
+          className={`min-w-0 max-w-full overflow-x-hidden rounded-2xl border border-white/10 bg-neutral-950 lg:flex lg:min-h-[70vh] lg:flex-col ${
+            activeView === "system" ? "hidden lg:flex" : ""
+          }`}
+        >
+          <div className="flex min-w-0 items-center justify-between gap-3 border-b border-white/10 px-3 py-2 text-xs text-neutral-400 sm:px-4 lg:hidden">
+            <span className="min-w-0 truncate">
+              {scannerSymbol} scanner · {scannerBadgeText.toLowerCase()}
+            </span>
+            <button
+              type="button"
+              onClick={() => setActiveView("system")}
+              className="rounded-lg border border-white/10 px-2 py-1 font-semibold text-neutral-300"
+            >
+              System
+            </button>
+          </div>
+          <div
+            ref={messagesContainerRef}
+            className="flex min-w-0 max-w-full flex-col gap-3 overflow-x-hidden px-3 py-4 pb-36 sm:px-4 sm:py-6 sm:pb-40 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pb-6 lg:max-h-[calc(100vh-190px)] lg:gap-4"
+          >
+            {messages.map((msg) => (
+              <MessageCard
+                key={msg.id}
+                msg={msg}
+                onDelete={deleteMessage}
+                onRetry={sendMessage}
+              />
             ))}
 
             {loading && (
@@ -924,7 +1211,11 @@ ${record.message || "No scan message returned."}`;
           </div>
         </section>
 
-        <aside className="flex flex-col gap-3 lg:gap-4">
+        <aside
+          className={`min-w-0 max-w-full flex-col gap-3 lg:gap-4 ${
+            activeView === "chat" ? "hidden lg:flex" : ""
+          }`}
+        >
           <section className="rounded-2xl border border-white/10 bg-neutral-900 p-3 sm:p-4">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
@@ -1328,11 +1619,15 @@ ${record.message || "No scan message returned."}`;
         </aside>
       </div>
 
-      <footer className="fixed bottom-0 left-0 right-0 border-t border-white/10 bg-neutral-950/90 backdrop-blur">
-        <div className="mx-auto max-w-7xl px-3 py-3 sm:px-4 sm:py-4">
+      <footer
+        className={`fixed bottom-0 left-0 right-0 max-w-full overflow-x-hidden border-t border-white/10 bg-neutral-950/90 backdrop-blur ${
+          activeView === "system" ? "hidden lg:block" : ""
+        }`}
+      >
+        <div className="mx-auto w-full max-w-7xl min-w-0 px-3 py-3 sm:px-4 sm:py-4">
           {attachedFile && (
-            <div className="mb-2 flex items-center justify-between rounded-xl border border-white/10 bg-neutral-900 px-3 py-2 text-xs text-neutral-300">
-              <span className="truncate">Attached: {attachedFile.name}</span>
+            <div className="mb-2 flex min-w-0 max-w-full items-center justify-between rounded-xl border border-white/10 bg-neutral-900 px-3 py-2 text-xs text-neutral-300">
+              <span className="min-w-0 truncate">Attached: {attachedFile.name}</span>
 
               <button
                 type="button"
@@ -1344,12 +1639,13 @@ ${record.message || "No scan message returned."}`;
             </div>
           )}
 
-          <div className="grid gap-2 rounded-2xl border border-white/10 bg-neutral-900 p-2 shadow-2xl sm:flex">
+          <div className="flex w-full min-w-0 max-w-full items-end gap-2 overflow-x-hidden rounded-2xl border border-white/10 bg-neutral-900 p-2 shadow-2xl">
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="min-h-11 rounded-xl border border-white/10 px-3 text-lg text-neutral-400 hover:bg-white/10"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-neutral-950 text-xl leading-none text-neutral-300 hover:bg-white/10"
               title="Attach file"
+              aria-label="Attach file"
             >
               +
             </button>
@@ -1369,16 +1665,6 @@ ${record.message || "No scan message returned."}`;
               }}
             />
 
-            <select
-              value={toolMode}
-              onChange={(e) => setToolMode(e.target.value)}
-              className="min-h-11 rounded-xl border border-white/10 bg-neutral-950 px-2 text-xs text-neutral-300 outline-none"
-            >
-              <option value="auto">Auto</option>
-              <option value="market_csv">Market CSV</option>
-              <option value="analyze_tradingview">TradingView</option>
-            </select>
-
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -1390,12 +1676,12 @@ ${record.message || "No scan message returned."}`;
               }}
               placeholder="Ask Helix..."
               rows={1}
-              className="min-h-11 flex-1 resize-none bg-transparent px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-500"
+              className="max-h-32 min-h-11 min-w-0 flex-1 resize-none rounded-xl bg-neutral-950/70 px-3 py-3 text-sm text-white outline-none placeholder:text-neutral-500"
             />
 
             <button
               onClick={loading ? stopResponse : () => sendMessage()}
-              className={`min-h-11 rounded-xl px-4 py-2 text-sm font-semibold ${
+              className={`min-h-11 shrink-0 rounded-xl px-3 py-2 text-sm font-semibold sm:px-4 ${
                 loading ? "bg-red-500 text-white" : "bg-white text-black"
               }`}
             >

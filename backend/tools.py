@@ -3315,6 +3315,51 @@ def format_zone_line(label: str, zone: dict, role: str):
     )
 
 
+def _csv_has_stale_execution_context(csv_freshness: dict) -> bool:
+    freshness = csv_freshness or {}
+    return any(
+        bool((freshness.get(timeframe) or {}).get("is_stale"))
+        for timeframe in ["1M", "15M", "1H"]
+    )
+
+
+def _csv_age_text(csv_freshness: dict, timeframe: str = "1M") -> str:
+    item = (csv_freshness or {}).get(timeframe) or {}
+    age = item.get("age_minutes")
+    if age is None:
+        return "age unknown"
+    return f"{age} minutes old"
+
+
+def _format_stale_zone_line(label: str, zone: dict, role: str):
+    if not zone:
+        return f"- **{label}:** No clean FVG found."
+
+    timeframe = zone.get("timeframe", label)
+    zone_type = str(zone.get("type", "unknown")).lower()
+    zone_type_label = zone_type.capitalize()
+    relation = zone.get("relation_to_price")
+
+    if zone_type == "bullish" and relation == "overhead":
+        stale_role = "overhead reclaim zone by stale CSV reference; not active support unless live vision confirms reclaim"
+    elif zone_type == "bullish" and relation == "below_market":
+        stale_role = "structural bullish FVG; possible support only if live vision has not clearly failed it"
+    elif zone_type == "bullish" and relation == "inside":
+        stale_role = "stale CSV reference says inside zone; live vision must confirm actual interaction"
+    elif zone_type == "bearish" and relation == "below_market":
+        stale_role = "bearish zone below stale CSV reference; rejection must be confirmed live"
+    elif zone_type == "bearish" and relation == "overhead":
+        stale_role = "overhead bearish/rejection zone by stale CSV reference"
+    else:
+        stale_role = f"{role}; stale CSV relation only"
+
+    return (
+        f"- **{timeframe} {zone_type_label} FVG:** "
+        f"{zone['low']} - {zone['high']} "
+        f"(midpoint {zone['midpoint']}) — {stale_role}"
+    )
+
+
 def format_market_response(analysis: dict) -> str:
     if not analysis.get("success"):
         return f"I couldn't analyze the market data: {analysis.get('error', 'Unknown error')}"
@@ -3327,6 +3372,7 @@ def format_market_response(analysis: dict) -> str:
     context_tf = context.get("bias_timeframe", "1D")
     current_price = context.get("current_price")
     csv_freshness = analysis.get("csv_freshness", {})
+    csv_execution_stale = _csv_has_stale_execution_context(csv_freshness)
     stale_warning = _csv_stale_warning(csv_freshness)
     freshness_note = _csv_recent_context_note(csv_freshness)
 
@@ -3350,27 +3396,67 @@ def format_market_response(analysis: dict) -> str:
 
     response = []
 
-    response.append(
-        f"**{symbol} Data Read:** Main context is **{context_bias}** from the "
-        f"**{context_tf}**. CSV 1M close is around **{current_price}**."
-    )
+    if csv_execution_stale:
+        response.append(
+            f"**{symbol} CSV Structural Read:** {context_tf} structure is **{context_bias}**, "
+            f"but stale CSV cannot confirm live execution state. "
+            f"Stale CSV reference close is **{current_price}** ({_csv_age_text(csv_freshness, '1M')}). "
+            "Live chart/vision is primary for current price."
+        )
+        if context_bias == "bullish" and context.get("execution_bias") == "bearish":
+            response.append(
+                "**Bias Separation:** 1D structure remains bullish, but 4H/1H/15M/1M execution context is bearish or reclaim-needed."
+            )
+        else:
+            response.append(
+                f"**Bias Separation:** HTF structural map is {context_bias}; live execution state must be confirmed from the chart before using CSV zones as active support/resistance."
+            )
+    else:
+        response.append(
+            f"**{symbol} Data Read:** Main context is **{context_bias}** from the "
+            f"**{context_tf}**. CSV 1M close is around **{current_price}**."
+        )
 
     if stale_warning:
-        response.append(f"**Data Freshness:** {stale_warning}")
+        response.append(
+            f"**Data Freshness:** {stale_warning} CSV is stale; using CSV only for structural context. Live chart/vision is primary for current price and zone interaction."
+        )
     elif freshness_note:
         response.append(f"**Data Freshness:** {freshness_note}")
 
-    response.append("## Computed Zones")
+    response.append("## HTF Structural Map")
+    response.append(
+        f"- **HTF structural bias:** {context_bias} from {context_tf}."
+    )
+    response.append(
+        f"- **CSV execution reference:** {context.get('execution_bias', 'unknown')} from 1M CSV."
+    )
+
+    response.append("## CSV Reference Zones")
+    zone_formatter = _format_stale_zone_line if csv_execution_stale else format_zone_line
 
     if daily:
-        response.append(format_zone_line("1D", daily_zone, "strategic HTF context"))
+        response.append(zone_formatter("1D", daily_zone, "strategic HTF context"))
 
     if h4:
-        response.append(format_zone_line("4H", h4_zone, "primary HTF battlefield"))
+        response.append(zone_formatter("4H", h4_zone, "primary HTF battlefield"))
 
-    response.append(format_zone_line("1H", h1_zone, "HTF confirmation / draw"))
-    response.append(format_zone_line("15M", m15_zone, "setup/refinement"))
-    response.append(format_zone_line("1M", m1_zone, "execution trigger only"))
+    response.append(zone_formatter("1H", h1_zone, "HTF confirmation / draw"))
+    response.append(zone_formatter("15M", m15_zone, "setup/refinement"))
+    response.append(zone_formatter("1M", m1_zone, "execution trigger only"))
+
+    response.append("## Live Execution State")
+    if csv_execution_stale:
+        response.append(
+            "- Live execution state cannot be confirmed from stale CSV alone. Use the live chart/screenshot or latest scanner state for current price and zone relationship."
+        )
+        response.append(
+            "- Bullish continuation requires live reclaim/acceptance of any overhead bullish FVG; bearish continuation requires live rejection/failure evidence."
+        )
+    else:
+        response.append(
+            f"- Fresh/recent CSV execution bias is {context.get('execution_bias', 'unknown')}; still confirm with chart context before acting."
+        )
 
     targets = trade_plan.get("targets", {})
     above = targets.get("above", [])
@@ -3453,6 +3539,7 @@ def analyze_market_csv(
         context_bias = daily_analysis["bias"]
         context_timeframe = "1D"
         execution_bias = ltf_analysis["bias"]
+        csv_execution_stale = _csv_has_stale_execution_context(csv_freshness)
 
         targets = get_directional_targets(
             current_price=current_price,
@@ -3507,6 +3594,16 @@ def analyze_market_csv(
                 "bias": context_bias,
                 "execution_bias": execution_bias,
                 "current_price": current_price,
+                "current_price_source": (
+                    "stale_csv_reference_close"
+                    if csv_execution_stale
+                    else "csv_1m_close"
+                ),
+                "live_price_source": (
+                    "vision_or_latest_scanner_required"
+                    if csv_execution_stale
+                    else "csv_recent"
+                ),
             },
 
             "daily": {"timeframe": "1D", **daily_analysis},
@@ -3517,6 +3614,25 @@ def analyze_market_csv(
 
             "zone_ranking": zone_ranking,
             "csv_freshness": csv_freshness,
+            "stale_csv_guardrail": {
+                "applies": csv_execution_stale,
+                "csv_reference_close": current_price,
+                "csv_reference_close_label": (
+                    "stale CSV reference close"
+                    if csv_execution_stale
+                    else "CSV 1M close"
+                ),
+                "live_price_primary": bool(csv_execution_stale),
+                "warnings": (
+                    [
+                        "CSV is stale; using CSV only for structural context.",
+                        "Live chart/vision is primary for current price and zone interaction.",
+                        "Do not treat CSV close as live/current price.",
+                    ]
+                    if csv_execution_stale
+                    else []
+                ),
+            },
 
             "trade_plan": {
                 "direction": trade_direction,
@@ -4785,6 +4901,7 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
     active_zone = zones.get("active_zone")
     overhead_zones = zones.get("overhead_zones", [])
     below_zones = zones.get("below_market_zones", [])
+    vision_price = visual.get("current_price_marker")
 
     m15 = structure.get("m15", {})
     m1 = structure.get("m1", {})
@@ -4818,9 +4935,26 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
         else "Downside continuation requires rejection from the current range and fresh bearish structure."
     )
 
+    if ltf_csv_stale:
+        price_line = (
+            f"{symbol} stale CSV reference close is {_fmt_price(current_price)} "
+            f"({_csv_age_text(csv_freshness, '1M')})."
+        )
+        if vision_price is not None:
+            price_line += f" Vision price estimate is {_fmt_price(vision_price)}."
+        price_line += (
+            f" Live vision is primary for current price. {htf_tf} structural bias is {htf_bias}; "
+            f"H4 is {h4.get('bias', 'unknown')} and H1 is {h1.get('bias', 'unknown')}."
+        )
+    else:
+        price_line = (
+            f"{symbol} CSV 1M close is around {_fmt_price(current_price)}. "
+            f"{htf_tf} bias is {htf_bias}. H4 is {h4.get('bias', 'unknown')} and H1 is {h1.get('bias', 'unknown')}."
+        )
+
     lines = [
         "## HTF Context",
-        f"{symbol} CSV 1M close is around {_fmt_price(current_price)}. {htf_tf} bias is {htf_bias}. H4 is {h4.get('bias', 'unknown')} and H1 is {h1.get('bias', 'unknown')}.",
+        price_line,
     ]
 
     if stale_warning:
@@ -4839,8 +4973,17 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
     lines.extend([
         "",
         "## Current Structure",
-        f"Execution bias is {execution_bias}. M15 structure is {m15.get('structure', 'unknown')}; M1 structure is {m1.get('structure', 'unknown')}.",
-        f"Active computed zone: {_fmt_zone(active_zone)}.",
+        (
+            f"Execution bias from stale CSV is {execution_bias}; live execution state needs chart confirmation. "
+            f"M15 CSV structure is {m15.get('structure', 'unknown')}; M1 CSV structure is {m1.get('structure', 'unknown')}."
+            if ltf_csv_stale
+            else f"Execution bias is {execution_bias}. M15 structure is {m15.get('structure', 'unknown')}; M1 structure is {m1.get('structure', 'unknown')}."
+        ),
+        (
+            f"Active computed CSV zone: {_fmt_zone(active_zone)}. Treat as a reference zone until live vision confirms interaction."
+            if ltf_csv_stale
+            else f"Active computed zone: {_fmt_zone(active_zone)}."
+        ),
         "",
         "## Liquidity / Levels",
         f"Overhead: {_fmt_zone_list(overhead_zones, 2)}.",

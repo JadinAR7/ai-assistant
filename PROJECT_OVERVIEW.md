@@ -63,6 +63,9 @@ Freshness rules:
 * Stale CSVs may only be used for structure and FVG reaction-zone mapping.
 * When CSV is stale, vision becomes the primary live-context source.
 * Helix must never present stale CSV prices as confirmed live market prices.
+* Stale CSV Guardrail v1 separates HTF structural context from live execution state: CSV can keep old FVGs on the map, but live vision decides whether price is inside, above, below, reclaiming, or invalidating those zones.
+* If live vision shows price below a stale CSV bullish FVG/support zone, the scanner treats that zone as below/failed support and requires reclaim before any bullish execution review.
+* Command Center CSV analysis follows the same rule: stale CSV closes are labeled as stale CSV reference closes, not live/current price, and live vision/latest scanner context is preferred for current price.
 
 ### Orbit
 
@@ -226,6 +229,7 @@ The following major feature milestones are complete as of this overview:
 * Pattern Discovery v1
 * Trading Model Refinement v1
 * Scanner Refinement v1
+* Stale CSV Guardrail v1
 * Presence Modes v1
 * Narrative-Based Scanner v1
 * Default Scanner Symbol v1
@@ -955,6 +959,24 @@ Scanner rules:
 
 Scanner records now include `signal_level`, `signal_reason`, `narrative_state`, `reaction_zone_status`, `behavior_confirmation`, `liquidity_draw_alignment`, `repeat_suppressed`, `presence_mode`, `notification_allowed_by_presence`, and `presence_reason`.
 
+## Stale CSV Guardrail v1
+
+Stale CSV Guardrail v1 prevents scanner/chart analysis and Command Center CSV analysis from over-weighting old CSV-derived FVG zones when the live TradingView screenshot shows price has moved away from them.
+
+Guardrail rules:
+
+* When CSV is stale, CSV-derived zones are structural references only.
+* Live vision is primary for current price and zone interaction.
+* The scanner must not describe stale CSV close values as current price.
+* Command Center `analyze_market_csv` must label stale CSV close values as stale CSV reference closes, not live/current price.
+* If a live screenshot or latest scanner context has current-price information, that live/vision source is preferred over stale CSV close.
+* The scanner must not call a stale bullish FVG active support if live vision places price below it.
+* If live price is below a stale bullish FVG/support zone, zone status becomes `below_zone` or `failed_support`, and execution readiness becomes reclaim-needed/no-long-until-reclaim.
+* If live price is above a stale bearish FVG/resistance zone, zone status becomes `above_zone` or `failed_resistance`, and rejection is needed before bearish execution review.
+* HTF structural bias, intraday behavior, and execution readiness are separated in scanner output.
+
+This guardrail does not change scanner interval, notifications, CSV refresh cadence, Presence Modes, or scanner service behavior.
+
 ## Narrative-Based Scanner v1
 
 Narrative-Based Scanner v1 makes scanner output track the Liquidity Narrative Continuation trade story instead of presenting isolated chart facts. It is scanner state and display enrichment only.
@@ -1151,6 +1173,7 @@ Current boundaries:
 * Watchlist rotation is not implemented.
 * Trading Model Refinement v1 is implemented as a framework/profile refinement.
 * Scanner Refinement v1 is implemented for signal tiers, FVG reaction-zone alert quality, and repeat suppression.
+* Stale CSV Guardrail v1 is implemented so stale CSV zones remain structural context while live vision controls current price/zone validity and execution readiness. Command Center CSV analysis shares this guardrail and labels stale CSV close values as reference closes.
 * Narrative-Based Scanner v1 is implemented for narrative phase/state enrichment and latest-scan display.
 * Default Scanner Symbol v1 is implemented for MES, MNQ, ES, and NQ as selectable scanner defaults.
 * Trading Coach v2 / Journal Review Intelligence v1 is implemented as read-only Trade Journal review.

@@ -1798,6 +1798,7 @@ def classify_behavior(record: dict) -> dict:
     missing_confirmation = []
     data_limitations = []
     reaction_zone, active_zone, reaction_zone_source = _active_reaction_zone(record, visual_text_all)
+    stale_zone_guardrail = _stale_csv_zone_guardrail(record, active_zone, visual_text_all)
     behavior_location = _behavior_location(record, active_zone, visual_text_all)
     liquidity_draw_status, draw_status_evidence = _liquidity_draw_status(record, visual_text_all)
     structure_confirmation, has_5m_confirmation, structure_missing = _structure_confirmation(visual_text_5m)
@@ -1927,6 +1928,7 @@ def classify_behavior(record: dict) -> dict:
 
     evidence.append(f"Framework hierarchy: liquidity draw -> HTF reaction zone -> behavior -> 15M context -> 5M structure.")
     evidence.append(f"Reaction zone is treated as decision context, not an entry signal: {reaction_zone}.")
+    evidence.extend(stale_zone_guardrail.get("evidence") or [])
     if state.get("price_relation") == "inside_active_zone" and not has_directional_behavior:
         evidence.append(
             "Price is interacting with a reaction zone; behavior must confirm acceptance/rejection before this becomes alert-worthy."
@@ -2007,7 +2009,34 @@ def classify_behavior(record: dict) -> dict:
     if expansion_pattern_match.get("matched"):
         evidence.append("Expansion pattern logic: bullish compression context has 5M breakout/displacement evidence without a clear breakdown.")
 
-    if expansion_pattern_match.get("matched"):
+    if stale_zone_guardrail.get("block_bullish_execution_watch") and expansion_pattern_match.get("matched"):
+        expansion_pattern_match = {
+            **expansion_pattern_match,
+            "matched": False,
+            "confidence": "low",
+            "missing_steps": _dedupe_text(
+                list(expansion_pattern_match.get("missing_steps") or [])
+                + ["stale_csv_bullish_zone_reclaim"]
+            ),
+        }
+        evidence.append("Stale CSV guardrail blocked bullish expansion: live price is below the referenced bullish zone and reclaim is needed first.")
+
+    if stale_zone_guardrail.get("block_bullish_execution_watch") and continuation_pattern_match.get("matched"):
+        continuation_pattern_match = {
+            **continuation_pattern_match,
+            "matched": False,
+            "confidence": "low",
+            "missing_steps": _dedupe_text(
+                list(continuation_pattern_match.get("missing_steps") or [])
+                + ["stale_csv_bullish_zone_reclaim"]
+            ),
+        }
+        evidence.append("Stale CSV guardrail blocked bullish continuation: live price is below the referenced bullish zone and reclaim is needed first.")
+
+    if stale_zone_guardrail.get("block_bullish_execution_watch"):
+        classification = "displacement" if explicit_displacement else "rejection"
+        evidence.append("Behavior logic: stale CSV bullish support is not active while live price is below it; classify as bearish intraday displacement/rejection until reclaim.")
+    elif expansion_pattern_match.get("matched"):
         classification = "bullish_continuation_expansion"
         evidence.append("Behavior logic: bullish continuation compression is expanding away from the 5M structure.")
     elif explicit_displacement and golden_continuation_breakout:
@@ -2095,7 +2124,12 @@ def classify_behavior(record: dict) -> dict:
         data_limitations.append(f"Missing readable visual context for: {', '.join(missing_visual_tfs)}.")
 
     if csv_stale:
-        data_limitations.append("CSV is stale; live acceptance/rejection is not classified from CSV close.")
+        data_limitations.extend([
+            "CSV is stale; using CSV only for structural context.",
+            "Live vision is primary for current price and zone interaction.",
+            "CSV is stale; live acceptance/rejection is not classified from CSV close.",
+        ])
+        data_limitations.extend(stale_zone_guardrail.get("warnings") or [])
 
         if reaction_zone_source == "visual":
             data_limitations.append("Reaction zone is visual/manual and approximate; exact bounds should be confirmed on chart.")
@@ -2145,6 +2179,7 @@ def classify_behavior(record: dict) -> dict:
         "classification": classification,
         "liquidity_draw_status": liquidity_draw_status,
         "reaction_zone": reaction_zone,
+        "stale_csv_guardrail": stale_zone_guardrail,
         "behavior_location": behavior_location,
         "structure_confirmation": structure_confirmation,
         "confidence": confidence,
@@ -2290,6 +2325,7 @@ def format_behavior_classification_section(behavior: dict) -> str:
         "missing_steps": list(EXPANSION_PATTERN_STEPS.keys()),
         "confidence": "low",
     }
+    stale_guardrail = behavior.get("stale_csv_guardrail") or {}
 
     lines = [
         "## Behavior Classification",
@@ -2308,6 +2344,14 @@ def format_behavior_classification_section(behavior: dict) -> str:
     lines.extend(f"- {item}" for item in missing)
     lines.extend(["", "Data limitations:"])
     lines.extend(f"- {item}" for item in limitations)
+    if stale_guardrail.get("warnings"):
+        lines.extend([
+            "",
+            "Stale CSV Guardrail:",
+            f"- Zone status: {str(stale_guardrail.get('zone_status') or 'unclear').replace('_', ' ')}",
+            f"- Intraday behavior: {str(stale_guardrail.get('intraday_behavior') or 'unclear').replace('_', ' ')}",
+        ])
+        lines.extend(f"- {item}" for item in stale_guardrail.get("warnings") or [])
     lines.extend(["", format_golden_pattern_check_section(golden_pattern_match)])
     lines.extend(["", format_continuation_pattern_check_section(continuation_pattern_match)])
     lines.extend(["", format_expansion_pattern_check_section(expansion_pattern_match)])
@@ -2315,11 +2359,50 @@ def format_behavior_classification_section(behavior: dict) -> str:
     return "\n".join(lines)
 
 
+def _sanitize_message_for_stale_csv_guardrail(message: str, behavior: dict) -> str:
+    guardrail = behavior.get("stale_csv_guardrail") or {}
+    if not guardrail.get("block_bullish_execution_watch"):
+        return message
+
+    blocked_terms = [
+        "bullish setup",
+        "price reacting near",
+        "to buy reclaim",
+        "buy reclaim",
+        "execution_watch_long",
+        "execution watch long",
+        "bullish continuation watch",
+    ]
+    kept_lines = []
+    removed = False
+
+    for line in (message or "").splitlines():
+        line_lower = line.lower()
+        if any(term in line_lower for term in blocked_terms):
+            removed = True
+            continue
+        kept_lines.append(line)
+
+    sanitized = "\n".join(kept_lines).strip()
+    if removed:
+        correction = (
+            "Stale CSV Guardrail: CSV zones are structural only here; live vision "
+            "shows reclaim is needed before bullish review."
+        )
+        sanitized = f"{sanitized}\n\n{correction}".strip()
+
+    return sanitized
+
+
 def attach_behavior_classification(record: dict) -> None:
     behavior = classify_behavior(record)
     record["behavior_classification"] = behavior
+    base_message = _sanitize_message_for_stale_csv_guardrail(
+        record.get("message") or "",
+        behavior,
+    )
     record["message"] = (
-        (record.get("message") or "")
+        base_message
         + "\n\n"
         + format_behavior_classification_section(behavior)
     ).strip()
@@ -2425,6 +2508,133 @@ def _csv_is_stale(record: dict) -> bool:
     return False
 
 
+def _zone_direction(zone: dict | None, htf_bias: str = "unknown") -> str:
+    if not zone:
+        return "unknown"
+
+    text = " ".join(
+        str(zone.get(key) or "")
+        for key in ["type", "label", "direction", "bias"]
+    ).lower()
+
+    if any(term in text for term in ["bullish", "demand", "support"]):
+        return "bullish"
+    if any(term in text for term in ["bearish", "supply", "resistance"]):
+        return "bearish"
+    if htf_bias in {"bullish", "bearish"}:
+        return htf_bias
+    return "unknown"
+
+
+def _stale_csv_zone_guardrail(
+    record: dict,
+    active_zone: dict | None = None,
+    visual_text_all: str = "",
+) -> dict:
+    state = record.get("state") or extract_structured_state(record)
+    htf_bias = str(state.get("htf_bias") or "unknown").lower()
+    price_relation = str(state.get("price_relation") or "unknown").lower()
+    zone = active_zone
+
+    if zone is None:
+        zone = (
+            ((record.get("csv_analysis") or {}).get("analysis") or {})
+            .get("zone_ranking", {})
+            .get("active_zone")
+            or {}
+        )
+
+    zone_direction = _zone_direction(zone, htf_bias)
+    guardrail = {
+        "applies": False,
+        "zone_status": "unclear",
+        "block_bullish_execution_watch": False,
+        "block_bearish_execution_watch": False,
+        "execution_readiness": None,
+        "intraday_behavior": "unclear",
+        "warnings": [],
+        "evidence": [],
+    }
+
+    if not _csv_is_stale(record):
+        return guardrail
+
+    guardrail["warnings"].extend([
+        "CSV is stale; using CSV only for structural context.",
+        "Live vision is primary for current price and zone interaction.",
+    ])
+
+    bearish_visual_terms = [
+        "bearish",
+        "displacement lower",
+        "move lower",
+        "strong move down",
+        "breakdown",
+        "broke down",
+        "lost support",
+        "lost level",
+        "failed support",
+        "below level",
+        "below fvg",
+        "rejection",
+        "reject",
+        "rejected",
+        "selloff",
+    ]
+    bullish_visual_terms = [
+        "bullish",
+        "displacement higher",
+        "move higher",
+        "strong move up",
+        "breakout",
+        "broke out",
+        "lost resistance",
+        "failed resistance",
+        "above level",
+        "above fvg",
+        "reclaim",
+        "reclaimed",
+        "acceptance",
+    ]
+    bearish_visual = _contains_any(visual_text_all, bearish_visual_terms)
+    bullish_visual = _contains_any(visual_text_all, bullish_visual_terms)
+
+    if zone_direction == "bullish" and price_relation == "below_active_zone":
+        guardrail.update({
+            "applies": True,
+            "zone_status": "failed_support" if bearish_visual else "below_zone",
+            "block_bullish_execution_watch": True,
+            "execution_readiness": "no_long_until_reclaim",
+            "intraday_behavior": "bearish_intraday_displacement" if bearish_visual else "reclaim_needed",
+        })
+        guardrail["evidence"].append(
+            "Live/visual state places price below the stale CSV bullish FVG/support reference; treat the zone as failed or needing reclaim, not active support."
+        )
+    elif zone_direction == "bearish" and price_relation == "above_active_zone":
+        guardrail.update({
+            "applies": True,
+            "zone_status": "failed_resistance" if bullish_visual else "above_zone",
+            "block_bearish_execution_watch": True,
+            "execution_readiness": "no_short_until_reject",
+            "intraday_behavior": "bullish_intraday_displacement" if bullish_visual else "reject_needed",
+        })
+        guardrail["evidence"].append(
+            "Live/visual state places price above the stale CSV bearish FVG/resistance reference; treat the zone as failed or needing rejection, not active resistance."
+        )
+
+    if guardrail["applies"]:
+        if zone_direction == "bullish":
+            guardrail["warnings"].append(
+                "HTF map may still contain bullish FVGs, but live intraday behavior is not bullish until price reclaims the referenced zone."
+            )
+        elif zone_direction == "bearish":
+            guardrail["warnings"].append(
+                "HTF map may still contain bearish FVGs, but live intraday behavior is not bearish until price rejects back below the referenced zone."
+            )
+
+    return guardrail
+
+
 def _news_risk_level(record: dict) -> str:
     news_risk = record.get("news_risk") or {}
     return str(news_risk.get("risk") or "Low").strip().lower()
@@ -2447,6 +2657,7 @@ def recognize_opportunity(record: dict) -> dict:
     visual_context = _record_visual_context(record)
     visual_text_15m = visual_context.get("text_15m", "")
     visual_text_all = visual_context.get("text_all", "")
+    stale_zone_guardrail = _stale_csv_zone_guardrail(record, visual_text_all=visual_text_all)
 
     bullish_terms = [
         "pdh",
@@ -2552,7 +2763,22 @@ def recognize_opportunity(record: dict) -> dict:
 
     if csv_stale:
         confidence = _downgrade_confidence(confidence)
-        risks.append("CSV freshness is stale, so computed current price should be treated as historical context.")
+        risks.extend([
+            "CSV is stale; using CSV only for structural context.",
+            "Live vision is primary for current price and zone interaction.",
+            "CSV freshness is stale, so computed current price should be treated as historical context.",
+        ])
+
+    if stale_zone_guardrail.get("block_bullish_execution_watch") and opportunity_type == "bullish_continuation_watch":
+        opportunity_type = "no_opportunity"
+        confidence = "low"
+        reasons.append("Stale CSV guardrail blocks bullish continuation watch because live price is below the referenced bullish zone.")
+        next_confirmation_needed.append("No long execution review until live price reclaims and holds the referenced reaction zone.")
+    elif stale_zone_guardrail.get("block_bearish_execution_watch") and opportunity_type == "bearish_continuation_watch":
+        opportunity_type = "no_opportunity"
+        confidence = "low"
+        reasons.append("Stale CSV guardrail blocks bearish continuation watch because live price is above the referenced bearish zone.")
+        next_confirmation_needed.append("No short execution review until live price rejects back below the referenced reaction zone.")
 
     if news_risk_level == "high":
         confidence = _downgrade_confidence(confidence)
@@ -2712,6 +2938,10 @@ def _has_continuation_confirmation(record: dict) -> bool:
 
 def _has_invalidation_evidence(record: dict) -> bool:
     behavior = record.get("behavior_classification") or {}
+    guardrail = behavior.get("stale_csv_guardrail") or _stale_csv_zone_guardrail(record)
+    if guardrail.get("applies"):
+        return True
+
     if record.get("invalidation_evidence") or behavior.get("invalidation_evidence"):
         return True
 
@@ -2771,9 +3001,11 @@ def derive_narrative_scanner_state(record: dict) -> dict:
     liquidity_draw_alignment = _liquidity_draw_alignment_state(record)
     behavior_classification = str(behavior.get("classification") or "unknown").lower()
     behavior_confidence = str(behavior.get("confidence") or "low").lower()
+    stale_zone_guardrail = behavior.get("stale_csv_guardrail") or _stale_csv_zone_guardrail(record)
     structure_confirmation = _structure_confirmation_state(record)
     has_draw = bool(primary_draw.get("label") or primary_draw.get("key"))
-    has_reaction_zone = reaction_zone_status in {"mapped", "nearby", "interacting"}
+    invalidated_zone_statuses = {"below_zone", "above_zone", "failed_support", "failed_resistance"}
+    has_reaction_zone = reaction_zone_status in {"mapped", "nearby", "interacting", "reclaim_needed", "reject_needed"}
     has_behavior = behavior_confirmation != "none" or behavior_classification in {
         "acceptance",
         "rejection",
@@ -2788,7 +3020,9 @@ def derive_narrative_scanner_state(record: dict) -> dict:
     has_alignment = liquidity_draw_alignment == "aligned"
 
     phase = "no_clear_narrative"
-    if _has_invalidation_evidence(record):
+    if stale_zone_guardrail.get("applies") and reaction_zone_status in invalidated_zone_statuses:
+        phase = "narrative_invalidated"
+    elif _has_invalidation_evidence(record):
         phase = "narrative_invalidated"
     elif _has_continuation_confirmation(record):
         phase = "continuation_confirmed"
@@ -2839,10 +3073,15 @@ def derive_narrative_scanner_state(record: dict) -> dict:
         **zone_details,
         "behavior_inside_zone": behavior_inside_zone,
         "structure_confirmation": structure_confirmation,
-        "execution_readiness": execution_readiness_by_phase.get(phase, "not_ready"),
+        "execution_readiness": (
+            stale_zone_guardrail.get("execution_readiness")
+            or execution_readiness_by_phase.get(phase, "not_ready")
+        ),
         "target_liquidity": _format_narrative_draw(primary_draw),
         "invalidation_context": (
-            "Invalidation evidence detected in behavior context."
+            "Stale CSV guardrail: live price invalidated the referenced CSV reaction zone; reclaim/reject is needed before execution review."
+            if stale_zone_guardrail.get("applies")
+            else "Invalidation evidence detected in behavior context."
             if phase == "narrative_invalidated"
             else "No invalidation evidence detected."
         ),
@@ -3041,6 +3280,10 @@ def _reaction_zone_status(record: dict) -> str:
     reaction_zone = str(behavior.get("reaction_zone") or "").strip()
     behavior_location = str(behavior.get("behavior_location") or "").lower()
     price_relation = str(state.get("price_relation") or "unknown")
+    guardrail = behavior.get("stale_csv_guardrail") or _stale_csv_zone_guardrail(record)
+
+    if guardrail.get("applies"):
+        return str(guardrail.get("zone_status") or "reclaim_needed")
 
     if price_relation == "inside_active_zone":
         return "interacting"
