@@ -622,7 +622,8 @@ class PresenceRequest(BaseModel):
 
 
 class ScannerSettingsRequest(BaseModel):
-    default_symbol: str
+    default_symbol: str | None = None
+    scanner_enabled: bool | None = None
 
 
 # -------------------------
@@ -1014,6 +1015,7 @@ def scanner_settings():
     return {
         "success": True,
         "default_symbol": current.get("default_symbol"),
+        "scanner_enabled": current.get("scanner_enabled", True),
         "supported_symbols": current.get("supported_symbols"),
         "updated_at": current.get("updated_at"),
         "settings": current,
@@ -1023,10 +1025,14 @@ def scanner_settings():
 @app.post("/scanner/settings")
 def update_scanner_settings(request: ScannerSettingsRequest):
     try:
-        current = set_scanner_settings(request.default_symbol)
+        current = set_scanner_settings(
+            default_symbol=request.default_symbol,
+            scanner_enabled=request.scanner_enabled,
+        )
         return {
             "success": True,
             "default_symbol": current.get("default_symbol"),
+            "scanner_enabled": current.get("scanner_enabled", True),
             "supported_symbols": current.get("supported_symbols"),
             "updated_at": current.get("updated_at"),
             "settings": current,

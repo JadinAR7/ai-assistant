@@ -117,10 +117,13 @@ type ScanStatus = {
   scan_interval_seconds?: number;
   active_sessions?: string[];
   should_scan_now?: boolean;
+  scheduled_scan_allowed?: boolean;
+  automatic_scans_paused?: boolean;
 };
 
 type ScannerSettings = {
   default_symbol: string;
+  scanner_enabled?: boolean;
   supported_symbols: string[];
   updated_at?: string;
 };
@@ -355,7 +358,7 @@ function ResponseContent({
   }
 
   return (
-    <div className="prose prose-invert max-w-full overflow-x-hidden break-words prose-p:my-2 prose-headings:mb-2 prose-headings:mt-4 prose-h2:border-t prose-h2:border-white/10 prose-h2:pt-3 prose-h2:text-sm prose-h2:font-semibold prose-h2:text-cyan-100 prose-pre:max-w-full prose-pre:overflow-x-auto prose-code:break-words prose-ul:my-2 prose-li:my-1 prose-strong:text-neutral-100 [overflow-wrap:anywhere]">
+    <div className="prose prose-invert max-w-full break-words prose-p:my-2 prose-headings:mb-2 prose-headings:mt-4 prose-h2:border-t prose-h2:border-white/10 prose-h2:pt-3 prose-h2:text-sm prose-h2:font-semibold prose-h2:text-cyan-100 prose-pre:max-w-full prose-pre:overflow-x-auto prose-code:break-words prose-ul:my-2 prose-li:my-1 prose-strong:text-neutral-100 [overflow-wrap:anywhere]">
       <ReactMarkdown>{displayedContent}</ReactMarkdown>
       {collapsed && isLongResponse(content) ? (
         <div className="mt-3 border-t border-white/10 pt-3 text-xs text-neutral-500">
@@ -394,12 +397,12 @@ function MessageCard({
 
   return (
     <div
-      className={`group flex min-w-0 max-w-full overflow-x-hidden ${
+      className={`group flex min-w-0 max-w-full ${
         msg.role === "user" ? "justify-end" : "justify-start"
       }`}
     >
       <article
-        className={`min-w-0 max-w-full overflow-x-hidden break-words rounded-2xl px-3 py-3 text-sm leading-relaxed shadow-lg [overflow-wrap:anywhere] sm:max-w-[85%] sm:px-4 ${
+        className={`min-w-0 max-w-full break-words rounded-2xl px-3 py-3 text-sm leading-relaxed shadow-lg [overflow-wrap:anywhere] sm:max-w-[85%] sm:px-4 lg:max-w-[82%] ${
           msg.role === "user"
             ? "bg-blue-600 text-white"
             : msg.error
@@ -722,6 +725,50 @@ ${record.message || "No scan message returned."}`;
     }
   }
 
+  async function updateScannerEnabled(scannerEnabled: boolean) {
+    if (scannerSettingsLoading) return;
+
+    setScannerSettingsLoading(true);
+    setScannerSettings((current) =>
+      current ? { ...current, scanner_enabled: scannerEnabled } : current
+    );
+    setScanStatus((current) =>
+      current
+        ? {
+            ...current,
+            scanner_enabled: scannerEnabled,
+            automatic_scans_paused: !scannerEnabled,
+            scheduled_scan_allowed:
+              scannerEnabled && Boolean(current.should_scan_now),
+          }
+        : current
+    );
+
+    try {
+      const res = await fetch(`${API_BASE}/scanner/settings`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ scanner_enabled: scannerEnabled }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Scanner settings update failed");
+      }
+
+      const data = await res.json();
+      setScannerSettings(data.settings || data || null);
+      await loadScanStatus();
+    } catch {
+      addAssistantMessage("Could not update scanner activity setting.", true);
+      await loadScannerSettings();
+      await loadScanStatus();
+    } finally {
+      setScannerSettingsLoading(false);
+    }
+  }
+
   async function loadPresence() {
     try {
       const res = await fetch(`${API_BASE}/presence`);
@@ -1034,7 +1081,11 @@ ${record.message || "No scan message returned."}`;
     heartbeatAgeSeconds !== null &&
     scanIntervalSeconds > 0 &&
     heartbeatAgeSeconds > scanIntervalSeconds * 2;
-  const scannerTone = !scanStatus?.process_running
+  const scannerEnabled =
+    scannerSettings?.scanner_enabled ?? scanStatus?.scanner_enabled ?? true;
+  const scannerTone = !scannerEnabled
+    ? "paused"
+    : !scanStatus?.process_running
     ? "inactive"
     : heartbeatIsStale || heartbeatAgeSeconds === null
     ? "warning"
@@ -1042,17 +1093,23 @@ ${record.message || "No scan message returned."}`;
   const scannerBadgeClass =
     scannerTone === "active"
       ? "bg-green-500/20 text-green-200"
+      : scannerTone === "paused"
+      ? "bg-neutral-500/20 text-neutral-200"
       : scannerTone === "warning"
       ? "bg-yellow-500/20 text-yellow-200"
       : "bg-red-500/20 text-red-200";
   const scannerBadgeText =
     scannerTone === "active"
       ? "Active"
+      : scannerTone === "paused"
+      ? "Paused"
       : scannerTone === "warning"
       ? "Warning"
       : "Inactive";
   const scannerSubtitle = scanStatus?.running_scan
     ? "Scanning now..."
+    : !scannerEnabled
+    ? "Automatic scans paused"
     : scanStatus?.process_running && scanStatus?.should_scan_now
     ? "Watching scan window"
     : scanStatus?.process_running
@@ -1291,11 +1348,39 @@ ${record.message || "No scan message returned."}`;
                 <p className="text-xs text-blue-200/70">{scannerSubtitle}</p>
               </div>
 
-              <span
-                className={`rounded-full px-2 py-1 text-xs ${scannerBadgeClass}`}
-              >
-                {scannerBadgeText}
-              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`rounded-full px-2 py-1 text-xs ${scannerBadgeClass}`}
+                >
+                  {scannerBadgeText}
+                </span>
+                <div className="flex rounded-full border border-white/10 bg-neutral-950/70 p-1 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => updateScannerEnabled(true)}
+                    disabled={scannerSettingsLoading}
+                    className={`rounded-full px-3 py-1 font-semibold transition ${
+                      scannerEnabled
+                        ? "bg-green-500/20 text-green-100"
+                        : "text-neutral-400 hover:text-white"
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    On
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => updateScannerEnabled(false)}
+                    disabled={scannerSettingsLoading}
+                    className={`rounded-full px-3 py-1 font-semibold transition ${
+                      !scannerEnabled
+                        ? "bg-neutral-500/30 text-neutral-100"
+                        : "text-neutral-400 hover:text-white"
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    Off
+                  </button>
+                </div>
+              </div>
             </div>
 
             {scanStatusError ? (
@@ -1393,7 +1478,7 @@ ${record.message || "No scan message returned."}`;
                 disabled={scanLoading || loading}
                 className="rounded-xl bg-blue-600 px-3 py-3 text-sm font-semibold text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50 sm:py-2"
               >
-                {scanLoading ? "Scanning..." : `Scan ${scannerSymbol}`}
+                {scanLoading ? "Scanning..." : `Run Manual Scan ${scannerSymbol}`}
               </button>
 
               <button

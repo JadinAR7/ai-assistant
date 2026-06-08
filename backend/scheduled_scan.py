@@ -3990,7 +3990,7 @@ def write_scanner_runtime_status(
     status = {
         "scanner_enabled": scanner_enabled,
         "process_id": os.getpid(),
-        "process_running": scanner_enabled,
+        "process_running": True,
         "heartbeat_timestamp": now.isoformat(),
         "timestamp": now.isoformat(),
         "timezone": "America/Denver",
@@ -3998,6 +3998,8 @@ def write_scanner_runtime_status(
         "timeframe": timeframe,
         "active_sessions": sessions,
         "should_scan_now": should_scan_now(now),
+        "scheduled_scan_allowed": scanner_enabled and should_scan_now(now),
+        "automatic_scans_paused": not scanner_enabled,
         "scan_interval_seconds": SCAN_INTERVAL_SECONDS,
         "running_scan": running_scan,
         "last_scan_timestamp": last_scan_timestamp,
@@ -4015,6 +4017,7 @@ def get_scanner_runtime_status() -> dict:
     sessions = get_active_sessions(now)
     settings = get_scanner_settings()
     symbol = str(settings.get("default_symbol") or get_default_scanner_symbol())
+    scanner_enabled = bool(settings.get("scanner_enabled", True))
     latest_scan = load_latest_scan(symbol=symbol)
 
     runtime_status = {}
@@ -4027,10 +4030,9 @@ def get_scanner_runtime_status() -> dict:
 
     process_id = runtime_status.get("process_id")
     process_running = _process_is_running(process_id)
-    scanner_enabled = bool(runtime_status.get("scanner_enabled") and process_running)
-
     latest_scan_timestamp = latest_scan.get("timestamp") if latest_scan else None
     latest_scan_success = latest_scan.get("success") if latest_scan else None
+    session_window_open = should_scan_now(now)
 
     return {
         "success": True,
@@ -4040,12 +4042,14 @@ def get_scanner_runtime_status() -> dict:
         "timestamp": now.isoformat(),
         "timezone": "America/Denver",
         "scanner_enabled": scanner_enabled,
+        "automatic_scans_paused": not scanner_enabled,
         "process_running": process_running,
         "process_id": process_id,
         "heartbeat_timestamp": runtime_status.get("heartbeat_timestamp"),
         "runtime_status_path": str(SCAN_RUNTIME_STATUS_PATH),
         "active_sessions": sessions,
-        "should_scan_now": should_scan_now(now),
+        "should_scan_now": session_window_open,
+        "scheduled_scan_allowed": scanner_enabled and session_window_open,
         "scan_interval_seconds": SCAN_INTERVAL_SECONDS,
         "timeframe": runtime_status.get("timeframe") or SCAN_TIMEFRAME,
         "running_scan": runtime_status.get("running_scan", False) if process_running else False,
@@ -4759,9 +4763,52 @@ def run_scan(
         return error_record
 
 
+def run_scheduled_scan_iteration(timeframe: str = SCAN_TIMEFRAME) -> dict | None:
+    settings = get_scanner_settings()
+    loop_symbol = normalize_scanner_symbol(
+        str(settings.get("default_symbol") or get_default_scanner_symbol())
+    )
+    scanner_enabled = bool(settings.get("scanner_enabled", True))
+    latest_scan = load_latest_scan(symbol=loop_symbol)
+
+    if not scanner_enabled:
+        print(
+            f"[{datetime.now(TIMEZONE).isoformat()}] Scanner paused in settings. "
+            "Skipping automatic scan."
+        )
+        write_scanner_runtime_status(
+            scanner_enabled=False,
+            symbol=loop_symbol,
+            timeframe=scheduled_timeframe_label(),
+            running_scan=False,
+            last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
+            latest_scan_success=latest_scan.get("success") if latest_scan else None,
+        )
+        return None
+
+    record = run_scan(
+        force=False,
+        update_runtime_status=True,
+        timeframe=timeframe,
+        multi_timeframe=True,
+        symbol=loop_symbol,
+    )
+    latest_scan = load_latest_scan(symbol=loop_symbol)
+    write_scanner_runtime_status(
+        scanner_enabled=True,
+        symbol=loop_symbol,
+        timeframe=scheduled_timeframe_label(),
+        last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
+        latest_scan_success=latest_scan.get("success") if latest_scan else None,
+    )
+    return record
+
+
 def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
     timeframe = SCAN_TIMEFRAME
-    initial_symbol = get_default_scanner_symbol()
+    initial_settings = get_scanner_settings()
+    initial_symbol = str(initial_settings.get("default_symbol") or get_default_scanner_symbol())
+    initial_enabled = bool(initial_settings.get("scanner_enabled", True))
 
     print("Scheduled scanner started.")
     print(f"Default symbol: {initial_symbol}")
@@ -4774,7 +4821,7 @@ def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
 
     latest_scan = load_latest_scan(symbol=initial_symbol)
     write_scanner_runtime_status(
-        scanner_enabled=True,
+        scanner_enabled=initial_enabled,
         symbol=initial_symbol,
         timeframe=scheduled_timeframe_label(),
         last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
@@ -4783,22 +4830,7 @@ def run_loop(timeframe: str = SCAN_TIMEFRAME) -> None:
 
     try:
         while True:
-            loop_symbol = get_default_scanner_symbol()
-            run_scan(
-                force=False,
-                update_runtime_status=True,
-                timeframe=timeframe,
-                multi_timeframe=True,
-                symbol=loop_symbol,
-            )
-            latest_scan = load_latest_scan(symbol=loop_symbol)
-            write_scanner_runtime_status(
-                scanner_enabled=True,
-                symbol=loop_symbol,
-                timeframe=scheduled_timeframe_label(),
-                last_scan_timestamp=latest_scan.get("timestamp") if latest_scan else None,
-                latest_scan_success=latest_scan.get("success") if latest_scan else None,
-            )
+            run_scheduled_scan_iteration(timeframe=timeframe)
             time.sleep(SCAN_INTERVAL_SECONDS)
     except KeyboardInterrupt:
         print("Scheduled scanner stopped.")

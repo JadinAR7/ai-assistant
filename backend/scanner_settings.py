@@ -18,9 +18,14 @@ def _now_iso() -> str:
     return datetime.now(TIMEZONE).isoformat()
 
 
-def _state_for_symbol(symbol: str, updated_at: str | None = None) -> dict:
+def _state_for_symbol(
+    symbol: str,
+    updated_at: str | None = None,
+    scanner_enabled: bool = True,
+) -> dict:
     return {
         "default_symbol": symbol,
+        "scanner_enabled": bool(scanner_enabled),
         "supported_symbols": deepcopy(SUPPORTED_SCANNER_SYMBOLS),
         "updated_at": updated_at or _now_iso(),
     }
@@ -47,17 +52,32 @@ def get_scanner_settings() -> dict:
     if symbol not in SUPPORTED_SCANNER_SYMBOLS:
         symbol = DEFAULT_SCANNER_SYMBOL
 
-    return _state_for_symbol(symbol, updated_at=state.get("updated_at"))
+    return _state_for_symbol(
+        symbol,
+        updated_at=state.get("updated_at"),
+        scanner_enabled=state.get("scanner_enabled", True),
+    )
 
 
 def get_default_scanner_symbol() -> str:
     return str(get_scanner_settings().get("default_symbol") or DEFAULT_SCANNER_SYMBOL)
 
 
-def set_scanner_settings(default_symbol: str) -> dict:
-    normalized = normalize_scanner_symbol(default_symbol)
+def set_scanner_settings(
+    default_symbol: str | None = None,
+    scanner_enabled: bool | None = None,
+) -> dict:
+    current = get_scanner_settings()
+    normalized = normalize_scanner_symbol(
+        default_symbol or str(current.get("default_symbol") or DEFAULT_SCANNER_SYMBOL)
+    )
     state = {
         "default_symbol": normalized,
+        "scanner_enabled": (
+            bool(scanner_enabled)
+            if scanner_enabled is not None
+            else bool(current.get("scanner_enabled", True))
+        ),
         "updated_at": _now_iso(),
     }
     SCANNER_SETTINGS_PATH.write_text(
