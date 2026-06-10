@@ -33,6 +33,8 @@ type ResponseSource =
 
 const LONG_RESPONSE_CHAR_LIMIT = 1200;
 const LONG_RESPONSE_LINE_LIMIT = 18;
+const COLLAPSED_PREVIEW_CHAR_LIMIT = 1600;
+const COLLAPSED_PREVIEW_LINE_LIMIT = 24;
 
 type ScanRecord = {
   timestamp?: string;
@@ -320,6 +322,50 @@ function isLongResponse(content: string) {
   );
 }
 
+function isRawToolLine(line: string) {
+  const trimmed = line.trim();
+  const lower = trimmed.toLowerCase();
+
+  return (
+    lower.startsWith("tool:") ||
+    lower.startsWith("tool output") ||
+    lower.startsWith("raw tool") ||
+    lower.startsWith("[tool") ||
+    lower.startsWith("```tool") ||
+    /^[a-z_]+:\s*[{[]/.test(lower)
+  );
+}
+
+function getReadableResponse(content: string) {
+  const trimmed = content.trim();
+  const finalMarker = trimmed.match(
+    /(?:^|\n)(?:final(?: response)?|assistant|response):\s*/i
+  );
+
+  if (finalMarker?.index !== undefined) {
+    const readable = trimmed.slice(finalMarker.index + finalMarker[0].length).trim();
+
+    if (readable) return readable;
+  }
+
+  const readableLines = trimmed
+    .split(/\r?\n/)
+    .filter((line) => !isRawToolLine(line));
+
+  return readableLines.join("\n").trim();
+}
+
+function getCollapsedPreview(content: string) {
+  const lines = content.split(/\r?\n/);
+  let preview = lines.slice(0, COLLAPSED_PREVIEW_LINE_LIMIT).join("\n");
+
+  if (preview.length > COLLAPSED_PREVIEW_CHAR_LIMIT) {
+    preview = preview.slice(0, COLLAPSED_PREVIEW_CHAR_LIMIT).trimEnd();
+  }
+
+  return preview.trim();
+}
+
 function sourceBadgeClass(source: ResponseSource) {
   switch (source) {
     case "Scanner":
@@ -348,19 +394,25 @@ function ResponseContent({
   content: string;
   collapsed: boolean;
 }>) {
-  const displayedContent =
-    collapsed && isLongResponse(content)
-      ? content.split(/\r?\n/).slice(0, 18).join("\n").slice(0, LONG_RESPONSE_CHAR_LIMIT)
-      : content;
+  const readableContent = getReadableResponse(content);
 
-  if (displayedContent.startsWith("TOOL:")) {
+  if (!readableContent) {
+    return <p className="text-neutral-400">Using tool...</p>;
+  }
+
+  const displayedContent =
+    collapsed && isLongResponse(readableContent)
+      ? getCollapsedPreview(readableContent)
+      : readableContent;
+
+  if (!displayedContent) {
     return <p className="text-neutral-400">Using tool...</p>;
   }
 
   return (
-    <div className="prose prose-invert max-w-full break-words prose-p:my-2 prose-headings:mb-2 prose-headings:mt-4 prose-h2:border-t prose-h2:border-white/10 prose-h2:pt-3 prose-h2:text-sm prose-h2:font-semibold prose-h2:text-cyan-100 prose-pre:max-w-full prose-pre:overflow-x-auto prose-code:break-words prose-ul:my-2 prose-li:my-1 prose-strong:text-neutral-100 [overflow-wrap:anywhere]">
+    <div className="prose prose-invert w-full max-w-none break-words prose-p:my-2 prose-headings:mb-2 prose-headings:mt-4 prose-h2:border-t prose-h2:border-white/10 prose-h2:pt-3 prose-h2:text-sm prose-h2:font-semibold prose-h2:text-cyan-100 prose-pre:max-w-full prose-pre:overflow-x-auto prose-code:break-words prose-ul:my-2 prose-li:my-1 prose-strong:text-neutral-100 [overflow-wrap:anywhere]">
       <ReactMarkdown>{displayedContent}</ReactMarkdown>
-      {collapsed && isLongResponse(content) ? (
+      {collapsed && isLongResponse(readableContent) ? (
         <div className="mt-3 border-t border-white/10 pt-3 text-xs text-neutral-500">
           Response collapsed for readability.
         </div>
@@ -378,7 +430,8 @@ function MessageCard({
   onDelete: (id: string) => void;
   onRetry: (text: string) => void;
 }>) {
-  const longResponse = isLongResponse(msg.content);
+  const readableContent = getReadableResponse(msg.content) || msg.content;
+  const longResponse = isLongResponse(readableContent);
   const [expanded, setExpanded] = useState(!longResponse);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const source = inferMessageSource(msg.content, msg.role, msg.source);
@@ -402,12 +455,12 @@ function MessageCard({
       }`}
     >
       <article
-        className={`min-w-0 max-w-full break-words rounded-2xl px-3 py-3 text-sm leading-relaxed shadow-lg [overflow-wrap:anywhere] sm:max-w-[85%] sm:px-4 lg:max-w-[82%] ${
+        className={`min-w-0 break-words rounded-2xl px-3 py-3 text-sm leading-relaxed shadow-lg [overflow-wrap:anywhere] sm:px-4 ${
           msg.role === "user"
-            ? "bg-blue-600 text-white"
+            ? "w-fit max-w-[92%] bg-blue-600 text-white sm:max-w-[72%] lg:max-w-[64%]"
             : msg.error
-            ? "border border-red-500/30 bg-red-950/40 text-red-100"
-            : "border border-white/10 bg-neutral-900 text-neutral-100"
+            ? "w-full max-w-full border border-red-500/30 bg-red-950/40 text-red-100 sm:w-[85%] lg:w-[82%]"
+            : "w-full max-w-full border border-white/10 bg-neutral-900 text-neutral-100 sm:w-[85%] lg:w-[82%]"
         }`}
       >
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -530,6 +583,14 @@ export default function Home() {
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
 
   useEffect(() => {
+    if (window.matchMedia("(min-width: 1024px)").matches) {
+      messagesContainerRef.current?.scrollTo({
+        top: messagesContainerRef.current.scrollHeight,
+        behavior: "smooth",
+      });
+      return;
+    }
+
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
@@ -1147,6 +1208,75 @@ ${record.message || "No scan message returned."}`;
   const alertEligibilityNotify = latestScan?.alert_eligibility?.should_notify || false;
   const presenceAllows = latestScan?.notification_allowed_by_presence || false;
   const presenceModes = ["home", "trading", "away", "focus"];
+  function renderComposerControls() {
+    return (
+      <>
+      {attachedFile && (
+        <div className="mb-2 flex min-w-0 max-w-full items-center justify-between rounded-xl border border-white/10 bg-neutral-900 px-3 py-2 text-xs text-neutral-300">
+          <span className="min-w-0 truncate">Attached: {attachedFile.name}</span>
+
+          <button
+            type="button"
+            onClick={() => setAttachedFile(null)}
+            className="ml-3 text-neutral-400 underline underline-offset-4 hover:text-white"
+          >
+            Remove
+          </button>
+        </div>
+      )}
+
+      <div className="flex w-full min-w-0 max-w-full items-end gap-2 overflow-x-hidden rounded-2xl border border-white/10 bg-neutral-900 p-2 shadow-2xl">
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-neutral-950 text-xl leading-none text-neutral-300 hover:bg-white/10"
+          title="Attach file"
+          aria-label="Attach file"
+        >
+          +
+        </button>
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+
+            if (file) {
+              handleFileUpload(file);
+            }
+
+            e.currentTarget.value = "";
+          }}
+        />
+
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              sendMessage();
+            }
+          }}
+          placeholder="Ask Helix..."
+          rows={1}
+          className="max-h-32 min-h-11 min-w-0 flex-1 resize-none rounded-xl bg-neutral-950/70 px-3 py-3 text-sm text-white outline-none placeholder:text-neutral-500"
+        />
+
+        <button
+          onClick={loading ? stopResponse : () => sendMessage()}
+          className={`min-h-11 shrink-0 rounded-xl px-3 py-2 text-sm font-semibold sm:px-4 ${
+            loading ? "bg-red-500 text-white" : "bg-white text-black"
+          }`}
+        >
+          {loading ? "Stop" : "Send"}
+        </button>
+      </div>
+      </>
+    );
+  }
 
   return (
     <main className="min-h-screen w-full max-w-full overflow-x-hidden bg-neutral-950 text-white">
@@ -1198,7 +1328,7 @@ ${record.message || "No scan message returned."}`;
         </div>
       </header>
 
-      <div className="mx-auto grid w-full max-w-7xl min-w-0 grid-cols-1 gap-3 overflow-x-hidden px-3 py-3 pb-32 sm:px-4 lg:grid-cols-[minmax(0,1fr)_380px] lg:gap-4 lg:py-4">
+      <div className="mx-auto grid w-full max-w-7xl min-w-0 grid-cols-1 gap-3 overflow-x-hidden px-3 py-3 pb-32 sm:px-4 lg:grid-cols-[minmax(0,1fr)_380px] lg:gap-4 lg:py-4 lg:pb-4">
         <div className="min-w-0 max-w-full lg:hidden">
           <div className="grid w-full min-w-0 grid-cols-2 gap-2 rounded-2xl border border-white/10 bg-neutral-900 p-1">
             {(["chat", "system"] as const).map((view) => (
@@ -1219,7 +1349,7 @@ ${record.message || "No scan message returned."}`;
         </div>
 
         <section
-          className={`min-w-0 max-w-full overflow-x-hidden rounded-2xl border border-white/10 bg-neutral-950 lg:flex lg:min-h-[70vh] lg:flex-col ${
+          className={`min-w-0 max-w-full overflow-x-hidden rounded-2xl border border-white/10 bg-neutral-950 lg:flex lg:h-[calc(100vh-128px)] lg:min-h-[560px] lg:flex-col lg:overflow-hidden ${
             activeView === "system" ? "hidden lg:flex" : ""
           }`}
         >
@@ -1237,7 +1367,7 @@ ${record.message || "No scan message returned."}`;
           </div>
           <div
             ref={messagesContainerRef}
-            className="flex min-w-0 max-w-full flex-col gap-3 overflow-x-hidden px-3 py-4 pb-36 sm:px-4 sm:py-6 sm:pb-40 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pb-6 lg:max-h-[calc(100vh-190px)] lg:gap-4"
+            className="flex min-w-0 max-w-full flex-col gap-3 overflow-x-hidden px-3 py-4 pb-36 sm:px-4 sm:py-6 sm:pb-40 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-6 lg:gap-4"
           >
             {messages.map((msg) => (
               <MessageCard
@@ -1265,6 +1395,10 @@ ${record.message || "No scan message returned."}`;
             )}
 
             <div ref={bottomRef} />
+          </div>
+
+          <div className="hidden border-t border-white/10 bg-neutral-950/95 px-4 py-4 lg:block">
+            {renderComposerControls()}
           </div>
         </section>
 
@@ -1705,74 +1839,12 @@ ${record.message || "No scan message returned."}`;
       </div>
 
       <footer
-        className={`fixed bottom-0 left-0 right-0 max-w-full overflow-x-hidden border-t border-white/10 bg-neutral-950/90 backdrop-blur ${
-          activeView === "system" ? "hidden lg:block" : ""
+        className={`fixed bottom-0 left-0 right-0 max-w-full overflow-x-hidden border-t border-white/10 bg-neutral-950/90 backdrop-blur lg:hidden ${
+          activeView === "system" ? "hidden" : ""
         }`}
       >
         <div className="mx-auto w-full max-w-7xl min-w-0 px-3 py-3 sm:px-4 sm:py-4">
-          {attachedFile && (
-            <div className="mb-2 flex min-w-0 max-w-full items-center justify-between rounded-xl border border-white/10 bg-neutral-900 px-3 py-2 text-xs text-neutral-300">
-              <span className="min-w-0 truncate">Attached: {attachedFile.name}</span>
-
-              <button
-                type="button"
-                onClick={() => setAttachedFile(null)}
-                className="ml-3 text-neutral-400 underline underline-offset-4 hover:text-white"
-              >
-                Remove
-              </button>
-            </div>
-          )}
-
-          <div className="flex w-full min-w-0 max-w-full items-end gap-2 overflow-x-hidden rounded-2xl border border-white/10 bg-neutral-900 p-2 shadow-2xl">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-neutral-950 text-xl leading-none text-neutral-300 hover:bg-white/10"
-              title="Attach file"
-              aria-label="Attach file"
-            >
-              +
-            </button>
-
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-
-                if (file) {
-                  handleFileUpload(file);
-                }
-
-                e.currentTarget.value = "";
-              }}
-            />
-
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  sendMessage();
-                }
-              }}
-              placeholder="Ask Helix..."
-              rows={1}
-              className="max-h-32 min-h-11 min-w-0 flex-1 resize-none rounded-xl bg-neutral-950/70 px-3 py-3 text-sm text-white outline-none placeholder:text-neutral-500"
-            />
-
-            <button
-              onClick={loading ? stopResponse : () => sendMessage()}
-              className={`min-h-11 shrink-0 rounded-xl px-3 py-2 text-sm font-semibold sm:px-4 ${
-                loading ? "bg-red-500 text-white" : "bg-white text-black"
-              }`}
-            >
-              {loading ? "Stop" : "Send"}
-            </button>
-          </div>
+          {renderComposerControls()}
         </div>
       </footer>
     </main>
