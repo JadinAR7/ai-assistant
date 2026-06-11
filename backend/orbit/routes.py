@@ -27,6 +27,7 @@ from .models import (
     ReviewCreate,
     ScheduleBlock,
     ScheduleBlockCreate,
+    ScheduleBlockPlacementResult,
     ScheduleBlockUpdate,
     ScheduleIntelligence,
     StrategicGap,
@@ -112,6 +113,21 @@ def create_schedule_block(payload: ScheduleBlockCreate):
 def update_schedule_block(schedule_block_id: int, payload: ScheduleBlockUpdate):
     try:
         record = service.update_schedule_block(schedule_block_id, payload)
+    except ValueError as error:
+        raise _validation_error(str(error)) from error
+
+    if record is None:
+        raise _not_found("Schedule block", schedule_block_id)
+    return record
+
+
+@router.post(
+    "/schedule-blocks/{schedule_block_id}/place",
+    response_model=ScheduleBlockPlacementResult,
+)
+def place_flexible_schedule_block(schedule_block_id: int):
+    try:
+        record = service.place_flexible_schedule_block(schedule_block_id)
     except ValueError as error:
         raise _validation_error(str(error)) from error
 

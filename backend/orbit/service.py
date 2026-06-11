@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta, timezone
 import json
+import re
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -120,6 +121,8 @@ TABLE_COLUMNS = {
         "end_time",
         "duration_minutes",
         "recurrence",
+        "time_preference",
+        "flexible_placement_mode",
         "priority",
         "notes",
         "active",
@@ -137,6 +140,17 @@ MAJOR_EVENT_ACTIVITY_DAYS = 7
 STRATEGIC_GAP_RECOMMENDATION_PREFIX = "strategic-gap-"
 SCHEDULE_PLANNING_DAY_START_MINUTE = 8 * 60
 SCHEDULE_PLANNING_DAY_END_MINUTE = 22 * 60
+SCHEDULE_TIME_PREFERENCE_WINDOWS = {
+    "morning": (6 * 60, 12 * 60),
+    "afternoon": (12 * 60, 17 * 60),
+    "evening": (17 * 60, 21 * 60),
+    "night": (21 * 60, 24 * 60),
+}
+SCHEDULE_TIME_PREFERENCES = {
+    "anytime",
+    *SCHEDULE_TIME_PREFERENCE_WINDOWS.keys(),
+}
+SCHEDULE_FLEXIBLE_PLACEMENT_MODES = {"whenever_free", "preferred_day"}
 SCHEDULE_DAY_ORDER = [
     "monday",
     "tuesday",
@@ -265,12 +279,20 @@ def _validate_schedule_block_data(data: dict[str, Any]) -> None:
     block_type = data.get("block_type")
     duration_minutes = data.get("duration_minutes")
     specific_date = data.get("specific_date")
+    time_preference = data.get("time_preference")
+    flexible_placement_mode = data.get("flexible_placement_mode")
 
     if specific_date not in (None, ""):
         try:
             date.fromisoformat(str(specific_date))
         except ValueError as exc:
             raise ValueError("specific_date must use YYYY-MM-DD format.") from exc
+
+    if time_preference not in (None, "") and str(time_preference) not in SCHEDULE_TIME_PREFERENCES:
+        raise ValueError("time_preference must be anytime, morning, afternoon, evening, or night.")
+
+    if flexible_placement_mode not in (None, "") and str(flexible_placement_mode) not in SCHEDULE_FLEXIBLE_PLACEMENT_MODES:
+        raise ValueError("flexible_placement_mode must be whenever_free or preferred_day.")
 
     if block_type == "fixed":
         has_schedule_anchor = data.get("day_of_week") not in (None, "") or specific_date not in (None, "")
@@ -288,9 +310,26 @@ def _validate_schedule_block_data(data: dict[str, Any]) -> None:
 
 
 def _normalize_schedule_block_data(data: dict[str, Any]) -> dict[str, Any]:
-    if "title" in data and data.get("title") is None:
-        return {**data, "title": ""}
-    return data
+    normalized = dict(data)
+    if "title" in normalized and normalized.get("title") is None:
+        normalized["title"] = ""
+
+    block_type = str(normalized.get("block_type") or "").casefold()
+    if block_type == "flexible":
+        if normalized.get("time_preference") in (None, ""):
+            normalized["time_preference"] = "anytime"
+        if normalized.get("flexible_placement_mode") in (None, ""):
+            normalized["flexible_placement_mode"] = (
+                "whenever_free"
+                if normalized.get("day_of_week") in (None, "")
+                and normalized.get("specific_date") in (None, "")
+                else "preferred_day"
+            )
+        if normalized.get("flexible_placement_mode") == "whenever_free":
+            normalized["day_of_week"] = None
+            normalized["specific_date"] = None
+
+    return normalized
 
 
 def _list_records_ordered(table: str, order_by: str) -> list[dict[str, Any]]:
@@ -739,11 +778,16 @@ def get_schedule_intelligence() -> dict[str, Any]:
         ),
         default=None,
     )
+    placement_candidates = _schedule_placement_candidates(
+        available_windows=available_windows,
+        flexible_blocks=unplaced_flexible_blocks,
+    )
     recommendations = _schedule_recommendations(
         available_windows=available_windows,
         overloaded_days=overloaded_days,
         flexible_blocks=flexible_blocks,
         unplaced_flexible_blocks=unplaced_flexible_blocks,
+        placement_candidates=placement_candidates,
     )
 
     return {
@@ -754,6 +798,7 @@ def get_schedule_intelligence() -> dict[str, Any]:
         "underutilized_days": underutilized_days,
         "available_windows": available_windows,
         "recommendations": recommendations,
+        "placement_candidates": placement_candidates,
         "most_available_day": most_available_day,
         "most_overloaded_day": most_overloaded_day,
         "recommended_placement": recommendations[0] if recommendations else None,
@@ -783,8 +828,11 @@ def _schedule_fixed_instances(
         if start_minute is None or end_minute is None or end_minute <= start_minute:
             continue
 
+        recurrence = str(block.get("recurrence") or "once").casefold()
         specific_date = str(block.get("specific_date") or "")
-        if specific_date in instances:
+        if recurrence == "daily":
+            target_dates = list(instances.keys())
+        elif specific_date in instances:
             target_dates = [specific_date]
         else:
             block_day = str(block.get("day_of_week") or "").casefold()
@@ -940,6 +988,7 @@ def _schedule_recommendations(
     overloaded_days: list[dict[str, Any]],
     flexible_blocks: list[dict[str, Any]],
     unplaced_flexible_blocks: list[dict[str, Any]],
+    placement_candidates: list[dict[str, Any]],
 ) -> list[str]:
     recommendations: list[str] = []
     top_windows = sorted(
@@ -960,28 +1009,8 @@ def _schedule_recommendations(
             f"{_schedule_duration_text(window['duration_minutes'])} opening{anchor}."
         )
 
-    candidate_blocks = sorted(
-        unplaced_flexible_blocks,
-        key=lambda block: (
-            -_schedule_priority_rank(block.get("priority")),
-            str(block.get("title") or block.get("category") or ""),
-        ),
-    )
-    if candidate_blocks and top_windows:
-        block = candidate_blocks[0]
-        fitting_window = next(
-            (
-                window
-                for window in top_windows
-                if window["duration_minutes"] >= int(block.get("duration_minutes") or 0)
-            ),
-            top_windows[0],
-        )
-        recommendations.append(
-            f"{_schedule_block_title(block)} could fit on "
-            f"{_schedule_day_label(fitting_window['day'])} "
-            f"{_schedule_time_of_day_label(fitting_window['start_time'])}."
-        )
+    for candidate in placement_candidates[:3]:
+        recommendations.append(str(candidate.get("recommendation") or ""))
 
     for summary in overloaded_days[:2]:
         movable = next(
@@ -1003,6 +1032,323 @@ def _schedule_recommendations(
         )
 
     return recommendations[:5]
+
+
+def _schedule_placement_candidates(
+    available_windows: list[dict[str, Any]],
+    flexible_blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    candidate_blocks = sorted(
+        [
+            block
+            for block in flexible_blocks
+            if int(block.get("duration_minutes") or 0) > 0
+        ],
+        key=lambda block: (
+            -_schedule_priority_rank(block.get("priority")),
+            str(block.get("title") or block.get("category") or ""),
+            int(block.get("id") or 0),
+        ),
+    )
+
+    return [
+        candidate
+        for block in candidate_blocks
+        if (
+            candidate := _schedule_flexible_block_placement_candidate(
+                block,
+                available_windows,
+            )
+        )
+        is not None
+    ]
+
+
+def _schedule_flexible_block_placement_candidate(
+    block: dict[str, Any],
+    available_windows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    duration = int(block.get("duration_minutes") or 0)
+    if duration <= 0:
+        return None
+
+    preferred_windows = _schedule_windows_for_block_day(block, available_windows)
+    time_preference = _schedule_time_preference(block.get("time_preference"))
+    matching_slot = _find_schedule_slot(
+        preferred_windows,
+        duration,
+        time_preference,
+    )
+    block_title = _schedule_block_title(block)
+    category = str(block.get("category") or "other")
+
+    if matching_slot is not None:
+        reason = (
+            f"{_schedule_time_preference_label(time_preference)} preference matched."
+            if time_preference != "anytime"
+            else "Best available open window."
+        )
+        return _schedule_placement_candidate(
+            block=block,
+            slot=matching_slot,
+            duration=duration,
+            category=category,
+            reason=reason,
+            preference_matched=True,
+        )
+
+    fallback_slot = _find_schedule_slot(
+        preferred_windows,
+        duration,
+        "anytime",
+    ) or _find_schedule_slot(
+        available_windows,
+        duration,
+        "anytime",
+    )
+    if fallback_slot is None:
+        return None
+
+    if time_preference == "anytime":
+        return _schedule_placement_candidate(
+            block=block,
+            slot=fallback_slot,
+            duration=duration,
+            category=category,
+            reason="Best available open window.",
+            preference_matched=True,
+        )
+
+    return _schedule_placement_candidate(
+        block=block,
+        slot=fallback_slot,
+        duration=duration,
+        category=category,
+        reason=f"No {time_preference} window found. Best available slot selected.",
+        preference_matched=False,
+    )
+
+
+def _schedule_placement_candidate(
+    block: dict[str, Any],
+    slot: dict[str, Any],
+    duration: int,
+    category: str,
+    reason: str,
+    preference_matched: bool,
+) -> dict[str, Any]:
+    block_title = _schedule_block_title(block)
+    recommendation = (
+        f"{block_title} could fit {_schedule_slot_text(slot)}. {reason}"
+        if preference_matched
+        else (
+            f"No {_schedule_time_preference(block.get('time_preference'))} window "
+            f"found for {block_title}. Best available slot is {_schedule_slot_text(slot)}."
+        )
+    )
+    return {
+        "flexible_block_id": int(block.get("id")),
+        "title": block_title,
+        "category": category,
+        "day": slot.get("day"),
+        "date": slot.get("date"),
+        "start_time": slot.get("start_time"),
+        "end_time": slot.get("end_time"),
+        "duration_minutes": duration,
+        "preference_matched": preference_matched,
+        "reason": reason,
+        "recommendation": recommendation,
+    }
+
+
+def _find_matching_fixed_schedule_block(
+    source_block: dict[str, Any],
+) -> dict[str, Any] | None:
+    source_title = _schedule_block_title(source_block)
+    source_notes = source_block.get("notes")
+    source_duration = int(source_block.get("duration_minutes") or 0)
+    for block in list_schedule_blocks():
+        if str(block.get("block_type") or "").casefold() != "fixed":
+            continue
+        if not _truthy(block.get("active")):
+            continue
+        if _schedule_block_title(block) != source_title:
+            continue
+        if block.get("category") != source_block.get("category"):
+            continue
+        if block.get("priority") != source_block.get("priority"):
+            continue
+        if (block.get("notes") or None) != (source_notes or None):
+            continue
+        if int(block.get("duration_minutes") or 0) != source_duration:
+            continue
+        return block
+    return None
+
+
+def place_flexible_schedule_block(record_id: int) -> dict[str, Any] | None:
+    source_block = get_record("schedule_blocks", record_id)
+    if source_block is None:
+        return None
+    if str(source_block.get("block_type") or "").casefold() != "flexible":
+        raise ValueError("Only flexible schedule blocks can be placed.")
+
+    existing_fixed_block = _find_matching_fixed_schedule_block(source_block)
+    if existing_fixed_block is not None:
+        source_block = _update_record(
+            "schedule_blocks",
+            record_id,
+            {"active": False},
+        ) or source_block
+        return {
+            "fixed_block": existing_fixed_block,
+            "source_block": source_block,
+            "created": False,
+        }
+
+    intelligence = get_schedule_intelligence()
+    candidate = next(
+        (
+            placement
+            for placement in intelligence.get("placement_candidates") or []
+            if int(placement.get("flexible_block_id") or 0) == record_id
+        ),
+        None,
+    )
+    if candidate is None:
+        raise ValueError("No available placement slot found for this flexible block.")
+
+    fixed_block = create_schedule_block(
+        ScheduleBlockCreate(
+            title=_schedule_block_title(source_block),
+            block_type="fixed",
+            category=source_block.get("category"),
+            day_of_week=candidate.get("day"),
+            specific_date=_parse_date(candidate.get("date")),
+            start_time=candidate.get("start_time"),
+            end_time=candidate.get("end_time"),
+            duration_minutes=source_block.get("duration_minutes"),
+            recurrence="once",
+            time_preference=source_block.get("time_preference") or "anytime",
+            flexible_placement_mode="preferred_day",
+            priority=source_block.get("priority") or "medium",
+            notes=source_block.get("notes"),
+            active=True,
+        )
+    )
+    source_block = _update_record(
+        "schedule_blocks",
+        record_id,
+        {"active": False},
+    ) or source_block
+
+    return {
+        "fixed_block": fixed_block,
+        "source_block": source_block,
+        "created": True,
+    }
+
+
+def _schedule_windows_for_block_day(
+    block: dict[str, Any],
+    available_windows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    specific_date = str(block.get("specific_date") or "")
+    if specific_date:
+        dated_windows = [
+            window
+            for window in available_windows
+            if str(window.get("date") or "") == specific_date
+        ]
+        if dated_windows:
+            return dated_windows
+
+    day_of_week = str(block.get("day_of_week") or "").casefold()
+    if day_of_week:
+        day_windows = [
+            window
+            for window in available_windows
+            if str(window.get("day") or "").casefold() == day_of_week
+        ]
+        if day_windows:
+            return day_windows
+
+    return available_windows
+
+
+def _find_schedule_slot(
+    windows: list[dict[str, Any]],
+    duration: int,
+    time_preference: str,
+) -> dict[str, Any] | None:
+    candidates = sorted(
+        windows,
+        key=lambda window: (
+            str(window.get("date") or ""),
+            _schedule_time_to_minutes(window.get("start_time")) or 0,
+            -int(window.get("duration_minutes") or 0),
+        ),
+    )
+    for window in candidates:
+        slot = _schedule_slot_in_window(window, duration, time_preference)
+        if slot is not None:
+            return slot
+    return None
+
+
+def _schedule_slot_in_window(
+    window: dict[str, Any],
+    duration: int,
+    time_preference: str,
+) -> dict[str, Any] | None:
+    start_minute = _schedule_time_to_minutes(window.get("start_time"))
+    end_minute = _schedule_time_to_minutes(window.get("end_time"))
+    if start_minute is None or end_minute is None:
+        return None
+
+    preference_window = SCHEDULE_TIME_PREFERENCE_WINDOWS.get(time_preference)
+    if preference_window is not None:
+        start_minute = max(start_minute, preference_window[0])
+        end_minute = min(end_minute, preference_window[1])
+
+    if end_minute - start_minute < duration:
+        return None
+
+    return {
+        "day": window.get("day"),
+        "date": window.get("date"),
+        "start_time": _schedule_minutes_to_time(start_minute),
+        "end_time": _schedule_minutes_to_time(start_minute + duration),
+    }
+
+
+def _schedule_slot_text(slot: dict[str, Any]) -> str:
+    return (
+        f"{_schedule_day_label(slot.get('day'))} "
+        f"{_schedule_display_time(slot.get('start_time'))}-"
+        f"{_schedule_display_time(slot.get('end_time'))}"
+    )
+
+
+def _schedule_time_preference(value: Any) -> str:
+    text = str(value or "anytime").casefold()
+    return text if text in SCHEDULE_TIME_PREFERENCES else "anytime"
+
+
+def _schedule_time_preference_label(value: str) -> str:
+    return "Anytime" if value == "anytime" else value[:1].upper() + value[1:]
+
+
+def _schedule_display_time(value: Any) -> str:
+    minutes = _schedule_time_to_minutes(value)
+    if minutes is None:
+        return str(value or "")
+
+    hour = minutes // 60
+    minute = minutes % 60
+    suffix = "AM" if hour < 12 else "PM"
+    display_hour = hour % 12 or 12
+    return f"{display_hour}:{minute:02d} {suffix}"
 
 
 def _schedule_time_to_minutes(value: Any) -> int | None:
@@ -1155,11 +1501,64 @@ def list_tasks_linked_to_milestone(milestone_id: int) -> list[dict[str, Any]]:
     )
 
 
+def _normalize_task_intent_text(value: Any) -> str:
+    text = str(value or "").casefold()
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def _task_intent_key(task: dict[str, Any]) -> str:
+    title_key = _normalize_task_intent_text(task.get("title"))
+    if title_key:
+        return title_key
+    description_key = _normalize_task_intent_text(task.get("description"))
+    if description_key:
+        return description_key
+    return f"task-{task.get('id')}"
+
+
+def _unique_tasks_by_intent(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for task in tasks:
+        groups.setdefault(_task_intent_key(task), []).append(task)
+
+    unique_tasks: list[dict[str, Any]] = []
+    for group in groups.values():
+        completed = [task for task in group if not _is_open(task)]
+        unique_tasks.append(completed[0] if completed else group[0])
+
+    return unique_tasks
+
+
+def _latest_linked_task_completion_at(tasks: list[dict[str, Any]]) -> datetime | None:
+    completed_at_values = [
+        parsed
+        for task in tasks
+        if not _is_open(task)
+        for parsed in [_parse_datetime(task.get("completed_at"), assume_naive_utc=True)]
+        if parsed is not None
+    ]
+    if not completed_at_values:
+        return None
+    return max(completed_at_values)
+
+
+def _is_recent_activity_at(activity_at: datetime | None) -> bool:
+    if activity_at is None:
+        return False
+
+    now = datetime.now(ORBIT_LOCAL_TIMEZONE)
+    if activity_at.tzinfo is None:
+        activity_at = activity_at.replace(tzinfo=timezone.utc)
+
+    age_days = (now - activity_at.astimezone(ORBIT_LOCAL_TIMEZONE)).days
+    return age_days < STRATEGIC_GAP_RECENT_ACTIVITY_DAYS
+
+
 def get_milestone_progress_advisory(milestone_id: int) -> dict[str, Any] | None:
     if get_record("milestones", milestone_id) is None:
         return None
 
-    tasks = list_tasks_linked_to_milestone(milestone_id)
+    tasks = _unique_tasks_by_intent(list_tasks_linked_to_milestone(milestone_id))
     total_linked_tasks = len(tasks)
     completed_linked_tasks = sum(1 for task in tasks if not _is_open(task))
     in_progress_linked_tasks = sum(
@@ -1334,15 +1733,11 @@ def _latest_milestone_activity_at(milestone_id: int) -> datetime | None:
 
 def _has_recent_milestone_activity(milestone_id: int) -> bool:
     latest_activity = _latest_milestone_activity_at(milestone_id)
-    if latest_activity is None:
-        return False
+    if _is_recent_activity_at(latest_activity):
+        return True
 
-    now = datetime.now(ORBIT_LOCAL_TIMEZONE)
-    if latest_activity.tzinfo is None:
-        latest_activity = latest_activity.replace(tzinfo=timezone.utc)
-
-    age_days = (now - latest_activity.astimezone(ORBIT_LOCAL_TIMEZONE)).days
-    return age_days < STRATEGIC_GAP_RECENT_ACTIVITY_DAYS
+    linked_tasks = _unique_tasks_by_intent(list_tasks_linked_to_milestone(milestone_id))
+    return _is_recent_activity_at(_latest_linked_task_completion_at(linked_tasks))
 
 
 def _milestone_priority_sort_key(milestone: dict[str, Any]) -> tuple[int, int]:
@@ -1360,11 +1755,17 @@ def calculate_milestone_priority(milestone: dict[str, Any]) -> dict[str, Any]:
     linked_tasks = milestone.get("linked_tasks")
     if linked_tasks is None:
         linked_tasks = list_tasks_linked_to_milestone(milestone_id)
+    unique_linked_tasks = _unique_tasks_by_intent(list(linked_tasks))
 
     open_linked_tasks = [
         task
-        for task in linked_tasks
+        for task in unique_linked_tasks
         if _is_open(task)
+    ]
+    completed_linked_tasks = [
+        task
+        for task in unique_linked_tasks
+        if not _is_open(task)
     ]
     major_event_title = milestone.get("major_event_title") or _get_major_event_title(
         milestone.get("major_event_id"),
@@ -1391,15 +1792,20 @@ def calculate_milestone_priority(milestone: dict[str, Any]) -> dict[str, Any]:
             25,
         )
 
-    if not open_linked_tasks:
+    if not open_linked_tasks and not completed_linked_tasks:
         score += _priority_factor(reasons, "No linked open tasks", 30)
+    elif not open_linked_tasks and completed_linked_tasks and progress < 100:
+        score += _priority_factor(reasons, "Linked tasks complete; progress not applied", 20)
 
-    if not linked_tasks:
+    if not unique_linked_tasks:
         score += _priority_factor(reasons, "No linked tasks", 40)
 
     if has_recent_activity:
         score -= 10
-        reasons.append("Recent progress activity")
+        if completed_linked_tasks:
+            reasons.append("Completed linked task activity")
+        else:
+            reasons.append("Recent progress activity")
     else:
         reasons.append("No recent progress activity")
 
@@ -1410,8 +1816,9 @@ def calculate_milestone_priority(milestone: dict[str, Any]) -> dict[str, Any]:
     return {
         "priority_score": score,
         "reasons": reasons,
-        "linked_task_count": len(linked_tasks),
+        "linked_task_count": len(unique_linked_tasks),
         "open_linked_task_count": len(open_linked_tasks),
+        "completed_linked_task_count": len(completed_linked_tasks),
         "has_recent_activity": bool(has_recent_activity),
     }
 
@@ -1429,10 +1836,12 @@ def _with_milestone_priority(milestone: dict[str, Any]) -> dict[str, Any]:
     return {
         **milestone,
         "major_event_title": major_event_title,
+        "linked_tasks": linked_tasks,
         "priority_score": priority["priority_score"],
         "priority_reasons": priority["reasons"],
         "linked_task_count": priority["linked_task_count"],
         "open_linked_task_count": priority["open_linked_task_count"],
+        "completed_linked_task_count": priority["completed_linked_task_count"],
         "has_recent_activity": priority["has_recent_activity"],
     }
 
@@ -1444,10 +1853,22 @@ def _is_strategic_gap(milestone: dict[str, Any]) -> bool:
     no_open_linked_tasks = int(milestone.get("open_linked_task_count") or 0) == 0
     no_linked_tasks = int(milestone.get("linked_task_count") or 0) == 0
     no_recent_activity = not bool(milestone.get("has_recent_activity"))
+    unique_linked_tasks = _unique_tasks_by_intent(list(milestone.get("linked_tasks") or []))
+    completed_linked_tasks = [
+        task
+        for task in unique_linked_tasks
+        if not _is_open(task)
+    ]
+    completed_task_progress_gap = (
+        bool(completed_linked_tasks)
+        and progress <= 10
+        and status not in {"complete", "completed", "done", "cancelled"}
+    )
 
     return (
-        (is_active_status and no_open_linked_tasks)
-        or (progress <= 10 and no_recent_activity)
+        (is_active_status and no_open_linked_tasks and progress < 100)
+        or (progress <= 10 and no_recent_activity and not completed_linked_tasks)
+        or completed_task_progress_gap
         or no_linked_tasks
     )
 
@@ -1457,6 +1878,8 @@ def _compact_strategic_gap_reasons(reasons: list[str]) -> list[str]:
         "No linked tasks",
         "Progress remains 0%",
         "Progress <= 10%",
+        "Linked tasks complete; progress not applied",
+        "Completed linked task activity",
         "No recent progress activity",
         "No linked open tasks",
         "Active milestone",
@@ -1580,10 +2003,16 @@ def generate_recommendations(
         compact_reasons = _compact_strategic_gap_reasons(reasons)
         score = 45 + int(gap.get("priority_score") or 0)
         title = str(gap.get("title") or "strategic gap")
-        if "No linked tasks" in reasons:
+        completed_linked_task_count = int(gap.get("completed_linked_task_count") or 0)
+        open_linked_task_count = int(gap.get("open_linked_task_count") or 0)
+        progress = int(gap.get("progress_percent") or 0)
+        if completed_linked_task_count > 0 and progress <= 10:
+            recommendation_text = f"Apply suggested progress or define the next task for {title}."
+            score += 20
+        elif "No linked tasks" in reasons:
             recommendation_text = f"Create first task supporting {title}."
             score += 25
-        elif "No linked open tasks" in reasons:
+        elif "No linked open tasks" in reasons or open_linked_task_count == 0:
             recommendation_text = f"Queue a next open task for {title}."
             score += 15
         elif "Progress remains 0%" in reasons or "Progress <= 10%" in reasons:
@@ -1667,9 +2096,14 @@ def list_strategic_gaps() -> list[dict[str, Any]]:
     gaps = [
         {
             "milestone_id": milestone.get("id"),
-            "title": milestone.get("title"),
+            "title": _strategic_gap_action_title(milestone),
+            "milestone_title": milestone.get("title"),
             "priority_score": milestone.get("priority_score"),
             "reasons": milestone.get("priority_reasons") or [],
+            "progress_percent": milestone.get("progress_percent"),
+            "linked_task_count": milestone.get("linked_task_count") or 0,
+            "open_linked_task_count": milestone.get("open_linked_task_count") or 0,
+            "completed_linked_task_count": milestone.get("completed_linked_task_count") or 0,
         }
         for milestone in (
             _with_milestone_priority(milestone)
@@ -1677,10 +2111,118 @@ def list_strategic_gaps() -> list[dict[str, Any]]:
             if str(milestone.get("title") or "") != ORBIT_INBOX_MILESTONE_TITLE
         )
         if _is_strategic_gap(milestone)
+        and not _strategic_gap_intent_satisfied(milestone)
         and str(milestone.get("status") or "").casefold()
         not in {"complete", "completed", "done", "cancelled"}
     ]
     return sorted(gaps, key=_milestone_priority_sort_key)
+
+
+def _strategic_gap_subject(milestone: dict[str, Any]) -> str:
+    title = str(milestone.get("title") or "milestone").strip()
+    lowered = title.casefold()
+    replacements = [
+        ("create ", ""),
+        ("build ", ""),
+        ("set ", ""),
+        ("define ", ""),
+    ]
+    subject = title
+    for prefix, replacement in replacements:
+        if lowered.startswith(prefix):
+            subject = title[len(prefix):]
+            break
+
+    subject = subject.replace(" checkpoints", " checkpoint").strip()
+    return subject[:1].lower() + subject[1:] if subject else "milestone"
+
+
+def _strategic_gap_action_title(milestone: dict[str, Any]) -> str:
+    subject = _strategic_gap_subject(milestone)
+    completed_count = int(milestone.get("completed_linked_task_count") or 0)
+    linked_count = int(milestone.get("linked_task_count") or 0)
+    title_text = str(milestone.get("title") or "").casefold()
+
+    if completed_count > 0:
+        return f"Define the next {subject} step"
+    if "capital" in title_text and "checkpoint" in title_text:
+        return "Define the next capital checkpoint task"
+    if "business launch" in title_text:
+        return "Define the next business launch step"
+    if linked_count == 0:
+        return f"Create the first {subject} task"
+    return f"Define the next {subject} task"
+
+
+def _strategic_gap_task_draft_for_milestone(
+    milestone: dict[str, Any],
+    linked_tasks: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if linked_tasks is None:
+        linked_tasks = _unique_tasks_by_intent(
+            list_tasks_linked_to_milestone(int(milestone["id"])),
+        )
+    has_completed_task = any(not _is_open(task) for task in linked_tasks)
+    priority = calculate_milestone_priority(
+        {
+            **milestone,
+            "linked_tasks": linked_tasks,
+        },
+    )
+    title = _strategic_gap_action_title(
+        {
+            **milestone,
+            "linked_task_count": priority["linked_task_count"],
+            "completed_linked_task_count": priority["completed_linked_task_count"],
+        },
+    )
+    description = (
+        "Choose the next concrete action for this milestone and link it to the "
+        "current objective."
+        if has_completed_task
+        else "Define the first concrete action that moves this milestone forward."
+    )
+
+    return {
+        "title": title,
+        "description": description,
+        "milestone_ids": [int(milestone["id"])],
+    }
+
+
+def _strategic_gap_intent_satisfied(milestone: dict[str, Any]) -> bool:
+    linked_tasks = _unique_tasks_by_intent(
+        list(milestone.get("linked_tasks") or [])
+        or list_tasks_linked_to_milestone(int(milestone["id"])),
+    )
+    if not linked_tasks:
+        return False
+
+    draft = _strategic_gap_task_draft_for_milestone(milestone, linked_tasks)
+    draft_title = _normalize_task_intent_text(draft.get("title"))
+    draft_description = _normalize_task_intent_text(draft.get("description"))
+    subject_tokens = {
+        token
+        for token in _normalize_task_intent_text(_strategic_gap_subject(milestone)).split()
+        if token not in {"the", "next", "task", "step", "plan"}
+    }
+    action_tokens = {"define", "draft", "create", "outline", "choose", "build"}
+
+    for task in linked_tasks:
+        task_title = _normalize_task_intent_text(task.get("title"))
+        task_description = _normalize_task_intent_text(task.get("description"))
+        if task_title == draft_title:
+            return True
+        if draft_description and task_description == draft_description:
+            return True
+
+        task_tokens = set(task_title.split())
+        subject_matches = len(subject_tokens & task_tokens)
+        has_action = bool(action_tokens & task_tokens)
+        if subject_matches >= min(2, len(subject_tokens)) and has_action:
+            return True
+
+    return False
 
 
 def _find_record(table: str, **matches: Any) -> dict[str, Any] | None:
@@ -1806,15 +2348,12 @@ def _get_strategic_gap_milestone(
     if milestone is None:
         return None
 
-    matching_gap = next(
-        (
-            gap
-            for gap in list_strategic_gaps()
-            if int(gap.get("milestone_id") or 0) == milestone_id
-        ),
-        None,
-    )
-    if matching_gap is None:
+    if str(milestone.get("status") or "").casefold() in {
+        "complete",
+        "completed",
+        "done",
+        "cancelled",
+    }:
         return None
 
     return milestone
@@ -1827,16 +2366,34 @@ def get_recommendation_task_draft(
     if milestone is None:
         return None
 
+    linked_tasks = _unique_tasks_by_intent(
+        list_tasks_linked_to_milestone(int(milestone["id"])),
+    )
+    draft = _strategic_gap_task_draft_for_milestone(milestone, linked_tasks)
+
     return _model_data(
         RecommendationTaskDraft(
-            title=f"Create first review checklist for {milestone.get('title')}",
-            description=(
-                "Define what should be reviewed after each trading session: setup, "
-                "entry, exit, rule adherence, emotion, and lesson learned."
-            ),
-            milestone_ids=[int(milestone["id"])],
+            title=draft["title"],
+            description=draft["description"],
+            milestone_ids=draft["milestone_ids"],
         ),
     )
+
+
+def _find_existing_recommendation_task(
+    recommendation_id: str,
+    draft: dict[str, Any],
+) -> dict[str, Any] | None:
+    milestone = _get_strategic_gap_milestone(recommendation_id)
+    if milestone is None:
+        return None
+
+    draft_key = _task_intent_key(draft)
+    for task in list_tasks_linked_to_milestone(int(milestone["id"])):
+        if _task_intent_key(task) == draft_key:
+            return task
+
+    return None
 
 
 def create_task_from_recommendation(
@@ -1845,6 +2402,10 @@ def create_task_from_recommendation(
     draft = get_recommendation_task_draft(recommendation_id)
     if draft is None:
         return None
+
+    existing_task = _find_existing_recommendation_task(recommendation_id, draft)
+    if existing_task is not None:
+        return existing_task
 
     return create_inbox_task(
         {
@@ -2328,6 +2889,7 @@ def generate_morning_briefing() -> dict[str, Any]:
         milestone
         for milestone in event_milestones
         if _is_open(milestone)
+        and str(milestone.get("title") or "") != ORBIT_INBOX_MILESTONE_TITLE
         and str(milestone.get("status") or "").casefold() in {"active", "in_progress"}
         and int(milestone.get("progress_percent") or 0) == 0
         and (
@@ -2344,6 +2906,7 @@ def generate_morning_briefing() -> dict[str, Any]:
         milestone
         for milestone in event_milestones
         if _is_open(milestone)
+        and str(milestone.get("title") or "") != ORBIT_INBOX_MILESTONE_TITLE
         and str(milestone.get("status") or "").casefold() in {"active", "in_progress"}
         and int(milestone.get("progress_percent") or 0) == 0
         and milestone not in stalled_milestones_with_completed_tasks
@@ -2455,9 +3018,10 @@ def _format_daily_closeout_text(
         for milestone in milestone_progress[:5]
     ] or ["- No milestone progress changes available"]
     trade_lines = [
-        f"- {session.get('symbol')}: PnL {session.get('pnl')}, grade {session.get('session_grade') or 'not graded'}"
+        f"- {session.get('symbol')}: PnL {session.get('result_dollars')}, "
+        f"{session.get('direction') or 'trade'} {session.get('session') or 'session'}"
         for session in trade_summary.get("sessions", [])[:5]
-    ] or ["- No trade sessions logged today"]
+    ] or ["- No trade journal entries logged today"]
     review_lines = [
         f"- {review.get('title') or review.get('review_type')}: {review.get('summary') or 'No summary'}"
         for review in recent_reviews[:3]
@@ -2499,7 +3063,7 @@ def generate_daily_closeout() -> dict[str, Any]:
     milestones = list_records("milestones")
     reviews = list_records("reviews")
     readiness_categories = get_readiness_categories()
-    trade_sessions = list_trade_sessions()
+    trade_journal_entries = list_trade_journal_entries()
 
     linked_milestones_by_task_id = {
         task.get("id"): list_milestones_linked_to_task(int(task.get("id")))
@@ -2576,39 +3140,45 @@ def generate_daily_closeout() -> dict[str, Any]:
         ],
     }
 
-    todays_trade_sessions = [
-        session
-        for session in trade_sessions
-        if _is_today(session.get("session_date"), today)
+    todays_trade_entries = [
+        entry
+        for entry in trade_journal_entries
+        if _is_today(entry.get("trade_date"), today)
     ]
-    pnl_total = sum(float(session.get("pnl") or 0) for session in todays_trade_sessions)
+    pnl_values = [
+        float(entry.get("result_dollars") or 0)
+        for entry in todays_trade_entries
+        if entry.get("result_dollars") is not None
+    ]
+    pnl_total = sum(pnl_values)
+    session_days = {
+        str(entry.get("trade_date"))
+        for entry in todays_trade_entries
+        if entry.get("trade_date")
+    }
     trade_summary = {
-        "sessions_logged_today": len(todays_trade_sessions),
+        "sessions_logged_today": len(session_days),
+        "trading_sessions_reviewed": len(session_days),
+        "trade_count": len(todays_trade_entries),
         "total_pnl": pnl_total,
-        "average_rule_adherence": (
-            round(
-                sum(int(session.get("rule_adherence") or 0) for session in todays_trade_sessions)
-                / len([session for session in todays_trade_sessions if session.get("rule_adherence") is not None])
-            )
-            if any(session.get("rule_adherence") is not None for session in todays_trade_sessions)
-            else None
-        ),
+        "average_rule_adherence": None,
+        "wins": sum(1 for value in pnl_values if value > 0),
+        "losses": sum(1 for value in pnl_values if value < 0),
         "sessions": [
             _summary(
-                session,
+                entry,
                 [
                     "id",
-                    "session_date",
+                    "trade_date",
                     "symbol",
-                    "pnl",
-                    "notes",
-                    "rule_adherence",
-                    "confidence",
-                    "session_grade",
+                    "result_dollars",
+                    "session",
+                    "direction",
+                    "strategy_mode",
                     "created_at",
                 ],
             )
-            for session in todays_trade_sessions
+            for entry in todays_trade_entries
         ],
     }
 

@@ -2,7 +2,10 @@
 
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import InboxTaskControls, { type InboxTask } from "./InboxTaskControls";
+import InboxTaskControls, {
+  type InboxTask,
+  type TaskComposerPrefill,
+} from "./InboxTaskControls";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
@@ -98,8 +101,13 @@ export type MorningBriefingTask = {
 export type StrategicGap = {
   milestone_id: number;
   title: string;
+  milestone_title?: string | null;
   priority_score: number;
   reasons: string[];
+  progress_percent?: number;
+  linked_task_count?: number;
+  open_linked_task_count?: number;
+  completed_linked_task_count?: number;
 };
 
 export type RecommendationTaskDraft = {
@@ -160,13 +168,21 @@ export type DailyCloseout = {
   };
   trade_summary: {
     sessions_logged_today: number;
+    trading_sessions_reviewed?: number;
+    trade_count?: number;
     total_pnl: number;
     average_rule_adherence: number | null;
+    wins?: number;
+    losses?: number;
     sessions: Array<{
       id: number;
-      session_date: string;
+      session_date?: string;
+      trade_date?: string;
       symbol: string;
-      pnl: number;
+      pnl?: number;
+      result_dollars?: number;
+      session?: string | null;
+      direction?: string | null;
       session_grade?: string | null;
     }>;
   };
@@ -249,6 +265,13 @@ export type ScheduleBlockCategory =
   | "personal"
   | "other";
 export type ScheduleBlockPriority = "low" | "medium" | "high";
+export type ScheduleTimePreference =
+  | "anytime"
+  | "morning"
+  | "afternoon"
+  | "evening"
+  | "night";
+export type FlexiblePlacementMode = "whenever_free" | "preferred_day";
 export type DayOfWeek =
   | "monday"
   | "tuesday"
@@ -269,6 +292,8 @@ export type ScheduleBlock = {
   end_time: string | null;
   duration_minutes: number | null;
   recurrence: string | null;
+  time_preference: ScheduleTimePreference | null;
+  flexible_placement_mode: FlexiblePlacementMode | null;
   priority: ScheduleBlockPriority;
   notes: string | null;
   active: boolean;
@@ -300,6 +325,20 @@ export type ScheduleAvailableWindow = {
   before_block_title?: string | null;
 };
 
+export type SchedulePlacementCandidate = {
+  flexible_block_id: number;
+  title: string;
+  category: ScheduleBlockCategory;
+  day: DayOfWeek;
+  date: string;
+  start_time: string;
+  end_time: string;
+  duration_minutes: number;
+  preference_matched: boolean;
+  reason: string;
+  recommendation: string;
+};
+
 export type ScheduleIntelligence = {
   week_start: string;
   week_end: string;
@@ -308,10 +347,17 @@ export type ScheduleIntelligence = {
   underutilized_days: ScheduleDaySummary[];
   available_windows: ScheduleAvailableWindow[];
   recommendations: string[];
+  placement_candidates: SchedulePlacementCandidate[];
   most_available_day?: ScheduleDaySummary | null;
   most_overloaded_day?: ScheduleDaySummary | null;
   recommended_placement?: string | null;
   unplaced_flexible_blocks: number;
+};
+
+export type ScheduleBlockPlacementResult = {
+  fixed_block: ScheduleBlock;
+  source_block: ScheduleBlock;
+  created: boolean;
 };
 
 export type MorningCheckInStatus = {
@@ -457,6 +503,24 @@ const scheduleSectionItems: { id: ScheduleSection; label: string }[] = [
 const durationUnitOptions = ["minutes", "hours"] as const;
 type DurationUnit = (typeof durationUnitOptions)[number];
 const maxScheduleDurationMinutes = 480;
+const timePreferenceOptions: ScheduleTimePreference[] = [
+  "anytime",
+  "morning",
+  "afternoon",
+  "evening",
+  "night",
+];
+const timePreferenceLabels: Record<ScheduleTimePreference, string> = {
+  anytime: "Anytime",
+  morning: "Morning",
+  afternoon: "Afternoon",
+  evening: "Evening",
+  night: "Night",
+};
+const flexiblePlacementLabels: Record<FlexiblePlacementMode, string> = {
+  whenever_free: "Whenever I'm free",
+  preferred_day: "Use preferred day/date",
+};
 const recurrenceOptions = [
   "once",
   "daily",
@@ -489,12 +553,17 @@ const emptyScheduleForm = {
   block_type: "fixed" as ScheduleBlockType,
   category: "work" as ScheduleBlockCategory,
   day_of_week: "monday" as DayOfWeek | "",
+  selected_dates: [] as string[],
+  same_time: true,
+  date_times: {} as Record<string, { start_time: string; end_time: string }>,
   specific_date: "",
   start_time: "",
   end_time: "",
   duration_value: "",
   duration_unit: "minutes" as DurationUnit,
   recurrence: "once" as (typeof recurrenceOptions)[number],
+  time_preference: "anytime" as ScheduleTimePreference,
+  flexible_placement_mode: "preferred_day" as FlexiblePlacementMode,
   priority: "medium" as ScheduleBlockPriority,
   notes: "",
   active: true,
@@ -677,6 +746,291 @@ function getScheduleBlockLabel(block: ScheduleBlock) {
   return block.title?.trim() || scheduleCategoryFallbackLabels[block.category];
 }
 
+type ScheduleBlockDisplayGroup = {
+  key: string;
+  label: string;
+  blocks: ScheduleBlock[];
+  summaryLabel: string;
+};
+
+type CalendarScheduleBlockGroup = {
+  key: string;
+  label: string;
+  summaryLabel: string;
+  blocks: ScheduleBlock[];
+};
+
+const compactDayLabels: Record<DayOfWeek, string> = {
+  monday: "Mon",
+  tuesday: "Tue",
+  wednesday: "Wed",
+  thursday: "Thu",
+  friday: "Fri",
+  saturday: "Sat",
+  sunday: "Sun",
+};
+
+function getScheduleBlockGroupLabel(block: ScheduleBlock) {
+  const categoryLabel = scheduleCategoryFallbackLabels[block.category];
+  const title = block.title?.trim();
+  return title && title !== categoryLabel
+    ? `${categoryLabel} / ${title}`
+    : categoryLabel;
+}
+
+function getScheduleBlockSortTime(block: ScheduleBlock) {
+  const dayIndex = block.day_of_week ? dayOptions.indexOf(block.day_of_week) : 8;
+  return `${String(dayIndex).padStart(2, "0")}-${block.specific_date ?? ""}-${
+    block.start_time ?? ""
+  }`;
+}
+
+function getCalendarScheduleSortKey(block: ScheduleBlock) {
+  const startMinutes = scheduleTimeToMinutes(block.start_time);
+  return [
+    String(startMinutes ?? 9999).padStart(4, "0"),
+    getScheduleBlockLabel(block).toLowerCase(),
+    String(block.id).padStart(8, "0"),
+  ].join(":");
+}
+
+function getScheduleBlockDay(block: ScheduleBlock): DayOfWeek | null {
+  if (block.recurrence === "daily") {
+    return null;
+  }
+
+  if (block.day_of_week) {
+    return block.day_of_week;
+  }
+
+  if (block.specific_date) {
+    const date = new Date(`${block.specific_date}T00:00:00`);
+    if (!Number.isNaN(date.getTime())) {
+      return dayOptions[(date.getDay() + 6) % 7];
+    }
+  }
+
+  return null;
+}
+
+function getScheduleBlockDays(block: ScheduleBlock): DayOfWeek[] {
+  if (block.recurrence === "daily") {
+    return dayOptions;
+  }
+
+  const day = getScheduleBlockDay(block);
+  return day ? [day] : [];
+}
+
+function formatCompactDayRange(days: DayOfWeek[]) {
+  const uniqueIndexes = Array.from(
+    new Set(days.map((day) => dayOptions.indexOf(day)).filter((index) => index >= 0)),
+  ).sort((left, right) => left - right);
+
+  if (uniqueIndexes.length === 0) {
+    return "Unscheduled";
+  }
+
+  const ranges: string[] = [];
+  let start = uniqueIndexes[0];
+  let end = start;
+
+  for (const index of uniqueIndexes.slice(1)) {
+    if (index === end + 1) {
+      end = index;
+      continue;
+    }
+
+    ranges.push(formatCompactDayRangePart(start, end));
+    start = index;
+    end = index;
+  }
+  ranges.push(formatCompactDayRangePart(start, end));
+
+  return ranges.join(",");
+}
+
+function formatCompactDayRangePart(startIndex: number, endIndex: number) {
+  const startDay = dayOptions[startIndex];
+  const endDay = dayOptions[endIndex];
+
+  if (startIndex === endIndex) {
+    return compactDayLabels[startDay];
+  }
+
+  return `${compactDayLabels[startDay]}-${compactDayLabels[endDay]}`;
+}
+
+function getSchedulePatternKey(block: ScheduleBlock) {
+  if (block.block_type === "flexible") {
+    return [
+      "flexible",
+      block.flexible_placement_mode ?? "",
+      block.duration_minutes ?? "",
+      block.time_preference ?? "",
+    ].join(":");
+  }
+
+  return [
+    "fixed",
+    block.start_time ?? "",
+    block.end_time ?? "",
+    block.recurrence ?? "once",
+  ].join(":");
+}
+
+function getSchedulePatternSummary(blocks: ScheduleBlock[]) {
+  if (blocks.length === 0) {
+    return "0 blocks";
+  }
+
+  const patterns = new Map<string, ScheduleBlock[]>();
+  blocks.forEach((block) => {
+    const key = getSchedulePatternKey(block);
+    patterns.set(key, [...(patterns.get(key) ?? []), block]);
+  });
+
+  const patternEntries = Array.from(patterns.values()).sort((left, right) =>
+    getScheduleBlockSortTime(left[0]).localeCompare(getScheduleBlockSortTime(right[0])),
+  );
+  const patternCount = patternEntries.length;
+  const countLabel = `${patternCount} ${patternCount === 1 ? "block" : "blocks"}`;
+  const daysLabel = formatCompactDayRange(
+    patternEntries.flatMap((patternBlocks) =>
+      patternBlocks.flatMap(getScheduleBlockDays),
+    ),
+  );
+
+  if (blocks[0].block_type === "flexible") {
+    const block = blocks[0];
+    const placement =
+      block.flexible_placement_mode === "whenever_free"
+        ? "Needs placement"
+        : daysLabel;
+    const preference =
+      block.time_preference && block.time_preference !== "anytime"
+        ? `${timePreferenceLabels[block.time_preference]} preferred`
+        : "Flexible";
+    return `${countLabel} · ${placement} · ${formatDuration(
+      block.duration_minutes,
+    )} · ${preference}`;
+  }
+
+  if (patternEntries.length <= 3) {
+    const detail = patternEntries
+      .map((patternBlocks) => {
+        const block = patternBlocks[0];
+        return `${formatCompactDayRange(
+          patternBlocks.flatMap(getScheduleBlockDays),
+        )} · ${formatTime(block.start_time)}-${formatTime(block.end_time)}`;
+      })
+      .join(" · ");
+    return `${countLabel} · ${detail}`;
+  }
+
+  const startMinutes = blocks
+    .map((block) => scheduleTimeToMinutes(block.start_time))
+    .filter((value): value is number => value !== null);
+  const endMinutes = blocks
+    .map((block) => scheduleTimeToMinutes(block.end_time))
+    .filter((value): value is number => value !== null);
+  const timeSummary =
+    startMinutes.length > 0 && endMinutes.length > 0
+      ? `${formatMinutesAsTime(Math.min(...startMinutes))}-${formatMinutesAsTime(
+          Math.max(...endMinutes),
+        )}`
+      : "Mixed times";
+
+  return `${countLabel} · ${daysLabel} · ${timeSummary}`;
+}
+
+function scheduleTimeToMinutes(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  const [hourValue, minuteValue] = value.split(":");
+  const hour = Number(hourValue);
+  const minute = Number(minuteValue ?? "0");
+  if (Number.isNaN(hour) || Number.isNaN(minute)) {
+    return null;
+  }
+  return hour * 60 + minute;
+}
+
+function formatMinutesAsTime(minutes: number) {
+  const hour = Math.floor(minutes / 60);
+  const minute = minutes % 60;
+  return formatTime(`${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`);
+}
+
+function groupScheduleBlocks(blocks: ScheduleBlock[]): ScheduleBlockDisplayGroup[] {
+  const groups = new Map<string, ScheduleBlock[]>();
+  blocks.forEach((block) => {
+    const key = `${block.category}:${getScheduleBlockLabel(block)}`;
+    groups.set(key, [...(groups.get(key) ?? []), block]);
+  });
+
+  return Array.from(groups.entries())
+    .map(([key, groupedBlocks]) => {
+      const sortedBlocks = [...groupedBlocks].sort((left, right) => {
+        const leftSort = getScheduleBlockSortTime(left);
+        const rightSort = getScheduleBlockSortTime(right);
+        if (leftSort !== rightSort) {
+          return leftSort.localeCompare(rightSort);
+        }
+        return left.id - right.id;
+      });
+      return {
+        key,
+        label: getScheduleBlockGroupLabel(sortedBlocks[0]),
+        blocks: sortedBlocks,
+        summaryLabel: getSchedulePatternSummary(sortedBlocks),
+      };
+    })
+    .sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function groupCalendarScheduleBlocks(blocks: ScheduleBlock[]): CalendarScheduleBlockGroup[] {
+  const groups = new Map<string, ScheduleBlock[]>();
+  blocks.forEach((block) => {
+    const key = `${block.category}:${getScheduleBlockLabel(block)}:${getSchedulePatternKey(block)}`;
+    groups.set(key, [...(groups.get(key) ?? []), block]);
+  });
+
+  return Array.from(groups.entries())
+    .map(([key, groupedBlocks]) => {
+      const sortedBlocks = [...groupedBlocks].sort((left, right) => {
+        const leftSort = getCalendarScheduleSortKey(left);
+        const rightSort = getCalendarScheduleSortKey(right);
+        if (leftSort !== rightSort) {
+          return leftSort.localeCompare(rightSort);
+        }
+        return left.id - right.id;
+      });
+      return {
+        key,
+        label: getScheduleBlockGroupLabel(sortedBlocks[0]),
+        summaryLabel: getSchedulePatternSummary(sortedBlocks),
+        blocks: sortedBlocks,
+      };
+    })
+    .sort((left, right) =>
+      getCalendarScheduleSortKey(left.blocks[0]).localeCompare(
+        getCalendarScheduleSortKey(right.blocks[0]),
+      ),
+    );
+}
+
+function getWeekDateKeyForDay(weekStart: Date, day: DayOfWeek) {
+  const dayIndex = dayOptions.indexOf(day);
+  if (dayIndex === -1) {
+    return "";
+  }
+
+  return toDateOnlyString(addDays(weekStart, dayIndex));
+}
+
 function scheduleFormFromBlock(block: ScheduleBlock): ScheduleFormState {
   const durationFields = getDurationFormFields(block.duration_minutes);
 
@@ -685,6 +1039,9 @@ function scheduleFormFromBlock(block: ScheduleBlock): ScheduleFormState {
     block_type: block.block_type,
     category: block.category,
     day_of_week: block.day_of_week ?? "",
+    selected_dates: [],
+    same_time: true,
+    date_times: {},
     specific_date: block.specific_date ?? "",
     start_time: block.start_time ?? "",
     end_time: block.end_time ?? "",
@@ -694,6 +1051,14 @@ function scheduleFormFromBlock(block: ScheduleBlock): ScheduleFormState {
     )
       ? (block.recurrence as (typeof recurrenceOptions)[number])
       : "once",
+    time_preference:
+      block.time_preference && timePreferenceOptions.includes(block.time_preference)
+        ? block.time_preference
+        : "anytime",
+    flexible_placement_mode:
+      block.flexible_placement_mode === "whenever_free"
+        ? "whenever_free"
+        : "preferred_day",
     priority: block.priority,
     notes: block.notes ?? "",
     active: block.active,
@@ -973,18 +1338,32 @@ function ScheduleBlockActionMenu({
 function CalendarScheduleBlockCard({
   block,
   mutatingScheduleBlockId,
+  placingScheduleBlockId,
   onEdit,
   onArchive,
   onDelete,
+  onPlace,
+  placementCandidate,
+  onFindSlot,
   compact = false,
 }: Readonly<{
   block: ScheduleBlock;
   mutatingScheduleBlockId: number | null;
+  placingScheduleBlockId?: number | null;
   onEdit: (block: ScheduleBlock) => void;
   onArchive: (block: ScheduleBlock) => void;
   onDelete: (blockId: number) => void;
+  onPlace?: (blockId: number) => void;
+  placementCandidate?: SchedulePlacementCandidate | null;
+  onFindSlot?: () => void;
   compact?: boolean;
 }>) {
+  const canPlace =
+    block.active &&
+    block.block_type === "flexible" &&
+    !block.day_of_week &&
+    !block.specific_date;
+
   return (
     <article
       className={`rounded-lg border ${
@@ -1021,6 +1400,19 @@ function CalendarScheduleBlockCard({
             Flexible
           </span>
         ) : null}
+        {block.block_type === "flexible" &&
+        block.flexible_placement_mode === "whenever_free" ? (
+          <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2 py-0.5 text-[11px] font-semibold text-emerald-100">
+            Whenever free
+          </span>
+        ) : null}
+        {block.block_type === "flexible" &&
+        block.time_preference &&
+        block.time_preference !== "anytime" ? (
+          <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2 py-0.5 text-[11px] font-semibold text-amber-100">
+            {timePreferenceLabels[block.time_preference]} preferred
+          </span>
+        ) : null}
         <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] font-semibold text-neutral-400">
           {formatStatus(block.category)}
         </span>
@@ -1028,6 +1420,170 @@ function CalendarScheduleBlockCard({
           {formatStatus(block.priority)}
         </span>
       </div>
+      {canPlace ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {placementCandidate ? (
+            <button
+              type="button"
+              onClick={() => onPlace?.(block.id)}
+              disabled={placingScheduleBlockId === block.id}
+              className="rounded-md border border-emerald-300/25 bg-emerald-300/10 px-2 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {placingScheduleBlockId === block.id
+                ? "Placing..."
+                : "Place suggested slot"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onFindSlot}
+              className="rounded-md border border-cyan-300/25 bg-cyan-300/10 px-2 py-1 text-xs font-semibold text-cyan-100 hover:bg-cyan-300/20"
+            >
+              Find Slot
+            </button>
+          )}
+          {placementCandidate ? (
+            <span className="text-xs text-neutral-500">
+              {formatStatus(placementCandidate.day)} ·{" "}
+              {formatTime(placementCandidate.start_time)}-
+              {formatTime(placementCandidate.end_time)}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function CalendarScheduleBlockGroupCard({
+  group,
+  mutatingScheduleBlockId,
+  onEdit,
+  onArchive,
+  onDelete,
+}: Readonly<{
+  group: CalendarScheduleBlockGroup;
+  mutatingScheduleBlockId: number | null;
+  onEdit: (block: ScheduleBlock) => void;
+  onArchive: (block: ScheduleBlock) => void;
+  onDelete: (blockId: number) => void;
+}>) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <article className="rounded-lg border border-cyan-300/15 bg-cyan-300/[0.06]">
+      <button
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+        className="flex w-full items-start justify-between gap-2 px-2.5 py-2.5 text-left lg:px-3"
+      >
+        <span className="min-w-0">
+          <span className="block break-normal text-sm font-semibold leading-5 text-neutral-100">
+            {group.label}
+          </span>
+          <span className="mt-1 block text-[11px] leading-5 text-neutral-500 sm:text-xs">
+            {group.summaryLabel}
+          </span>
+        </span>
+        <span className="shrink-0 rounded-full border border-white/10 bg-neutral-950 px-2 py-0.5 text-[11px] font-semibold text-neutral-400">
+          {expanded ? "Close" : "Open"}
+        </span>
+      </button>
+      {expanded ? (
+        <div className="grid gap-2 border-t border-white/10 p-2">
+          {group.blocks.map((block) => (
+            <CalendarScheduleBlockCard
+              key={block.id}
+              block={block}
+              compact
+              mutatingScheduleBlockId={mutatingScheduleBlockId}
+              onEdit={onEdit}
+              onArchive={onArchive}
+              onDelete={onDelete}
+            />
+          ))}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function ScheduleBlockDisplayGroupCard({
+  group,
+  isFlexibleColumn,
+  mutatingScheduleBlockId,
+  placingScheduleBlockId,
+  placementCandidatesByBlockId,
+  onFindSlot,
+  onPlace,
+  onEdit,
+  onArchive,
+  onDelete,
+  defaultOpen = false,
+}: Readonly<{
+  group: ScheduleBlockDisplayGroup;
+  isFlexibleColumn: boolean;
+  mutatingScheduleBlockId: number | null;
+  placingScheduleBlockId: number | null;
+  placementCandidatesByBlockId: Map<number, SchedulePlacementCandidate>;
+  onFindSlot: () => void;
+  onPlace: (blockId: number) => void;
+  onEdit: (block: ScheduleBlock) => void;
+  onArchive: (block: ScheduleBlock) => void;
+  onDelete: (blockId: number) => void;
+  defaultOpen?: boolean;
+}>) {
+  const [expanded, setExpanded] = useState(defaultOpen);
+  const needsPlacement = group.blocks.filter(
+    (block) =>
+      block.active &&
+      block.block_type === "flexible" &&
+      !block.day_of_week &&
+      !block.specific_date,
+  ).length;
+  const summaryLabel =
+    needsPlacement > 0
+      ? `${group.summaryLabel} · ${needsPlacement} needs placement`
+      : group.summaryLabel;
+
+  return (
+    <article className="rounded-lg border border-white/10 bg-white/[0.03]">
+      <button
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+        className="flex min-h-12 w-full cursor-pointer items-center justify-between gap-3 px-3 py-2 text-left"
+      >
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-semibold text-neutral-100">
+            {group.label}
+          </span>
+          <span className="mt-0.5 block text-xs leading-5 text-neutral-500">
+            {summaryLabel}
+          </span>
+        </span>
+        <span className="shrink-0 rounded-full border border-white/10 bg-neutral-950 px-2 py-0.5 text-[11px] font-semibold text-neutral-400">
+          {expanded ? "Close" : "Open"}
+        </span>
+      </button>
+      {expanded ? (
+        <div className="grid gap-2 border-t border-white/10 p-2">
+          {group.blocks.map((block) => (
+            <CalendarScheduleBlockCard
+              key={block.id}
+              block={block}
+              compact
+              mutatingScheduleBlockId={mutatingScheduleBlockId}
+              placingScheduleBlockId={placingScheduleBlockId}
+              placementCandidate={placementCandidatesByBlockId.get(block.id)}
+              onFindSlot={isFlexibleColumn ? onFindSlot : undefined}
+              onPlace={onPlace}
+              onEdit={onEdit}
+              onArchive={onArchive}
+              onDelete={onDelete}
+            />
+          ))}
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -1098,6 +1654,8 @@ export default function OrbitBoard({
   const [creatingRecommendationId, setCreatingRecommendationId] = useState<
     string | null
   >(null);
+  const [taskComposerPrefill, setTaskComposerPrefill] =
+    useState<TaskComposerPrefill | null>(null);
   const [majorEvents, setMajorEvents] =
     useState<MajorEvent[]>(initialMajorEvents);
   const [selectedMajorEventId, setSelectedMajorEventId] = useState<
@@ -1127,6 +1685,9 @@ export default function OrbitBoard({
   >(null);
   const [savingScheduleBlock, setSavingScheduleBlock] = useState(false);
   const [mutatingScheduleBlockId, setMutatingScheduleBlockId] = useState<
+    number | null
+  >(null);
+  const [placingScheduleBlockId, setPlacingScheduleBlockId] = useState<
     number | null
   >(null);
   const [toast, setToast] = useState<Toast | null>(null);
@@ -1217,6 +1778,7 @@ export default function OrbitBoard({
     const blockers: string[] = [];
     const stalledMilestones = eventMilestones.filter(
       (milestone) =>
+        milestone.title !== INBOX_MILESTONE_TITLE &&
         ["active", "in_progress"].includes(milestone.status.toLowerCase()) &&
         milestone.progress_percent === 0,
     );
@@ -1311,6 +1873,28 @@ export default function OrbitBoard({
     );
 
     scheduleBlocks.forEach((block) => {
+      if (!block.active) {
+        return;
+      }
+
+      if (
+        block.block_type === "flexible" &&
+        !block.day_of_week &&
+        !block.specific_date
+      ) {
+        return;
+      }
+
+      if (block.recurrence === "daily") {
+        visibleWeekDays.forEach((day) => {
+          blocksByDate.set(day.dateKey, [
+            ...(blocksByDate.get(day.dateKey) ?? []),
+            block,
+          ]);
+        });
+        return;
+      }
+
       const dateKey = block.specific_date || null;
 
       if (dateKey) {
@@ -1335,25 +1919,29 @@ export default function OrbitBoard({
       blocksByDate.set(
         day.dateKey,
         [...(blocksByDate.get(day.dateKey) ?? [])].sort((left, right) => {
-          const leftTime = left.start_time ?? "";
-          const rightTime = right.start_time ?? "";
-          if (leftTime !== rightTime) {
-            return leftTime.localeCompare(rightTime);
+          const leftSort = getCalendarScheduleSortKey(left);
+          const rightSort = getCalendarScheduleSortKey(right);
+          if (leftSort !== rightSort) {
+            return leftSort.localeCompare(rightSort);
           }
-          return getScheduleBlockLabel(left).localeCompare(
-            getScheduleBlockLabel(right),
-          );
+          return left.id - right.id;
         }),
       );
     });
 
-    return blocksByDate;
+    return new Map(
+      Array.from(blocksByDate.entries()).map(([dateKey, blocks]) => [
+        dateKey,
+        groupCalendarScheduleBlocks(blocks),
+      ]),
+    );
   }, [scheduleBlocks, visibleWeekDays]);
   const unplacedScheduleBlocks = useMemo(() => {
     return scheduleBlocks
       .filter(
         (block) =>
           block.block_type === "flexible" &&
+          block.active &&
           !block.day_of_week &&
           !block.specific_date,
       )
@@ -1370,16 +1958,27 @@ export default function OrbitBoard({
   }, [scheduleBlocks]);
   const scheduleBlockGroups = useMemo(
     () => ({
-      fixed: scheduleBlocks.filter(
-        (block) => block.block_type === "fixed" && block.active,
+      fixed: groupScheduleBlocks(
+        scheduleBlocks.filter(
+          (block) => block.block_type === "fixed" && block.active,
+        ),
       ),
-      flexible: scheduleBlocks.filter(
-        (block) => block.block_type === "flexible" && block.active,
+      flexible: groupScheduleBlocks(
+        scheduleBlocks.filter(
+          (block) => block.block_type === "flexible" && block.active,
+        ),
       ),
-      archived: scheduleBlocks.filter((block) => !block.active),
+      archived: groupScheduleBlocks(scheduleBlocks.filter((block) => !block.active)),
     }),
     [scheduleBlocks],
   );
+  const placementCandidatesByBlockId = useMemo(() => {
+    const candidates = new Map<number, SchedulePlacementCandidate>();
+    (scheduleIntelligence?.placement_candidates ?? []).forEach((candidate) => {
+      candidates.set(candidate.flexible_block_id, candidate);
+    });
+    return candidates;
+  }, [scheduleIntelligence]);
   const currentScheduleMonthYear = useMemo(
     () => formatWeekHeading(visibleWeekDays),
     [visibleWeekDays],
@@ -1396,6 +1995,13 @@ export default function OrbitBoard({
 
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  function changeActiveTab(nextTab: Tab) {
+    if (nextTab !== "Tasks") {
+      setTaskComposerPrefill(null);
+    }
+    setActiveTab(nextTab);
+  }
 
   async function applySuggestedProgress(
     milestoneId: number,
@@ -1645,25 +2251,37 @@ export default function OrbitBoard({
     setToast(null);
 
     const response = await fetch(
-      `${API_BASE}/orbit/recommendations/${recommendationId}/create-task`,
+      `${API_BASE}/orbit/recommendations/${recommendationId}/task-draft`,
       { method: "POST" },
     );
 
     if (!response.ok) {
       setToast({
-        message: "Could not create recommended task.",
+        message: "Could not open task composer.",
         type: "error",
       });
       setCreatingRecommendationId(null);
       return;
     }
 
+    const draft = (await response.json()) as RecommendationTaskDraft;
+    setTaskDraftsByRecommendationId((current) => ({
+      ...current,
+      [recommendationId]: draft,
+    }));
+    setTaskComposerPrefill({
+      title: draft.title,
+      description: draft.description,
+      milestoneIds: draft.milestone_ids,
+      helperText: "Task composer opened with milestone preselected.",
+      requestId: Date.now(),
+    });
+    setActiveTab("Tasks");
     setToast({
-      message: "Recommended task created.",
+      message: "Task composer opened with milestone preselected.",
       type: "success",
     });
     setCreatingRecommendationId(null);
-    router.refresh();
   }
 
   function setMajorEventField<K extends keyof MajorEventFormState>(
@@ -1789,47 +2407,198 @@ export default function OrbitBoard({
     setScheduleForm((current) => ({ ...current, [field]: value }));
   }
 
+  function toggleScheduleSelectedDate(dateKey: string) {
+    setScheduleForm((current) => {
+      const selected = current.selected_dates.includes(dateKey)
+        ? current.selected_dates.filter((value) => value !== dateKey)
+        : [...current.selected_dates, dateKey];
+      const dateTimes = { ...current.date_times };
+
+      if (selected.includes(dateKey) && !dateTimes[dateKey]) {
+        dateTimes[dateKey] = {
+          start_time: current.start_time,
+          end_time: current.end_time,
+        };
+      }
+
+      return {
+        ...current,
+        selected_dates: selected,
+        date_times: dateTimes,
+        day_of_week:
+          editingScheduleBlockId || selected.length === 0
+            ? current.day_of_week
+            : "",
+        specific_date:
+          editingScheduleBlockId || selected.length === 0
+            ? current.specific_date
+            : "",
+      };
+    });
+  }
+
+  function setScheduleDateTime(
+    dateKey: string,
+    field: "start_time" | "end_time",
+    value: string,
+  ) {
+    setScheduleForm((current) => ({
+      ...current,
+      date_times: {
+        ...current.date_times,
+        [dateKey]: {
+          start_time: current.date_times[dateKey]?.start_time ?? current.start_time,
+          end_time: current.date_times[dateKey]?.end_time ?? current.end_time,
+          [field]: value,
+        },
+      },
+    }));
+  }
+
+  function setSchedulePickerWeek(nextWeekStart: Date) {
+    setVisibleWeekStart(nextWeekStart);
+    setScheduleForm((current) => ({
+      ...current,
+      selected_dates: [],
+      date_times: {},
+    }));
+  }
+
+  function getEditingScheduleBlock() {
+    return (
+      scheduleBlocks.find((block) => block.id === editingScheduleBlockId) ??
+      null
+    );
+  }
+
+  function getEditBaseDateKey(block: ScheduleBlock | null) {
+    if (!block) {
+      return "";
+    }
+
+    if (block.specific_date) {
+      return block.specific_date;
+    }
+
+    if (block.day_of_week) {
+      return getWeekDateKeyForDay(visibleWeekStart, block.day_of_week);
+    }
+
+    return "";
+  }
+
+  function scheduleBlockMatchesPayload(
+    block: ScheduleBlock,
+    payload: ReturnType<typeof getSchedulePayload>,
+    targetDateKey: string,
+    targetDay: DayOfWeek,
+  ) {
+    const titleMatches =
+      (block.title ?? "").trim() === String(payload.title ?? "").trim();
+    const categoryMatches = block.category === payload.category;
+    const timeMatches =
+      (block.start_time ?? "") === (payload.start_time ?? "") &&
+      (block.end_time ?? "") === (payload.end_time ?? "");
+
+    if (!titleMatches || !categoryMatches || !timeMatches) {
+      return false;
+    }
+
+    if (block.recurrence === "daily") {
+      return true;
+    }
+
+    if (payload.specific_date) {
+      return block.specific_date === targetDateKey;
+    }
+
+    return block.day_of_week === targetDay && block.recurrence === payload.recurrence;
+  }
+
   function startScheduleBlockCreate(blockType: ScheduleBlockType) {
     setEditingScheduleBlockId(null);
     setScheduleForm({
       ...emptyScheduleForm,
       block_type: blockType,
       day_of_week: blockType === "fixed" ? "monday" : "",
+      flexible_placement_mode:
+        blockType === "flexible" ? "whenever_free" : "preferred_day",
     });
     setActiveScheduleSection("add");
   }
 
   function startScheduleBlockEdit(block: ScheduleBlock) {
+    const editWeekStart = block.specific_date
+      ? getWeekStart(new Date(`${block.specific_date}T00:00:00`))
+      : visibleWeekStart;
+    const baseDateKey =
+      block.specific_date ??
+      (block.day_of_week
+        ? getWeekDateKeyForDay(editWeekStart, block.day_of_week)
+        : "");
+
     setEditingScheduleBlockId(block.id);
-    setScheduleForm(scheduleFormFromBlock(block));
+    setVisibleWeekStart(editWeekStart);
+    setScheduleForm({
+      ...scheduleFormFromBlock(block),
+      selected_dates: baseDateKey ? [baseDateKey] : [],
+      date_times: baseDateKey
+        ? {
+            [baseDateKey]: {
+              start_time: block.start_time ?? "",
+              end_time: block.end_time ?? "",
+            },
+          }
+        : {},
+    });
     setActiveScheduleSection("add");
   }
 
-  function getSchedulePayload() {
+  function getSchedulePayload(
+    overrides: Partial<Pick<
+      ScheduleFormState,
+      "day_of_week" | "specific_date" | "start_time" | "end_time" | "recurrence"
+    >> = {},
+  ) {
+    const form = { ...scheduleForm, ...overrides };
     const durationMinutes =
-      scheduleForm.block_type === "flexible"
-        ? getDurationMinutesFromForm(scheduleForm)
+      form.block_type === "flexible"
+        ? getDurationMinutesFromForm(form)
         : null;
+    const usesWheneverFree =
+      form.block_type === "flexible" &&
+      form.flexible_placement_mode === "whenever_free";
 
     return {
-      title: scheduleForm.title.trim(),
-      block_type: scheduleForm.block_type,
-      category: scheduleForm.category,
-      day_of_week: scheduleForm.day_of_week || null,
-      specific_date: scheduleForm.specific_date || null,
-      start_time: scheduleForm.start_time || null,
-      end_time: scheduleForm.end_time || null,
+      title: form.title.trim(),
+      block_type: form.block_type,
+      category: form.category,
+      day_of_week: usesWheneverFree ? null : form.day_of_week || null,
+      specific_date: usesWheneverFree ? null : form.specific_date || null,
+      start_time: form.start_time || null,
+      end_time: form.end_time || null,
       duration_minutes: durationMinutes,
-      recurrence: scheduleForm.recurrence,
-      priority: scheduleForm.priority,
-      notes: scheduleForm.notes.trim() || null,
-      active: scheduleForm.active,
+      recurrence: form.recurrence,
+      time_preference: form.time_preference,
+      flexible_placement_mode: form.flexible_placement_mode,
+      priority: form.priority,
+      notes: form.notes.trim() || null,
+      active: form.active,
     };
   }
 
   async function saveScheduleBlock() {
+    const editingBlock = getEditingScheduleBlock();
+    const editBaseDateKey = getEditBaseDateKey(editingBlock);
+    const selectedDates =
+      scheduleForm.block_type === "fixed" ? scheduleForm.selected_dates : [];
+    const additionalSelectedDates = editingScheduleBlockId
+      ? selectedDates.filter((dateKey) => dateKey !== editBaseDateKey)
+      : selectedDates;
+
     if (
       scheduleForm.block_type === "fixed" &&
+      additionalSelectedDates.length === 0 &&
       ((!scheduleForm.day_of_week && !scheduleForm.specific_date) ||
         !scheduleForm.start_time ||
         !scheduleForm.end_time)
@@ -1839,6 +2608,30 @@ export default function OrbitBoard({
         type: "error",
       });
       return;
+    }
+
+    if (
+      scheduleForm.block_type === "fixed" &&
+      additionalSelectedDates.length > 0
+    ) {
+      const missingDateTime = additionalSelectedDates.some((dateKey) => {
+        const dateTime = scheduleForm.date_times[dateKey];
+        const startTime = scheduleForm.same_time
+          ? scheduleForm.start_time
+          : dateTime?.start_time;
+        const endTime = scheduleForm.same_time
+          ? scheduleForm.end_time
+          : dateTime?.end_time;
+        return !startTime || !endTime;
+      });
+
+      if (missingDateTime) {
+        setToast({
+          message: "Selected dates need start and end times.",
+          type: "error",
+        });
+        return;
+      }
     }
 
     if (scheduleForm.block_type === "flexible") {
@@ -1864,23 +2657,101 @@ export default function OrbitBoard({
     setSavingScheduleBlock(true);
     setToast(null);
 
-    const response = await fetch(
-      editingScheduleBlockId
-        ? `${API_BASE}/orbit/schedule-blocks/${editingScheduleBlockId}`
-        : `${API_BASE}/orbit/schedule-blocks`,
-      {
-        method: editingScheduleBlockId ? "PATCH" : "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(getSchedulePayload()),
+    const basePayload = getSchedulePayload();
+    const additionalPayloads =
+      scheduleForm.block_type === "fixed" && additionalSelectedDates.length > 0
+        ? additionalSelectedDates.map((dateKey) => {
+            const dateTime = scheduleForm.date_times[dateKey] ?? {
+              start_time: scheduleForm.start_time,
+              end_time: scheduleForm.end_time,
+            };
+            const targetDay =
+              visibleWeekDays.find((weekDay) => weekDay.dateKey === dateKey)
+                ?.day ?? "monday";
+            const createsWeeklyBlock =
+              scheduleForm.recurrence === "weekly" && !scheduleForm.specific_date;
+
+            return getSchedulePayload({
+              day_of_week: createsWeeklyBlock ? targetDay : "",
+              specific_date: createsWeeklyBlock ? "" : dateKey,
+              start_time: scheduleForm.same_time
+                ? scheduleForm.start_time
+                : dateTime.start_time,
+              end_time: scheduleForm.same_time
+                ? scheduleForm.end_time
+                : dateTime.end_time,
+              recurrence: createsWeeklyBlock ? "weekly" : "once",
+            });
+          })
+        : [];
+    const duplicateFilteredAdditionalPayloads = additionalPayloads.filter(
+      (payload, index) => {
+        const dateKey = additionalSelectedDates[index];
+        const targetDay =
+          visibleWeekDays.find((weekDay) => weekDay.dateKey === dateKey)?.day ??
+          "monday";
+
+        return !scheduleBlocks.some(
+          (block) =>
+            block.id !== editingScheduleBlockId &&
+            scheduleBlockMatchesPayload(block, payload, dateKey, targetDay),
+        );
       },
     );
 
-    if (!response.ok) {
+    const savedBlocks: ScheduleBlock[] = [];
+    let response: Response | null = null;
+
+    if (editingScheduleBlockId) {
+      response = await fetch(
+        `${API_BASE}/orbit/schedule-blocks/${editingScheduleBlockId}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(basePayload),
+        },
+      );
+
+      if (response.ok) {
+        savedBlocks.push((await response.json()) as ScheduleBlock);
+      }
+    }
+
+    const createPayloads = editingScheduleBlockId
+      ? duplicateFilteredAdditionalPayloads
+      : additionalPayloads.length > 0
+        ? additionalPayloads
+        : [basePayload];
+
+    for (const payload of createPayloads) {
+      if (response && !response.ok) {
+        break;
+      }
+
+      response = await fetch(
+        `${API_BASE}/orbit/schedule-blocks`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        },
+      );
+
+      if (!response.ok) {
+        break;
+      }
+
+      savedBlocks.push((await response.json()) as ScheduleBlock);
+    }
+
+    if (response && !response.ok) {
       let message = "Could not save schedule block.";
       try {
-        const errorBody = (await response.json()) as { detail?: string };
+        const errorBody = (await response?.json()) as { detail?: string };
         message = errorBody.detail ?? message;
       } catch {
         message = "Could not save schedule block.";
@@ -1891,15 +2762,18 @@ export default function OrbitBoard({
       return;
     }
 
-    const savedBlock = (await response.json()) as ScheduleBlock;
     setScheduleBlocks((current) => {
       if (editingScheduleBlockId) {
-        return current.map((block) =>
-          block.id === savedBlock.id ? savedBlock : block,
-        );
+        const savedBlock = savedBlocks[0];
+        return [
+          ...current.map((block) =>
+            block.id === savedBlock.id ? savedBlock : block,
+          ),
+          ...savedBlocks.slice(1),
+        ];
       }
 
-      return [...current, savedBlock];
+      return [...current, ...savedBlocks];
     });
     setScheduleForm({
       ...emptyScheduleForm,
@@ -1907,7 +2781,21 @@ export default function OrbitBoard({
       day_of_week: scheduleForm.block_type === "fixed" ? "monday" : "",
     });
     setEditingScheduleBlockId(null);
-    setToast({ message: "Schedule block saved.", type: "success" });
+    setToast({
+      message:
+        editingScheduleBlockId && savedBlocks.length > 1
+          ? `${savedBlocks.length - 1} additional schedule block${
+              savedBlocks.length === 2 ? "" : "s"
+            } added.`
+          : editingScheduleBlockId &&
+              duplicateFilteredAdditionalPayloads.length <
+                additionalPayloads.length
+            ? "Schedule block saved. Matching duplicate days were skipped."
+            : savedBlocks.length > 1
+          ? `${savedBlocks.length} schedule blocks saved.`
+          : "Schedule block saved.",
+      type: "success",
+    });
     setSavingScheduleBlock(false);
     setActiveScheduleSection("calendar");
     router.refresh();
@@ -1971,6 +2859,53 @@ export default function OrbitBoard({
     router.refresh();
   }
 
+  async function placeFlexibleScheduleBlock(blockId: number) {
+    setPlacingScheduleBlockId(blockId);
+    setToast(null);
+
+    const response = await fetch(
+      `${API_BASE}/orbit/schedule-blocks/${blockId}/place`,
+      { method: "POST" },
+    );
+
+    if (!response.ok) {
+      let message = "Could not place flexible block.";
+      try {
+        const errorBody = (await response.json()) as { detail?: string };
+        message = errorBody.detail ?? message;
+      } catch {
+        message = "Could not place flexible block.";
+      }
+
+      setToast({ message, type: "error" });
+      setPlacingScheduleBlockId(null);
+      return;
+    }
+
+    const result = (await response.json()) as ScheduleBlockPlacementResult;
+    setScheduleBlocks((current) => {
+      const withoutPlacedFixedDuplicate = current.filter(
+        (block) =>
+          block.id !== result.fixed_block.id &&
+          block.id !== result.source_block.id,
+      );
+      return [
+        ...withoutPlacedFixedDuplicate,
+        result.source_block,
+        result.fixed_block,
+      ];
+    });
+    setToast({
+      message: result.created
+        ? "Flexible block placed on the calendar."
+        : "Existing calendar block found. Flexible block archived.",
+      type: "success",
+    });
+    setPlacingScheduleBlockId(null);
+    setActiveScheduleSection("calendar");
+    router.refresh();
+  }
+
   return (
     <section className="relative overflow-hidden rounded-2xl border border-white/10 bg-neutral-900/80 p-3 shadow-2xl shadow-black/30 sm:p-4">
       {toast ? (
@@ -1991,7 +2926,7 @@ export default function OrbitBoard({
           <button
             key={tab}
             type="button"
-            onClick={() => setActiveTab(tab)}
+              onClick={() => changeActiveTab(tab)}
             className={`shrink-0 rounded-full border px-3 py-2 text-xs font-semibold transition sm:py-1.5 ${
               activeTab === tab
                 ? "border-cyan-300/50 bg-cyan-300/15 text-cyan-100"
@@ -2192,6 +3127,9 @@ export default function OrbitBoard({
                               </span>
                             ))}
                           </div>
+                          <p className="mt-1 truncate text-[11px] text-neutral-500">
+                            Milestone: {gap.milestone_title ?? gap.title}
+                          </p>
                           <div className="mt-1.5 flex flex-wrap gap-1.5">
                             <button
                               type="button"
@@ -2224,9 +3162,6 @@ export default function OrbitBoard({
                                   {draft.description}
                                 </p>
                               ) : null}
-                              <p className="mt-1 truncate text-[11px] text-neutral-500">
-                                Milestone: {gap.title}
-                              </p>
                             </div>
                           ) : null}
                         </div>
@@ -2501,8 +3436,11 @@ export default function OrbitBoard({
             </p>
           ) : (
             <InboxTaskControls
+              key={taskComposerPrefill?.requestId ?? "task-composer"}
               initialTasks={inboxTasks}
               milestones={tagMilestones}
+              composerPrefill={taskComposerPrefill}
+              onComposerPrefillConsumed={() => setTaskComposerPrefill(null)}
             />
           )}
         </div>
@@ -2635,63 +3573,223 @@ export default function OrbitBoard({
               </div>
 
               {scheduleForm.block_type === "fixed" ? (
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="grid gap-3">
+                  <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <span className="text-xs font-semibold text-neutral-300">
+                            {editingScheduleBlockId
+                              ? "Apply to more days"
+                              : "Dates this week"}
+                          </span>
+                          <p className="mt-1 text-[11px] text-neutral-500">
+                            {formatWeekHeading(visibleWeekDays)}
+                          </p>
+                        </div>
+                        <label className="flex items-center gap-2 text-xs text-neutral-400">
+                          <input
+                            type="checkbox"
+                            checked={scheduleForm.same_time}
+                            onChange={(event) =>
+                              setScheduleField("same_time", event.target.checked)
+                            }
+                            className="h-4 w-4 accent-cyan-300"
+                          />
+                          Same time
+                        </label>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSchedulePickerWeek(addDays(visibleWeekStart, -7))
+                          }
+                          className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white"
+                        >
+                          Previous Week
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSchedulePickerWeek(getWeekStart(new Date()))
+                          }
+                          className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white"
+                        >
+                          This Week
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSchedulePickerWeek(addDays(visibleWeekStart, 7))
+                          }
+                          className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-xs font-semibold text-neutral-300 hover:border-white/20 hover:text-white"
+                        >
+                          Next Week
+                        </button>
+                      </div>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                        {visibleWeekDays.map((weekDay) => {
+                          const selected = scheduleForm.selected_dates.includes(
+                            weekDay.dateKey,
+                          );
+                          const dateTime = scheduleForm.date_times[weekDay.dateKey] ?? {
+                            start_time: scheduleForm.start_time,
+                            end_time: scheduleForm.end_time,
+                          };
+
+                          return (
+                            <div
+                              key={weekDay.dateKey}
+                              className={`rounded-lg border p-2 ${
+                                selected
+                                  ? "border-cyan-300/40 bg-cyan-300/10"
+                                  : "border-white/10 bg-neutral-950/60"
+                              }`}
+                            >
+                              <label className="flex items-center gap-2 text-xs font-semibold text-neutral-200">
+                                <input
+                                  type="checkbox"
+                                  checked={selected}
+                                  onChange={() =>
+                                    toggleScheduleSelectedDate(weekDay.dateKey)
+                                  }
+                                  className="h-4 w-4 accent-cyan-300"
+                                />
+                                <span>
+                                  {formatStatus(weekDay.day)} ·{" "}
+                                  {formatWeekDateLabel(weekDay.date)}
+                                </span>
+                              </label>
+                              {selected && !scheduleForm.same_time ? (
+                                <div className="mt-2 grid grid-cols-2 gap-2">
+                                  <input
+                                    type="time"
+                                    value={dateTime.start_time}
+                                    onChange={(event) =>
+                                      setScheduleDateTime(
+                                        weekDay.dateKey,
+                                        "start_time",
+                                        event.target.value,
+                                      )
+                                    }
+                                    className="min-w-0 rounded-md border border-white/10 bg-white/[0.03] px-2 py-1.5 text-xs text-white outline-none focus:border-cyan-300/50"
+                                  />
+                                  <input
+                                    type="time"
+                                    value={dateTime.end_time}
+                                    onChange={(event) =>
+                                      setScheduleDateTime(
+                                        weekDay.dateKey,
+                                        "end_time",
+                                        event.target.value,
+                                      )
+                                    }
+                                    className="min-w-0 rounded-md border border-white/10 bg-white/[0.03] px-2 py-1.5 text-xs text-white outline-none focus:border-cyan-300/50"
+                                  />
+                                </div>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                      <span>Day</span>
+                      <select
+                        value={scheduleForm.day_of_week}
+                        onChange={(event) =>
+                          setScheduleField(
+                            "day_of_week",
+                            event.target.value as DayOfWeek | "",
+                          )
+                        }
+                        disabled={
+                          !editingScheduleBlockId &&
+                          scheduleForm.selected_dates.length > 0
+                        }
+                        className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <option value="">Recurring day</option>
+                        {dayOptions.map((day) => (
+                          <option key={day} value={day}>
+                            {formatStatus(day)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                      <span>Specific Date</span>
+                      <input
+                        type="date"
+                        value={scheduleForm.specific_date}
+                        onChange={(event) =>
+                          setScheduleField("specific_date", event.target.value)
+                        }
+                        disabled={
+                          !editingScheduleBlockId &&
+                          scheduleForm.selected_dates.length > 0
+                        }
+                        className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50 disabled:cursor-not-allowed disabled:opacity-50"
+                      />
+                    </label>
+                    <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                      <span>Start Time</span>
+                      <input
+                        type="time"
+                        value={scheduleForm.start_time}
+                        onChange={(event) =>
+                          setScheduleField("start_time", event.target.value)
+                        }
+                        className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                      />
+                    </label>
+                    <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                      <span>End Time</span>
+                      <input
+                        type="time"
+                        value={scheduleForm.end_time}
+                        onChange={(event) =>
+                          setScheduleField("end_time", event.target.value)
+                        }
+                        className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
                   <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
-                    <span>Day</span>
+                    <span>Placement</span>
                     <select
-                      value={scheduleForm.day_of_week}
-                      onChange={(event) =>
-                        setScheduleField(
-                          "day_of_week",
-                          event.target.value as DayOfWeek | "",
-                        )
-                      }
+                      value={scheduleForm.flexible_placement_mode}
+                      onChange={(event) => {
+                        const mode = event.target.value as FlexiblePlacementMode;
+                        setScheduleForm((current) => ({
+                          ...current,
+                          flexible_placement_mode: mode,
+                          day_of_week:
+                            mode === "whenever_free" ? "" : current.day_of_week,
+                          specific_date:
+                            mode === "whenever_free"
+                              ? ""
+                              : current.specific_date,
+                        }));
+                      }}
                       className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
                     >
-                      <option value="">Recurring day</option>
-                      {dayOptions.map((day) => (
-                        <option key={day} value={day}>
-                          {formatStatus(day)}
+                      {(
+                        Object.keys(
+                          flexiblePlacementLabels,
+                        ) as FlexiblePlacementMode[]
+                      ).map((mode) => (
+                        <option key={mode} value={mode}>
+                          {flexiblePlacementLabels[mode]}
                         </option>
                       ))}
                     </select>
                   </label>
-                  <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
-                    <span>Specific Date</span>
-                    <input
-                      type="date"
-                      value={scheduleForm.specific_date}
-                      onChange={(event) =>
-                        setScheduleField("specific_date", event.target.value)
-                      }
-                      className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
-                    />
-                  </label>
-                  <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
-                    <span>Start Time</span>
-                    <input
-                      type="time"
-                      value={scheduleForm.start_time}
-                      onChange={(event) =>
-                        setScheduleField("start_time", event.target.value)
-                      }
-                      className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
-                    />
-                  </label>
-                  <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
-                    <span>End Time</span>
-                    <input
-                      type="time"
-                      value={scheduleForm.end_time}
-                      onChange={(event) =>
-                        setScheduleField("end_time", event.target.value)
-                      }
-                      className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
-                    />
-                  </label>
-                </div>
-              ) : (
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                   <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
                     <span>Preferred Day</span>
                     <select
@@ -2702,7 +3800,10 @@ export default function OrbitBoard({
                           event.target.value as DayOfWeek | "",
                         )
                       }
-                      className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                      disabled={
+                        scheduleForm.flexible_placement_mode === "whenever_free"
+                      }
+                      className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <option value="">Preferred day</option>
                       {dayOptions.map((day) => (
@@ -2720,7 +3821,10 @@ export default function OrbitBoard({
                       onChange={(event) =>
                         setScheduleField("specific_date", event.target.value)
                       }
-                      className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                      disabled={
+                        scheduleForm.flexible_placement_mode === "whenever_free"
+                      }
+                      className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50 disabled:cursor-not-allowed disabled:opacity-50"
                     />
                   </label>
                   <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
@@ -2756,6 +3860,25 @@ export default function OrbitBoard({
                       {durationUnitOptions.map((unit) => (
                         <option key={unit} value={unit}>
                           {unit === "minutes" ? "Minutes" : "Hours"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="grid gap-1.5 text-xs font-semibold text-neutral-300">
+                    <span>Time Preference</span>
+                    <select
+                      value={scheduleForm.time_preference}
+                      onChange={(event) =>
+                        setScheduleField(
+                          "time_preference",
+                          event.target.value as ScheduleTimePreference,
+                        )
+                      }
+                      className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-300/50"
+                    >
+                      {timePreferenceOptions.map((preference) => (
+                        <option key={preference} value={preference}>
+                          {timePreferenceLabels[preference]}
                         </option>
                       ))}
                     </select>
@@ -2845,11 +3968,11 @@ export default function OrbitBoard({
                   Schedule Intelligence
                 </h2>
                 <p className="mt-1 text-xs text-neutral-500">
-                  Read-only schedule density and placement signals
+                  Schedule density, open windows, and manual placement actions
                 </p>
               </div>
               <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
-                Recommendations only
+                Manual placement
               </span>
             </div>
 
@@ -2899,6 +4022,57 @@ export default function OrbitBoard({
                 </div>
               </div>
               <div className="grid gap-3 lg:grid-cols-2">
+                <div className="rounded-lg border border-white/10 bg-black/20 p-3 lg:col-span-2">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                    Place Flexible Blocks
+                  </h3>
+                  {scheduleIntelligence.placement_candidates.length > 0 ? (
+                    <div className="mt-2 grid gap-2 md:grid-cols-2">
+                      {scheduleIntelligence.placement_candidates.map((candidate) => (
+                        <div
+                          key={`${candidate.flexible_block_id}-${candidate.date}-${candidate.start_time}`}
+                          className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-2"
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold text-neutral-100">
+                                {candidate.title}
+                              </p>
+                              <p className="mt-1 text-xs leading-5 text-neutral-500">
+                                {formatStatus(candidate.day)} ·{" "}
+                                {formatTime(candidate.start_time)}-
+                                {formatTime(candidate.end_time)} ·{" "}
+                                {candidate.reason}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                placeFlexibleScheduleBlock(
+                                  candidate.flexible_block_id,
+                                )
+                              }
+                              disabled={
+                                placingScheduleBlockId ===
+                                candidate.flexible_block_id
+                              }
+                              className="rounded-md border border-emerald-300/25 bg-emerald-300/10 px-2 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {placingScheduleBlockId ===
+                              candidate.flexible_block_id
+                                ? "Placing..."
+                                : "Place Block"}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-sm text-neutral-500">
+                      No flexible block placements are available for this week.
+                    </p>
+                  )}
+                </div>
                 <div className="rounded-lg border border-white/10 bg-black/20 p-3">
                   <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
                     Best Windows
@@ -2998,7 +4172,7 @@ export default function OrbitBoard({
               <div className="space-y-3">
                 <div className="space-y-3 sm:hidden">
                   {visibleWeekDays.map((weekDay) => {
-                    const blocks =
+                    const groups =
                       scheduleBlocksByDate.get(weekDay.dateKey) ?? [];
                     const today = isSameDate(weekDay.date, new Date());
 
@@ -3025,15 +4199,15 @@ export default function OrbitBoard({
                             </h3>
                           </div>
                           <span className="shrink-0 rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-500">
-                            {blocks.length}
+                            {groups.length}
                           </span>
                         </div>
                         <div className="space-y-2 p-2.5">
-                          {blocks.length > 0 ? (
-                            blocks.map((block) => (
-                              <CalendarScheduleBlockCard
-                                key={block.id}
-                                block={block}
+                          {groups.length > 0 ? (
+                            groups.map((group) => (
+                              <CalendarScheduleBlockGroupCard
+                                key={group.key}
+                                group={group}
                                 mutatingScheduleBlockId={
                                   mutatingScheduleBlockId
                                 }
@@ -3052,17 +4226,17 @@ export default function OrbitBoard({
                     );
                   })}
                 </div>
-                <div className="hidden overflow-x-auto pb-1 sm:block">
-                  <div className="grid min-w-[760px] grid-cols-7 gap-2 lg:min-w-[980px]">
+                <div className="hidden max-w-full overflow-x-auto pb-2 sm:block">
+                  <div className="grid min-w-[78rem] grid-cols-[repeat(7,minmax(10.75rem,1fr))] gap-2 xl:min-w-[86rem]">
                     {visibleWeekDays.map((weekDay) => {
-                      const blocks =
+                      const groups =
                         scheduleBlocksByDate.get(weekDay.dateKey) ?? [];
                       const today = isSameDate(weekDay.date, new Date());
 
                       return (
                         <div
                           key={weekDay.dateKey}
-                          className={`min-h-[22rem] rounded-lg border lg:min-h-[26rem] ${
+                          className={`min-h-[22rem] min-w-0 rounded-lg border lg:min-h-[26rem] ${
                             today
                               ? "border-cyan-300/35 bg-cyan-300/[0.05]"
                               : "border-white/10 bg-black/20"
@@ -3082,15 +4256,15 @@ export default function OrbitBoard({
                               </p>
                             </div>
                             <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-500">
-                              {blocks.length}
+                              {groups.length}
                             </span>
                           </div>
-                          <div className="space-y-2 p-2.5">
-                            {blocks.length > 0 ? (
-                              blocks.map((block) => (
-                                <CalendarScheduleBlockCard
-                                  key={block.id}
-                                  block={block}
+                          <div className="space-y-2 p-2">
+                            {groups.length > 0 ? (
+                              groups.map((group) => (
+                                <CalendarScheduleBlockGroupCard
+                                  key={group.key}
+                                  group={group}
                                   mutatingScheduleBlockId={
                                     mutatingScheduleBlockId
                                   }
@@ -3145,8 +4319,13 @@ export default function OrbitBoard({
                   ["Fixed Blocks", scheduleBlockGroups.fixed],
                   ["Flexible Blocks", scheduleBlockGroups.flexible],
                   ["Archived / Inactive", scheduleBlockGroups.archived],
-                ].map(([title, blocks]) => {
-                  const typedBlocks = blocks as ScheduleBlock[];
+                ].map(([title, groups]) => {
+                  const typedGroups = groups as ScheduleBlockDisplayGroup[];
+                  const totalBlocks = typedGroups.reduce(
+                    (sum, group) => sum + group.blocks.length,
+                    0,
+                  );
+                  const isFlexibleColumn = title === "Flexible Blocks";
 
                   return (
                     <section
@@ -3158,22 +4337,33 @@ export default function OrbitBoard({
                           {title as string}
                         </h3>
                         <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] text-neutral-500">
-                          {typedBlocks.length}
+                          {totalBlocks}
                         </span>
                       </div>
-                      {typedBlocks.length > 0 ? (
+                      {typedGroups.length > 0 ? (
                         <div className="grid gap-2">
-                          {typedBlocks.map((block) => (
-                            <CalendarScheduleBlockCard
-                              key={block.id}
-                              block={block}
-                              compact
-                              mutatingScheduleBlockId={mutatingScheduleBlockId}
-                              onEdit={startScheduleBlockEdit}
-                              onArchive={archiveScheduleBlock}
-                              onDelete={deleteScheduleBlock}
-                            />
-                          ))}
+                          {typedGroups.map((group) => {
+                            return (
+                              <ScheduleBlockDisplayGroupCard
+                                key={group.key}
+                                group={group}
+                                isFlexibleColumn={isFlexibleColumn}
+                                defaultOpen={typedGroups.length <= 4}
+                                mutatingScheduleBlockId={mutatingScheduleBlockId}
+                                placingScheduleBlockId={placingScheduleBlockId}
+                                placementCandidatesByBlockId={
+                                  placementCandidatesByBlockId
+                                }
+                                onFindSlot={() =>
+                                  setActiveScheduleSection("intelligence")
+                                }
+                                onPlace={placeFlexibleScheduleBlock}
+                                onEdit={startScheduleBlockEdit}
+                                onArchive={archiveScheduleBlock}
+                                onDelete={deleteScheduleBlock}
+                              />
+                            );
+                          })}
                         </div>
                       ) : (
                         <p className="rounded-lg border border-dashed border-white/10 px-3 py-4 text-xs leading-5 text-neutral-600">
@@ -3217,7 +4407,8 @@ export default function OrbitBoard({
                         {milestone.title}
                       </h2>
                       <p className="mt-1 text-xs text-neutral-500">
-                        Tasks: {advisory?.completed_linked_tasks ?? 0} complete /{" "}
+                        Unique tasks: {advisory?.completed_linked_tasks ?? 0}{" "}
+                        complete /{" "}
                         {advisory?.total_linked_tasks ?? linkedTasks.length} total
                       </p>
                     </div>
@@ -3262,15 +4453,17 @@ export default function OrbitBoard({
                   ) : null}
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-500">
                     <span>{openLinkedTasks.length} open</span>
-                    <span>Current: {milestone.progress_percent}%</span>
+                    <span>Current saved progress: {milestone.progress_percent}%</span>
                     <span>
-                      Task-based suggestion:{" "}
+                      Task completion suggestion:{" "}
                       {suggestedPercent === null ? "--" : `${suggestedPercent}%`}
                     </span>
                     {showSuggestedPercent ? (
                       <span className="text-cyan-200">
-                        Suggested from tasks: {suggestedPercent}%
+                        Suggested progress update available: {suggestedPercent}%
                       </span>
+                    ) : suggestedPercent !== null ? (
+                      <span>Task suggestion matches current progress</span>
                     ) : null}
                     {suggestedPercent === null && advisory?.reason ? (
                       <span>{advisory.reason}</span>
@@ -3381,13 +4574,34 @@ export default function OrbitBoard({
                   </div>
                   <div className="rounded-lg bg-white/[0.03] px-3 py-2">
                     <p className="text-lg font-semibold text-white">
-                      {dailyCloseout.trade_summary.sessions_logged_today}
+                      {dailyCloseout.trade_summary.trading_sessions_reviewed ??
+                        dailyCloseout.trade_summary.sessions_logged_today}
                     </p>
                     <p className="text-xs text-neutral-500">
-                      {dailyCloseout.trade_summary.sessions_logged_today === 0
-                        ? "No trade sessions logged today"
-                        : "trade sessions today"}
+                      {(dailyCloseout.trade_summary.trading_sessions_reviewed ??
+                        dailyCloseout.trade_summary.sessions_logged_today) === 0
+                        ? "No trade days logged today"
+                        : "trade days today"}
                     </p>
+                  </div>
+                  <div className="rounded-lg bg-white/[0.03] px-3 py-2">
+                    <p className="text-lg font-semibold text-white">
+                      {dailyCloseout.trade_summary.trade_count ?? 0}
+                    </p>
+                    <p className="text-xs text-neutral-500">journal trades</p>
+                  </div>
+                  <div className="rounded-lg bg-white/[0.03] px-3 py-2">
+                    <p className="text-lg font-semibold text-white">
+                      {dailyCloseout.trade_summary.total_pnl.toLocaleString(
+                        "en-US",
+                        {
+                          style: "currency",
+                          currency: "USD",
+                          maximumFractionDigits: 2,
+                        },
+                      )}
+                    </p>
+                    <p className="text-xs text-neutral-500">journal PnL</p>
                   </div>
                 </div>
 

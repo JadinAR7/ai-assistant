@@ -1,6 +1,12 @@
 "use client";
 
-import { type FormEvent, useMemo, useState, useTransition } from "react";
+import {
+  type FormEvent,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import { useRouter } from "next/navigation";
 
 const API_BASE =
@@ -24,6 +30,14 @@ export type LinkedMilestone = {
   title: string;
   status: string;
   progress_percent: number;
+};
+
+export type TaskComposerPrefill = {
+  title?: string;
+  description?: string | null;
+  milestoneIds?: number[];
+  helperText?: string;
+  requestId: number;
 };
 
 function isCompleted(task: InboxTask) {
@@ -117,16 +131,29 @@ function getPriorityBadgeClasses(score = 0) {
 export default function InboxTaskControls({
   initialTasks,
   milestones,
+  composerPrefill,
+  onComposerPrefillConsumed,
 }: Readonly<{
   initialTasks: InboxTask[];
   milestones: LinkedMilestone[];
+  composerPrefill?: TaskComposerPrefill | null;
+  onComposerPrefillConsumed?: () => void;
 }>) {
   const router = useRouter();
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
   const [tasks, setTasks] = useState(initialTasks);
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
+  const [title, setTitle] = useState(composerPrefill?.title ?? "");
+  const [description, setDescription] = useState(
+    composerPrefill?.description ?? "",
+  );
   const [dueDate, setDueDate] = useState("");
-  const [selectedMilestoneIds, setSelectedMilestoneIds] = useState<number[]>([]);
+  const [selectedMilestoneIds, setSelectedMilestoneIds] = useState<number[]>(
+    composerPrefill?.milestoneIds ?? [],
+  );
+  const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
+  const [composerHelperText, setComposerHelperText] = useState<string | null>(
+    composerPrefill?.helperText ?? null,
+  );
   const [showCompletedToday, setShowCompletedToday] = useState(false);
   const [showOlderCompleted, setShowOlderCompleted] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -182,6 +209,48 @@ export default function InboxTaskControls({
     refreshOrbit();
   }
 
+  function resetComposer() {
+    setEditingTaskId(null);
+    setTitle("");
+    setDescription("");
+    setDueDate("");
+    setSelectedMilestoneIds([]);
+    setComposerHelperText(null);
+    onComposerPrefillConsumed?.();
+  }
+
+  async function syncTaskMilestones(
+    task: InboxTask,
+    nextMilestoneIds: number[],
+  ) {
+    const existingIds = new Set(
+      (task.milestones ?? []).map((milestone) => milestone.id),
+    );
+    const nextIds = new Set(nextMilestoneIds);
+    const unlinkIds = [...existingIds].filter((id) => !nextIds.has(id));
+    const linkIds = [...nextIds].filter((id) => !existingIds.has(id));
+
+    for (const milestoneId of unlinkIds) {
+      const response = await fetch(
+        `${API_BASE}/orbit/tasks/${task.id}/milestones/${milestoneId}`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) {
+        throw new Error("Could not update milestone tags.");
+      }
+    }
+
+    for (const milestoneId of linkIds) {
+      const response = await fetch(
+        `${API_BASE}/orbit/tasks/${task.id}/milestones/${milestoneId}`,
+        { method: "POST" },
+      );
+      if (!response.ok) {
+        throw new Error("Could not update milestone tags.");
+      }
+    }
+  }
+
   async function createTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -192,9 +261,12 @@ export default function InboxTaskControls({
     }
 
     setError(null);
+    const editingTask = tasks.find((task) => task.id === editingTaskId) ?? null;
 
-    const response = await fetch(`${API_BASE}/orbit/inbox-tasks`, {
-      method: "POST",
+    const response = await fetch(editingTask
+      ? `${API_BASE}/orbit/tasks/${editingTask.id}`
+      : `${API_BASE}/orbit/inbox-tasks`, {
+      method: editingTask ? "PATCH" : "POST",
       headers: {
         "Content-Type": "application/json",
       },
@@ -202,20 +274,28 @@ export default function InboxTaskControls({
         title: cleanTitle,
         description: description.trim() || null,
         due_date: dueDate || null,
-        milestone_ids: selectedMilestoneIds,
+        ...(editingTask ? {} : { milestone_ids: selectedMilestoneIds }),
       }),
     });
 
     if (!response.ok) {
-      setError("Could not create task.");
+      setError(editingTask ? "Could not save task." : "Could not create task.");
       return;
     }
 
-    setTitle("");
-    setDescription("");
-    setDueDate("");
-    setSelectedMilestoneIds([]);
-    await reloadTasks();
+    try {
+      if (editingTask) {
+        await syncTaskMilestones(editingTask, selectedMilestoneIds);
+      }
+      resetComposer();
+      await reloadTasks();
+    } catch (syncError) {
+      setError(
+        syncError instanceof Error
+          ? syncError.message
+          : "Could not update milestone tags.",
+      );
+    }
   }
 
   async function updateTaskStatus(task: InboxTask, status: string) {
@@ -294,6 +374,25 @@ export default function InboxTaskControls({
 
           {!completed ? (
             <div className="flex shrink-0 flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingTaskId(task.id);
+                  setTitle(task.title);
+                  setDescription(task.description ?? "");
+                  setDueDate(task.due_date ?? "");
+                  setSelectedMilestoneIds(
+                    (task.milestones ?? []).map((milestone) => milestone.id),
+                  );
+                  setComposerHelperText("Editing open task.");
+                  window.setTimeout(() => titleInputRef.current?.focus(), 0);
+                }}
+                disabled={isPending}
+                className="rounded-lg border border-white/10 px-2 py-1 text-xs font-semibold text-neutral-300 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Edit
+              </button>
+
               {status !== "queued" ? (
                 <button
                   type="button"
@@ -342,10 +441,17 @@ export default function InboxTaskControls({
   return (
     <div className="space-y-4">
       <form onSubmit={createTask} className="space-y-2">
+        {composerHelperText ? (
+          <p className="rounded-lg border border-cyan-300/20 bg-cyan-300/10 px-3 py-2 text-xs font-semibold text-cyan-100">
+            {composerHelperText}
+          </p>
+        ) : null}
         <input
+          ref={titleInputRef}
+          autoFocus={Boolean(composerPrefill)}
           value={title}
           onChange={(event) => setTitle(event.target.value)}
-          placeholder="Add inbox task"
+          placeholder={editingTaskId ? "Edit task title" : "Add inbox task"}
           className="w-full rounded-xl border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-white outline-none placeholder:text-neutral-500 focus:border-blue-400/50"
         />
         <div className="grid gap-2 sm:grid-cols-[1fr_132px_auto]">
@@ -367,7 +473,7 @@ export default function InboxTaskControls({
             disabled={isPending}
             className="h-10 rounded-xl bg-blue-500 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Add
+            {editingTaskId ? "Save" : "Add"}
           </button>
         </div>
         {milestones.length > 0 ? (
@@ -391,6 +497,15 @@ export default function InboxTaskControls({
               );
             })}
           </div>
+        ) : null}
+        {editingTaskId ? (
+          <button
+            type="button"
+            onClick={resetComposer}
+            className="text-xs font-semibold text-neutral-400 underline underline-offset-4 hover:text-white"
+          >
+            Cancel edit
+          </button>
         ) : null}
       </form>
 

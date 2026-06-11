@@ -26,6 +26,8 @@ DayOfWeek = Literal[
     "sunday",
 ]
 ScheduleBlockPriority = Literal["low", "medium", "high"]
+ScheduleTimePreference = Literal["anytime", "morning", "afternoon", "evening", "night"]
+FlexiblePlacementMode = Literal["whenever_free", "preferred_day"]
 MajorEventStatus = Literal["active", "paused", "completed", "archived"]
 ScheduleDayStatus = Literal["healthy", "busy", "overloaded"]
 TradeDirection = Literal["Long", "Short"]
@@ -44,6 +46,8 @@ class ScheduleBlockBase(BaseModel):
     end_time: Optional[str] = None
     duration_minutes: Optional[int] = Field(default=None, gt=0, le=480)
     recurrence: Optional[str] = None
+    time_preference: Optional[ScheduleTimePreference] = "anytime"
+    flexible_placement_mode: Optional[FlexiblePlacementMode] = "preferred_day"
     priority: ScheduleBlockPriority = "medium"
     notes: Optional[str] = None
     active: bool = True
@@ -78,6 +82,8 @@ class ScheduleBlockUpdate(BaseModel):
     end_time: Optional[str] = None
     duration_minutes: Optional[int] = Field(default=None, gt=0, le=480)
     recurrence: Optional[str] = None
+    time_preference: Optional[ScheduleTimePreference] = None
+    flexible_placement_mode: Optional[FlexiblePlacementMode] = None
     priority: Optional[ScheduleBlockPriority] = None
     notes: Optional[str] = None
     active: Optional[bool] = None
@@ -97,6 +103,20 @@ class ScheduleAvailableWindow(BaseModel):
     duration_minutes: int
     after_block_title: Optional[str] = None
     before_block_title: Optional[str] = None
+
+
+class SchedulePlacementCandidate(BaseModel):
+    flexible_block_id: int
+    title: str
+    category: ScheduleBlockCategory
+    day: DayOfWeek
+    date: date
+    start_time: str
+    end_time: str
+    duration_minutes: int
+    preference_matched: bool
+    reason: str
+    recommendation: str
 
 
 class ScheduleDaySummary(BaseModel):
@@ -119,10 +139,17 @@ class ScheduleIntelligence(BaseModel):
     underutilized_days: list[ScheduleDaySummary]
     available_windows: list[ScheduleAvailableWindow]
     recommendations: list[str]
+    placement_candidates: list[SchedulePlacementCandidate] = Field(default_factory=list)
     most_available_day: Optional[ScheduleDaySummary] = None
     most_overloaded_day: Optional[ScheduleDaySummary] = None
     recommended_placement: Optional[str] = None
     unplaced_flexible_blocks: int = 0
+
+
+class ScheduleBlockPlacementResult(BaseModel):
+    fixed_block: ScheduleBlock
+    source_block: ScheduleBlock
+    created: bool = True
 
 
 class MajorEventBase(BaseModel):
@@ -273,8 +300,13 @@ class TaskPriority(BaseModel):
 class StrategicGap(BaseModel):
     milestone_id: int
     title: str
+    milestone_title: Optional[str] = None
     priority_score: int
     reasons: list[str] = Field(default_factory=list)
+    progress_percent: int = 0
+    linked_task_count: int = 0
+    open_linked_task_count: int = 0
+    completed_linked_task_count: int = 0
 
 
 class RecommendationTaskDraft(BaseModel):
