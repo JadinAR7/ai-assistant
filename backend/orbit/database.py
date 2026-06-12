@@ -257,6 +257,8 @@ def init_orbit_db() -> None:
             end_time TEXT,
             duration_minutes INTEGER,
             recurrence TEXT,
+            time_preference TEXT DEFAULT 'anytime',
+            flexible_placement_mode TEXT DEFAULT 'preferred_day',
             priority TEXT NOT NULL DEFAULT 'medium',
             notes TEXT,
             active INTEGER NOT NULL DEFAULT 1,
@@ -286,6 +288,21 @@ def init_orbit_db() -> None:
                 )
             ),
             CHECK (duration_minutes IS NULL OR duration_minutes > 0),
+            CHECK (
+                time_preference IS NULL OR time_preference IN (
+                    'anytime',
+                    'morning',
+                    'afternoon',
+                    'evening',
+                    'night'
+                )
+            ),
+            CHECK (
+                flexible_placement_mode IS NULL OR flexible_placement_mode IN (
+                    'whenever_free',
+                    'preferred_day'
+                )
+            ),
             CHECK (priority IN ('low', 'medium', 'high')),
             CHECK (active IN (0, 1))
         )
@@ -295,6 +312,14 @@ def init_orbit_db() -> None:
     schedule_block_columns = {row["name"] for row in cursor.fetchall()}
     if "specific_date" not in schedule_block_columns:
         cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN specific_date TEXT")
+    if "time_preference" not in schedule_block_columns:
+        cursor.execute(
+            "ALTER TABLE schedule_blocks ADD COLUMN time_preference TEXT DEFAULT 'anytime'"
+        )
+    if "flexible_placement_mode" not in schedule_block_columns:
+        cursor.execute(
+            "ALTER TABLE schedule_blocks ADD COLUMN flexible_placement_mode TEXT DEFAULT 'preferred_day'"
+        )
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS agent_definitions (

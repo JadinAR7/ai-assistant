@@ -734,6 +734,50 @@ export default function TradeJournalPage() {
     );
   }
 
+  function getPreviousSavedDraft(index: number) {
+    for (let currentIndex = index - 1; currentIndex >= 0; currentIndex -= 1) {
+      const draft = importDrafts[currentIndex];
+      if (draft && draftStatus(draft) === "saved") {
+        return draft;
+      }
+    }
+
+    return null;
+  }
+
+  function copyPreviousDraftInfo(index: number) {
+    const active = importDrafts[index];
+    const previous = getPreviousSavedDraft(index);
+
+    if (!active || !previous) {
+      return;
+    }
+
+    setImportDrafts((current) =>
+      current.map((draft, draftIndex) =>
+        draftIndex === index
+          ? {
+              ...draft,
+              htf_bias: previous.htf_bias,
+              draw_on_liquidity: [...previous.draw_on_liquidity],
+              reaction_zone: previous.reaction_zone,
+              behavior_tags: [...previous.behavior_tags],
+              execution_tags: [...previous.execution_tags],
+              why_taken: previous.why_taken,
+              price_intent: previous.price_intent,
+              liquidity_target: previous.liquidity_target,
+              went_well: previous.went_well,
+              went_wrong: previous.went_wrong,
+              lesson_learned: previous.lesson_learned,
+              screenshot_path: previous.screenshot_path,
+              csv_path: previous.csv_path,
+            }
+          : draft,
+      ),
+    );
+    setToast("Copied context from previous saved trade.");
+  }
+
   function draftStatus(draft: ImportDraft): DraftStatus {
     return draftStatuses[draft.draft_id] ?? "pending";
   }
@@ -1788,6 +1832,22 @@ export default function TradeJournalPage() {
                         {draftStatus(activeDraft)}
                       </p>
                     </div>
+
+                    {activeDraftIndex > 0 ? (
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => copyPreviousDraftInfo(activeDraftIndex)}
+                          disabled={
+                            draftStatus(activeDraft) !== "pending" ||
+                            getPreviousSavedDraft(activeDraftIndex) === null
+                          }
+                          className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-3 py-2 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Copy Previous Info
+                        </button>
+                      </div>
+                    ) : null}
 
                     <div className="mt-3 flex flex-wrap gap-2">
                       <span className="rounded-md border border-white/10 px-2 py-1 text-xs text-neutral-300">

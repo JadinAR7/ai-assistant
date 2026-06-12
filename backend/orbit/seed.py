@@ -31,7 +31,7 @@ EVENT_DATA = {
     ),
     "target_date": "2027-02-28",
     "status": "active",
-    "progress_percent": 18,
+    "progress_percent": 0,
 }
 
 MILESTONES = [

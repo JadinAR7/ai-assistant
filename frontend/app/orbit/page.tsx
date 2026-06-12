@@ -350,7 +350,7 @@ export default async function OrbitPage() {
   return (
     <main className="min-h-screen overflow-x-hidden bg-neutral-950 text-white">
       <header className="sticky top-0 z-20 border-b border-white/10 bg-neutral-950/80 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl flex-col gap-3 px-3 py-3 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:py-4">
+        <div className="mx-auto flex max-w-[94rem] flex-col gap-3 px-3 py-3 sm:px-4 lg:flex-row lg:items-center lg:justify-between lg:py-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-cyan-300">
               Orbit
@@ -383,7 +383,7 @@ export default async function OrbitPage() {
         </div>
       </header>
 
-      <div className="mx-auto max-w-6xl px-3 py-3 sm:px-4 sm:py-4">
+      <div className="mx-auto max-w-[94rem] px-3 py-3 sm:px-4 sm:py-4">
         <OrbitBoard
           majorEvents={orbitData.majorEvents}
           event={orbitData.event}
