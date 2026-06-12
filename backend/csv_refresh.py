@@ -18,7 +18,10 @@ CSV_DATA_DIR = BASE_DIR / "csv_data"
 CSV_REFRESH_STATUS_PATH = BASE_DIR / "csv_refresh_status.json"
 CSV_REFRESH_TEMP_ROOT = BASE_DIR / "downloads" / "csv_refresh_tmp"
 
-REFRESH_TIMEFRAMES = ["1D", "4H", "1H", "15M", "5M", "1M"]
+HTF_REFRESH_TIMEFRAMES = ["1D", "4H", "1H"]
+LOWER_TF_REFRESH_TIMEFRAMES = ["15M", "5M", "1M"]
+REFRESH_TIMEFRAMES = HTF_REFRESH_TIMEFRAMES + LOWER_TF_REFRESH_TIMEFRAMES
+SCHEDULED_REFRESH_ANCHOR_HOUR = 15
 
 REQUIRED_CSV_COLUMNS = {"open", "high", "low", "close"}
 
@@ -46,28 +49,44 @@ def _minute_matches(now: datetime, hour: int, minute: int = 0) -> bool:
 
 def _refresh_reason_for_time(now: datetime) -> str | None:
     now = _normalize_now(now)
-    weekday = now.weekday()
-    current_time = now.time()
+    due = scheduled_refresh_timeframes_for_time(now)
 
-    # Monday-Friday, hourly during New York session.
-    if weekday in [0, 1, 2, 3, 4]:
-        in_new_york_session = dt_time(7, 30) <= current_time <= dt_time(14, 0)
+    if not due:
+        return None
+    if due == ["1D", "4H", "1H"]:
+        return "htf_session_reset_refresh"
+    if due == ["4H"]:
+        return "htf_4h_refresh"
+    if due == ["1H"]:
+        return "htf_1h_refresh"
+    return "htf_csv_refresh"
 
-        if in_new_york_session and (
-            (now.hour == 7 and now.minute == 30)
-            or (now.minute == 0 and 8 <= now.hour <= 14)
-        ):
-            return "hourly_new_york_session"
 
-    # Sunday-Thursday after futures reopen.
-    if weekday in [6, 0, 1, 2, 3] and _minute_matches(now, 17, 0):
-        return "futures_reopen_refresh"
+def scheduled_refresh_timeframes_for_time(now: datetime | None = None) -> list[str]:
+    now = _normalize_now(now)
 
-    # Friday post-close review refresh.
-    if weekday == 4 and _minute_matches(now, 15, 0):
-        return "friday_post_close_review_refresh"
+    if now.minute != 0:
+        return []
 
-    return None
+    anchor = now.replace(hour=SCHEDULED_REFRESH_ANCHOR_HOUR, minute=0, second=0, microsecond=0)
+    if now < anchor:
+        anchor -= timedelta(days=1)
+
+    minutes_since_anchor = int((now - anchor).total_seconds() // 60)
+    due = []
+
+    if minutes_since_anchor == 0:
+        due.append("1D")
+
+    if minutes_since_anchor % (4 * 60) == 0:
+        due.append("4H")
+    elif minutes_since_anchor % (2 * 60) == 0:
+        due.append("1H")
+
+    if minutes_since_anchor == 0 and "1H" not in due:
+        due.append("1H")
+
+    return due
 
 
 def should_refresh_csv_now(now: datetime | None = None) -> bool:
@@ -75,32 +94,13 @@ def should_refresh_csv_now(now: datetime | None = None) -> bool:
 
 
 def _scheduled_times_for_date(day) -> list[tuple[datetime, str]]:
-    weekday = day.weekday()
     scheduled = []
 
-    if weekday in [0, 1, 2, 3, 4]:
-        scheduled.append((
-            datetime.combine(day, dt_time(7, 30), tzinfo=TIMEZONE),
-            "hourly_new_york_session",
-        ))
-
-        for hour in range(8, 15):
-            scheduled.append((
-                datetime.combine(day, dt_time(hour, 0), tzinfo=TIMEZONE),
-                "hourly_new_york_session",
-            ))
-
-    if weekday in [6, 0, 1, 2, 3]:
-        scheduled.append((
-            datetime.combine(day, dt_time(17, 0), tzinfo=TIMEZONE),
-            "futures_reopen_refresh",
-        ))
-
-    if weekday == 4:
-        scheduled.append((
-            datetime.combine(day, dt_time(15, 0), tzinfo=TIMEZONE),
-            "friday_post_close_review_refresh",
-        ))
+    for hour in range(24):
+        scheduled_time = datetime.combine(day, dt_time(hour, 0), tzinfo=TIMEZONE)
+        reason = _refresh_reason_for_time(scheduled_time)
+        if reason:
+            scheduled.append((scheduled_time, reason))
 
     return sorted(scheduled, key=lambda item: item[0])
 
@@ -134,11 +134,17 @@ def _default_status(now: datetime | None = None) -> dict:
         "enabled": True,
         "symbol": _resolve_symbol(),
         "last_attempt": None,
+        "last_attempt_reason": None,
+        "last_attempt_result": None,
         "last_success": None,
+        "last_success_timeframes": [],
+        "last_success_files": [],
+        "last_success_result": None,
         "last_error": None,
         "last_refresh_reason": None,
         "next_expected_window": _next_expected_window(now),
         "files_refreshed": [],
+        "timeframes_refreshed": [],
         "logs": [],
     }
 
@@ -157,6 +163,19 @@ def _read_status() -> dict:
     status.update(stored if isinstance(stored, dict) else {})
     status["symbol"] = status.get("symbol") or _resolve_symbol()
     status["next_expected_window"] = _next_expected_window()
+
+    if status.get("last_success"):
+        if not status.get("last_success_timeframes") and status.get("timeframes_refreshed"):
+            status["last_success_timeframes"] = list(status.get("timeframes_refreshed") or [])
+        if not status.get("last_success_files") and status.get("files_refreshed"):
+            status["last_success_files"] = list(status.get("files_refreshed") or [])
+        if not status.get("last_success_result"):
+            status["last_success_result"] = "success"
+
+    if status.get("last_success_timeframes") and not status.get("timeframes_refreshed"):
+        status["timeframes_refreshed"] = list(status.get("last_success_timeframes") or [])
+    if status.get("last_success_files") and not status.get("files_refreshed"):
+        status["files_refreshed"] = list(status.get("last_success_files") or [])
 
     return status
 
@@ -177,11 +196,12 @@ def get_csv_refresh_status() -> dict:
 # -------------------------
 # Future-safe file handling
 # -------------------------
-def _expected_csv_names(symbol: str) -> dict[str, str]:
+def _expected_csv_names(symbol: str, timeframes: list[str] | None = None) -> dict[str, str]:
     symbol = normalize_scanner_symbol(symbol)
+    selected_timeframes = timeframes or REFRESH_TIMEFRAMES
     return {
         timeframe: f"{symbol}_{timeframe}.csv"
-        for timeframe in REFRESH_TIMEFRAMES
+        for timeframe in selected_timeframes
     }
 
 
@@ -217,11 +237,16 @@ def _verify_csv_file(path: Path) -> tuple[bool, str | None]:
     return True, None
 
 
-def _verify_replacement_set(temp_dir: Path, symbol: str) -> tuple[bool, dict, dict]:
+def _verify_replacement_set(
+    temp_dir: Path,
+    symbol: str,
+    timeframes: list[str] | None = None,
+) -> tuple[bool, dict, dict]:
     verified = {}
     failures = {}
+    selected_timeframes = timeframes or REFRESH_TIMEFRAMES
 
-    for timeframe, filename in _expected_csv_names(symbol).items():
+    for timeframe, filename in _expected_csv_names(symbol, selected_timeframes).items():
         path = temp_dir / filename
         ok, error = _verify_csv_file(path)
 
@@ -230,7 +255,7 @@ def _verify_replacement_set(temp_dir: Path, symbol: str) -> tuple[bool, dict, di
         else:
             failures[timeframe] = error
 
-    return len(verified) == len(REFRESH_TIMEFRAMES), verified, failures
+    return len(verified) == len(selected_timeframes), verified, failures
 
 
 def _replace_active_csvs_after_verification(
@@ -243,7 +268,7 @@ def _replace_active_csvs_after_verification(
     Each file is copied to a sibling temp file before os.replace touches active data.
     """
     refreshed = []
-    expected_names = _expected_csv_names(symbol)
+    expected_names = _expected_csv_names(symbol, list(verified_files.keys()))
     CSV_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     for timeframe, source in verified_files.items():
@@ -262,14 +287,19 @@ def _replace_active_csvs_after_verification(
 # -------------------------
 # Refresh runner
 # -------------------------
-def _run_tradingview_export(temp_dir: Path, symbol: str) -> dict:
+def _run_tradingview_export(
+    temp_dir: Path,
+    symbol: str,
+    timeframes: list[str] | None = None,
+) -> dict:
     from tools import export_tradingview_csv
 
     exported = {}
     failures = {}
     logs = []
+    selected_timeframes = timeframes or REFRESH_TIMEFRAMES
 
-    for timeframe in REFRESH_TIMEFRAMES:
+    for timeframe in selected_timeframes:
         result = export_tradingview_csv(
             symbol=symbol,
             timeframe=timeframe,
@@ -288,19 +318,27 @@ def _run_tradingview_export(temp_dir: Path, symbol: str) -> dict:
             break
 
     return {
-        "success": len(exported) == len(REFRESH_TIMEFRAMES),
+        "success": len(exported) == len(selected_timeframes),
         "implemented": True,
         "symbol": symbol,
+        "timeframes": selected_timeframes,
         "temp_dir": str(temp_dir),
         "exported": exported,
         "failures": failures,
         "logs": logs,
         "message": (
             f"TradingView CSV export completed for {sorted(exported.keys())}."
-            if len(exported) == len(REFRESH_TIMEFRAMES)
+            if len(exported) == len(selected_timeframes)
             else f"TradingView CSV export failed before replacement: {failures}"
         ),
     }
+
+
+def _call_exporter(exporter, temp_dir: Path, symbol: str, timeframes: list[str]) -> dict:
+    try:
+        return exporter(temp_dir, symbol, timeframes=timeframes)
+    except TypeError:
+        return exporter(temp_dir, symbol)
 
 
 def run_csv_refresh(force: bool = False, symbol: str | None = None, exporter=None) -> dict:
@@ -313,10 +351,11 @@ def run_csv_refresh(force: bool = False, symbol: str | None = None, exporter=Non
         status.update({
             "symbol": refresh_symbol,
             "last_attempt": now.isoformat(),
+            "last_attempt_reason": "disabled",
+            "last_attempt_result": "skipped",
             "last_error": "CSV refresh is disabled.",
             "last_refresh_reason": "disabled",
             "next_expected_window": _next_expected_window(now),
-            "files_refreshed": [],
             "logs": ["CSV refresh is disabled."],
         })
         _write_status(status)
@@ -330,15 +369,17 @@ def run_csv_refresh(force: bool = False, symbol: str | None = None, exporter=Non
         }
 
     scheduled_reason = _refresh_reason_for_time(now)
+    refresh_timeframes = REFRESH_TIMEFRAMES if force else scheduled_refresh_timeframes_for_time(now)
 
     if not force and not scheduled_reason:
         status.update({
             "symbol": refresh_symbol,
             "last_attempt": now.isoformat(),
+            "last_attempt_reason": "outside_refresh_window",
+            "last_attempt_result": "skipped",
             "last_error": None,
             "last_refresh_reason": "outside_refresh_window",
             "next_expected_window": _next_expected_window(now),
-            "files_refreshed": [],
             "logs": ["Outside CSV refresh window. No CSV refresh ran."],
         })
         _write_status(status)
@@ -358,7 +399,8 @@ def run_csv_refresh(force: bool = False, symbol: str | None = None, exporter=Non
     with tempfile.TemporaryDirectory(prefix="csv_refresh_", dir=CSV_REFRESH_TEMP_ROOT) as temp_path:
         temp_dir = Path(temp_path)
         _append_log(logs, f"temp export path: {temp_dir}")
-        export_result = exporter(temp_dir, refresh_symbol)
+        _append_log(logs, f"timeframes requested: {refresh_timeframes}")
+        export_result = _call_exporter(exporter, temp_dir, refresh_symbol, refresh_timeframes)
         for export_log in export_result.get("logs") or []:
             _append_log(logs, export_log)
 
@@ -368,10 +410,11 @@ def run_csv_refresh(force: bool = False, symbol: str | None = None, exporter=Non
         verified_all, verified_files, verification_failures = _verify_replacement_set(
             temp_dir,
             refresh_symbol,
+            refresh_timeframes,
         )
         _append_log(logs, f"files verified: {sorted(verified_files.keys())}")
 
-        for timeframe in REFRESH_TIMEFRAMES:
+        for timeframe in refresh_timeframes:
             if timeframe in verified_files:
                 _append_log(logs, f"{timeframe}: verification result: ok")
             else:
@@ -406,11 +449,17 @@ def run_csv_refresh(force: bool = False, symbol: str | None = None, exporter=Non
     status.update({
         "symbol": refresh_symbol,
         "last_attempt": now.isoformat(),
+        "last_attempt_reason": refresh_reason,
+        "last_attempt_result": "success" if success else "failed",
         "last_success": now.isoformat() if success else status.get("last_success"),
+        "last_success_timeframes": refresh_timeframes if success else status.get("last_success_timeframes", []),
+        "last_success_files": files_refreshed if success else status.get("last_success_files", []),
+        "last_success_result": "success" if success else status.get("last_success_result"),
         "last_error": error,
         "last_refresh_reason": refresh_reason,
         "next_expected_window": _next_expected_window(now),
-        "files_refreshed": files_refreshed,
+        "files_refreshed": files_refreshed if success else status.get("files_refreshed", []),
+        "timeframes_refreshed": refresh_timeframes if success else status.get("timeframes_refreshed", []),
         "logs": logs,
     })
     _write_status(status)
@@ -421,8 +470,12 @@ def run_csv_refresh(force: bool = False, symbol: str | None = None, exporter=Non
         "symbol": refresh_symbol,
         "refresh_reason": refresh_reason,
         "status": status,
-        "files_refreshed": files_refreshed,
-        "refreshed_files": files_refreshed,
+        "files_refreshed": files_refreshed if success else status.get("files_refreshed", []),
+        "refreshed_files": files_refreshed if success else status.get("files_refreshed", []),
+        "timeframes_requested": refresh_timeframes,
+        "timeframes_refreshed": refresh_timeframes if success else status.get("timeframes_refreshed", []),
+        "lower_timeframe_csv_scheduled": False,
+        "lower_timeframe_csv_policy": "15M/5M/1M CSV refresh is disabled by default for scheduled refreshes; use conditional refresh later if exact LTF levels are needed.",
         "logs": logs,
         "verification": {
             "verified_all": verified_all,

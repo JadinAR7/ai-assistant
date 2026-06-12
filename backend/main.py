@@ -20,6 +20,11 @@ from scanner_settings import (
     normalize_scanner_symbol,
     set_scanner_settings,
 )
+from response_quality import (
+    INCOMPLETE_RESPONSE_FALLBACK,
+    build_response_repair_prompt,
+    is_incomplete_response,
+)
 from orbit.database import init_orbit_db
 from orbit.routes import router as orbit_router
 
@@ -550,11 +555,11 @@ TOOL: analyze_tradingview symbol=MNQ
 TOOL: analyze_tradingview symbol=ES
 
 Trading architecture:
-- CSV data is the source of truth for current price, FVGs, levels, targets, and structure.
-- Screenshot/vision is only for visible user markings, drawn boxes, labels, and chart context.
-- If CSV and screenshot disagree numerically, trust CSV.
-- The vision model should not be treated as the final analyst.
-- The text model writes the final narrative after CSV + vision are merged.
+- HTF CSV data (1D/4H/1H) is the source of truth for historical structure, FVG mapping, liquidity zones, levels, targets, and freshness metadata.
+- 15M/5M screenshots are the source of truth for live visible chart context, current displayed price when visible, user markings, labels, reclaim/rejection, displacement, and reaction-zone behavior.
+- 1M is conditional execution confirmation only and should not be implied unless it was captured or explicitly provided.
+- Never treat stale CSV closes as live/current price.
+- The text model writes the final narrative after CSV structure + vision behavior are merged.
 
 When using analyze_market_csv or analyze_tradingview, explain the market using Jadin's Liquidity Narrative Continuation model.
 
@@ -593,15 +598,17 @@ Rules for market analysis:
 - Use analyze_tradingview when the user wants screenshot markings included.
 - Use analyze_market_csv when the user wants pure data/structure analysis.
 - When discussing FVGs, always include the timeframe.
-- Prioritize higher timeframe zones first:
-  1D > 4H > 1H > 15M > 1M.
-- 1M is for execution only.
+- Prioritize HTF CSV zones first:
+  1D > 4H > 1H.
+- Use 15M/5M vision for live execution context.
+- 1M is conditional execution confirmation only.
 - Do not use VWAP.
 
 General rules:
 - When using web_search, include the source title and URL in your answer.
 - Do not invent details beyond tool results.
 - If the user asks for current, recent, latest, news, prices, schedules, or anything that may have changed recently, use web_search.
+- If web_search is unavailable or cannot verify a current/news-like claim, say you cannot verify it live and frame the reasoning conditionally.
 - If no tool is needed, respond normally.
 - Do not explain tool usage.
 - After receiving a Tool Result, respond normally to the user.
@@ -708,6 +715,46 @@ def build_followup_prompt(base_prompt: str, tool_result):
         if isinstance(tool_result, dict)
         else None
     )
+
+
+def repair_incomplete_model_response(
+    *,
+    assistant_message: str,
+    base_prompt: str,
+    user_message: str,
+    allow_short_response: bool = False,
+) -> tuple[str, bool]:
+    if not is_incomplete_response(
+        assistant_message,
+        user_message=user_message,
+        allow_short_response=allow_short_response,
+    ):
+        return assistant_message, False
+
+    repair_prompt = build_response_repair_prompt(
+        base_prompt=base_prompt,
+        user_message=user_message,
+        bad_response=assistant_message,
+    )
+
+    try:
+        response = call_ollama(
+            prompt=repair_prompt,
+            stream=False,
+            timeout=120,
+        )
+        repaired_message = response.json().get("response", "").strip()
+    except requests.exceptions.RequestException:
+        return INCOMPLETE_RESPONSE_FALLBACK, True
+
+    if is_incomplete_response(
+        repaired_message,
+        user_message=user_message,
+        allow_short_response=allow_short_response,
+    ):
+        return INCOMPLETE_RESPONSE_FALLBACK, True
+
+    return repaired_message, True
 
     return (
         base_prompt
@@ -874,6 +921,7 @@ def chat(request: ChatRequest):
 
         data = response.json()
         assistant_message = data.get("response", "").strip()
+        response_quality_repaired = False
 
         tool_name, args = parse_tool_call(assistant_message)
 
@@ -897,6 +945,18 @@ def chat(request: ChatRequest):
             data = response.json()
             assistant_message = data.get("response", "").strip()
 
+            assistant_message, response_quality_repaired = repair_incomplete_model_response(
+                assistant_message=assistant_message,
+                base_prompt=followup_prompt,
+                user_message=request.message,
+            )
+        else:
+            assistant_message, response_quality_repaired = repair_incomplete_model_response(
+                assistant_message=assistant_message,
+                base_prompt=prompt,
+                user_message=request.message,
+            )
+
         save_message("Assistant", assistant_message)
 
         messages = get_recent_messages(MAX_HISTORY_MESSAGES)
@@ -905,6 +965,7 @@ def chat(request: ChatRequest):
             "success": True,
             "model": OLLAMA_MODEL,
             "message": assistant_message,
+            "response_quality_repaired": response_quality_repaired,
             "history_length": len(messages),
         }
 
@@ -951,7 +1012,20 @@ def chat_stream(request: ChatRequest):
                         full_response += token
                         yield token
 
-                save_message("Assistant", full_response.strip())
+                assistant_message = full_response.strip()
+                if is_incomplete_response(
+                    assistant_message,
+                    user_message=request.message,
+                ):
+                    repaired_message, _ = repair_incomplete_model_response(
+                        assistant_message=assistant_message,
+                        base_prompt=prompt,
+                        user_message=request.message,
+                    )
+                    save_message("Assistant", repaired_message)
+                    yield "\n\n" + repaired_message
+                else:
+                    save_message("Assistant", assistant_message)
 
         except requests.exceptions.RequestException as e:
             yield f"\n[ERROR] Ollama request failed: {e}"
@@ -1070,7 +1144,7 @@ def force_scan(
 
 @app.get("/scan/latest")
 def latest_scan(symbol: str | None = None):
-    from scheduled_scan import SCAN_HISTORY_PATH, load_latest_scan
+    from scheduled_scan import SCAN_HISTORY_PATH, is_valid_market_scan, load_last_successful_scan, load_latest_scan
 
     try:
         scan_symbol = normalize_scanner_symbol(
@@ -1088,6 +1162,7 @@ def latest_scan(symbol: str | None = None):
         }
 
     latest = load_latest_scan(symbol=scan_symbol)
+    latest_successful = load_last_successful_scan(symbol=scan_symbol)
 
     if not latest:
         return {
@@ -1095,12 +1170,22 @@ def latest_scan(symbol: str | None = None):
             "symbol": scan_symbol,
             "message": "No scan records found for symbol.",
             "record": None,
+            "latest_attempt": None,
+            "latest_successful_market_scan": None,
+            "last_valid_record": None,
         }
+
+    record = latest if is_valid_market_scan(latest) else latest_successful
 
     return {
         "success": True,
         "symbol": scan_symbol,
-        "record": latest,
+        "record": record,
+        "latest_attempt": latest,
+        "latest_successful_market_scan": latest_successful,
+        "last_valid_record": latest_successful,
+        "current_attempt_valid_market_state": is_valid_market_scan(latest),
+        "system_health": (latest or {}).get("system_health"),
     }
 
 

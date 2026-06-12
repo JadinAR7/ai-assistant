@@ -18,6 +18,7 @@ from scanner_settings import (
     normalize_scanner_symbol,
 )
 from tools import (
+    analyze_market_csv,
     analyze_tradingview,
     capture_tradingview,
     extract_tradingview_visuals_from_path,
@@ -29,7 +30,9 @@ from tools import (
 # -------------------------
 SYMBOL = DEFAULT_SCANNER_SYMBOL
 SCAN_TIMEFRAME = "15M"
-SCHEDULED_SCAN_TIMEFRAMES = ["4H", "1H", "15M", "5M"]
+HTF_CSV_TIMEFRAMES = ["1D", "4H", "1H"]
+SCHEDULED_SCAN_TIMEFRAMES = ["15M", "5M"]
+CONDITIONAL_EXECUTION_TIMEFRAMES = ["1M"]
 SCAN_INTERVAL_SECONDS = 5 * 60
 TIMEZONE = ZoneInfo("America/Denver")
 
@@ -190,7 +193,24 @@ def cleanup_scan_screenshots(symbol: str = SYMBOL) -> dict:
 # -------------------------
 # Multi-timeframe visual context
 # -------------------------
+def _failed_timeframe_capture(timeframe: str, error: str | None = None, **extra) -> dict:
+    capture = {
+        "timeframe": timeframe,
+        "success": False,
+        "screenshot_path": None,
+        "visual_extraction": None,
+        "vision_success": False,
+        "vision_error": None,
+        "error": error or "Screenshot was not captured.",
+    }
+    capture.update({key: value for key, value in extra.items() if value is not None})
+    return capture
+
+
 def _build_timeframe_capture_from_result(timeframe: str, result: dict) -> dict:
+    if not isinstance(result, dict):
+        return _failed_timeframe_capture(timeframe, "Capture result was empty.")
+
     visual_extraction = result.get("visual_extraction") or {}
 
     return {
@@ -211,18 +231,15 @@ def _capture_timeframe_context(
     prompt: str,
 ) -> dict:
     symbol = normalize_scanner_symbol(symbol)
-    capture_result = capture_tradingview(symbol=symbol, timeframe=timeframe)
+    capture_result = capture_tradingview(symbol=symbol, timeframe=timeframe) or {}
 
     if not capture_result.get("success"):
-        return {
-            "timeframe": timeframe,
-            "success": False,
-            "screenshot_path": None,
-            "visual_extraction": None,
-            "vision_success": False,
-            "vision_error": None,
-            "error": capture_result.get("error") or capture_result.get("message"),
-        }
+        return _failed_timeframe_capture(
+            timeframe,
+            capture_result.get("error") or capture_result.get("message") or "Capture returned no result.",
+            system_health_issue=capture_result.get("system_health_issue"),
+            affected_source=capture_result.get("affected_source"),
+        )
 
     screenshot_path = capture_result.get("screenshot_path")
     visual_extraction = extract_tradingview_visuals_from_path(
@@ -272,21 +289,181 @@ def collect_scheduled_timeframe_captures(
                 prompt=prompt,
             )
         except Exception as e:
-            captures[timeframe] = {
-                "timeframe": timeframe,
-                "success": False,
-                "screenshot_path": None,
-                "visual_extraction": None,
-                "vision_success": False,
-                "vision_error": None,
-                "error": str(e),
-            }
+            captures[timeframe] = _failed_timeframe_capture(timeframe, str(e))
 
     return captures
 
 
+def live_vision_timeframe_status(record: dict) -> dict[str, dict]:
+    status = {}
+    captures = record.get("timeframe_captures") or {}
+    primary_timeframe = str(record.get("timeframe") or "")
+
+    for timeframe in SCHEDULED_SCAN_TIMEFRAMES:
+        capture = captures.get(timeframe)
+        if not isinstance(capture, dict):
+            capture = {}
+        if not capture and primary_timeframe == timeframe:
+            capture = {
+                "screenshot_path": record.get("screenshot_path"),
+                "vision_success": record.get("vision_success"),
+                "vision_error": record.get("vision_error"),
+            }
+        status[timeframe] = {
+            "capture_success": bool(capture.get("screenshot_path")),
+            "vision_success": bool(capture.get("vision_success")),
+            "error": capture.get("vision_error") or capture.get("error"),
+        }
+
+    return status
+
+
+def live_vision_success_count(record: dict) -> int:
+    return sum(
+        1 for item in live_vision_timeframe_status(record).values()
+        if item.get("capture_success") and item.get("vision_success")
+    )
+
+
+def has_partial_live_vision(record: dict) -> bool:
+    return live_vision_success_count(record) > 0
+
+
+def has_full_live_vision(record: dict) -> bool:
+    return live_vision_success_count(record) == len(SCHEDULED_SCAN_TIMEFRAMES)
+
+
+def structural_csv_available(record: dict) -> bool:
+    if record.get("csv_success") is True:
+        return True
+
+    csv_analysis = record.get("csv_analysis") or {}
+    if csv_analysis.get("success") is True:
+        return True
+
+    analysis = csv_analysis.get("analysis") or {}
+    return bool(
+        analysis.get("daily")
+        or analysis.get("h4")
+        or analysis.get("htf")
+        or csv_analysis.get("zone_ranking")
+        or analysis.get("zone_ranking")
+    )
+
+
+def _captured_timeframes(timeframe_captures: dict | None) -> list[str]:
+    return [
+        timeframe
+        for timeframe, capture in (timeframe_captures or {}).items()
+        if (capture or {}).get("screenshot_path")
+    ]
+
+
+def scanner_source_roles(one_minute_capture_reason: str | None = None) -> dict:
+    return {
+        "htf_structure": "CSV only: 1D/4H/1H",
+        "live_vision": "15M/5M screenshots",
+        "one_minute": (
+            "1M screenshot captured for execution confirmation."
+            if one_minute_capture_reason
+            else "Conditional; not captured unless execution watch is active."
+        ),
+        "does_not_generate_trade_signals": True,
+    }
+
+
+def attach_scan_source_metadata(
+    result: dict,
+    timeframe_captures: dict | None,
+    *,
+    one_minute_capture_reason: str | None = None,
+) -> None:
+    requested = list(SCHEDULED_SCAN_TIMEFRAMES)
+    if one_minute_capture_reason and "1M" not in requested:
+        requested.append("1M")
+
+    result["screenshots_requested"] = requested
+    result["screenshots_captured"] = _captured_timeframes(timeframe_captures)
+    result["csv_timeframes_used"] = list(HTF_CSV_TIMEFRAMES)
+    result["one_minute_capture_reason"] = one_minute_capture_reason
+    result["scanner_source_roles"] = scanner_source_roles(one_minute_capture_reason)
+
+
+def _should_capture_one_minute_execution_context(record: dict) -> bool:
+    narrative = record.get("narrative") or {}
+    phase = str(narrative.get("narrative_phase") or record.get("narrative_phase") or "")
+    return phase == "execution_watch"
+
+
+def _append_one_minute_execution_context(record: dict, *, symbol: str, session_label: str) -> None:
+    if not _should_capture_one_minute_execution_context(record):
+        return
+
+    timeframe_captures = record.setdefault("timeframe_captures", {})
+    if timeframe_captures.get("1M"):
+        return
+
+    reason = "1M captured because scanner entered execution watch."
+    prompt = (
+        f"Scheduled {symbol} execution-watch scan during {session_label}. "
+        "Extract visible 1M execution confirmation context only."
+    )
+    try:
+        timeframe_captures["1M"] = _capture_timeframe_context(
+            symbol=symbol,
+            timeframe="1M",
+            prompt=prompt,
+        )
+    except Exception as e:
+        timeframe_captures["1M"] = _failed_timeframe_capture("1M", str(e))
+
+    record["one_minute_capture_reason"] = reason
+    record["screenshots_requested"] = list(SCHEDULED_SCAN_TIMEFRAMES) + ["1M"]
+    record["screenshots_captured"] = _captured_timeframes(timeframe_captures)
+    record["csv_timeframes_used"] = list(HTF_CSV_TIMEFRAMES)
+    record["scanner_source_roles"] = scanner_source_roles(reason)
+    record["message"] = (
+        (record.get("message") or "")
+        + "\n\n"
+        + "## Conditional 1M Execution Context\n"
+        + f"{reason}\n"
+        + f"1M: {'captured' if timeframe_captures['1M'].get('screenshot_path') else 'failed'}"
+    ).strip()
+
+
+def scanner_mode_for_record(record: dict) -> str:
+    narrative = record.get("narrative") or {}
+    phase = str(narrative.get("narrative_phase") or record.get("narrative_phase") or "no_clear_narrative")
+    alert_level = str((record.get("alert_eligibility") or {}).get("level") or "none").lower()
+    signal_level = str(record.get("signal_level") or "informational").lower()
+
+    if phase == "execution_watch":
+        return "execution_watch"
+    if alert_level in {"medium", "high"} or signal_level in {"review", "alert"}:
+        return "alert_review"
+    if phase in {"interacting_with_reaction_zone", "behavior_forming", "structure_confirming"}:
+        return "reaction_mode"
+    if phase in {"approaching_reaction_zone", "draw_identified"}:
+        return "watch"
+    return "htf_map"
+
+
+def attach_scanner_mode(record: dict) -> None:
+    mode = scanner_mode_for_record(record)
+    record["scanner_mode"] = mode
+    record["scanner_state"] = mode
+    record["scanner_mode_label"] = mode.replace("_", " ").title()
+
+
 def format_timeframe_screenshots_section(timeframe_captures: dict | None) -> str:
-    lines = ["## Timeframe Screenshots"]
+    lines = [
+        "## Scanner Sources",
+        "HTF Structure: CSV only (1D/4H/1H)",
+        "Live Vision: 15M/5M screenshots",
+        "1M: Conditional execution confirmation only",
+        "",
+        "## Timeframe Screenshots",
+    ]
 
     for timeframe in SCHEDULED_SCAN_TIMEFRAMES:
         capture = (timeframe_captures or {}).get(timeframe) or {}
@@ -305,6 +482,11 @@ def attach_timeframe_screenshots_section(
     timeframe_captures: dict | None,
 ) -> None:
     result["timeframe_captures"] = timeframe_captures or {}
+    attach_scan_source_metadata(
+        result,
+        timeframe_captures,
+        one_minute_capture_reason=result.get("one_minute_capture_reason"),
+    )
     result["message"] = (
         (result.get("message") or "")
         + "\n\n"
@@ -888,7 +1070,7 @@ def _behavior_visual_text_from_visuals(visuals: dict) -> str:
 def _behavior_text_by_timeframe(record: dict) -> dict[str, str]:
     return {
         timeframe: _behavior_visual_text_from_visuals(_visuals_for_timeframe(record, timeframe))
-        for timeframe in ["15M", "5M", "1H", "4H"]
+        for timeframe in ["15M", "5M", "1M"]
     }
 
 
@@ -1000,7 +1182,7 @@ def _visual_reaction_zone(record: dict) -> dict | None:
     candidates = []
     priority = {"4H": 0, "1H": 1, "15M": 2, "Visual": 3}
 
-    for capture_timeframe in ["4H", "1H", "15M", "5M"]:
+    for capture_timeframe in ["15M", "5M", "1M"]:
         visuals = _visuals_for_timeframe(record, capture_timeframe)
 
         if not visuals:
@@ -1047,7 +1229,7 @@ def _visual_reaction_zone(record: dict) -> dict | None:
     if not candidates:
         return None
 
-    capture_priority = ["4H", "1H", "15M", "5M"]
+    capture_priority = ["15M", "5M", "1M"]
     candidates.sort(
         key=lambda item: (
             priority.get(item.get("timeframe"), 9),
@@ -1091,7 +1273,7 @@ def _active_reaction_zone(record: dict, visual_text_all: str) -> tuple[str, dict
         return _format_reaction_zone(active_zone), active_zone, "csv"
 
     visual_candidates = []
-    for timeframe in ["4H", "1H", "15M"]:
+    for timeframe in ["15M", "5M"]:
         timeframe_label = timeframe.lower()
         alternate_label = timeframe_label.replace("h", "hr")
 
@@ -1569,7 +1751,7 @@ def _csv_fresh_or_recent(record: dict) -> bool:
     if not isinstance(freshness, dict):
         return False
 
-    for timeframe in ["15M", "1M"]:
+    for timeframe in HTF_CSV_TIMEFRAMES:
         item = freshness.get(timeframe) or {}
 
         if not isinstance(item, dict):
@@ -1788,10 +1970,6 @@ def classify_behavior(record: dict) -> dict:
     text_by_timeframe = _behavior_text_by_timeframe(record)
     visual_text_15m = text_by_timeframe.get("15M", "")
     visual_text_5m = text_by_timeframe.get("5M", "")
-    visual_text_htf = " ".join(
-        text for timeframe, text in text_by_timeframe.items()
-        if timeframe in ["1H", "4H"] and text
-    )
     visual_text_all = " ".join(text for text in text_by_timeframe.values() if text)
 
     evidence = []
@@ -1891,26 +2069,21 @@ def classify_behavior(record: dict) -> dict:
     timeframe_weights = {
         "15M": 3,
         "5M": 2,
-        "1H/4H": 1,
     }
     weighted_scores = {classification: 0 for classification in BEHAVIOR_CLASSIFICATIONS}
 
     for classification, terms in behavior_terms.items():
         matches_15m = _behavior_term_matches(visual_text_15m, terms)
         matches_5m = _behavior_term_matches(visual_text_5m, terms)
-        matches_htf = _behavior_term_matches(visual_text_htf, terms)
         weighted_scores[classification] = (
             len(matches_15m) * timeframe_weights["15M"]
             + min(len(matches_5m), 2) * timeframe_weights["5M"]
-            + len(matches_htf) * timeframe_weights["1H/4H"]
         )
 
         if matches_15m:
             evidence.append(f"15M behavior evidence for {classification}: {', '.join(matches_15m[:4])}.")
         if matches_5m:
             evidence.append(f"5M structure evidence for {classification}: {', '.join(matches_5m[:4])}.")
-        if matches_htf:
-            evidence.append(f"1H/4H context evidence for {classification}: {', '.join(matches_htf[:4])}.")
 
     has_reaction_zone = _contains_any(
         visual_text_all,
@@ -1924,9 +2097,8 @@ def classify_behavior(record: dict) -> dict:
         _behavior_term_matches(visual_text_15m, behavior_terms[item])
         for item in ["acceptance", "rejection", "reclaim", "sweep", "displacement"]
     )
-    has_htf_context = bool(visual_text_htf)
 
-    evidence.append(f"Framework hierarchy: liquidity draw -> HTF reaction zone -> behavior -> 15M context -> 5M structure.")
+    evidence.append("Framework hierarchy: HTF CSV map -> 15M live context -> 5M structure -> conditional 1M execution confirmation.")
     evidence.append(f"Reaction zone is treated as decision context, not an entry signal: {reaction_zone}.")
     evidence.extend(stale_zone_guardrail.get("evidence") or [])
     if state.get("price_relation") == "inside_active_zone" and not has_directional_behavior:
@@ -2080,7 +2252,7 @@ def classify_behavior(record: dict) -> dict:
         confidence = str(expansion_pattern_match.get("confidence") or "medium")
     elif classification == "bullish_continuation_compression":
         confidence = str(continuation_pattern_match.get("confidence") or "low")
-    elif classification_score >= 7 and has_15m_directional_behavior and (has_5m_confirmation or has_htf_context):
+    elif classification_score >= 7 and has_15m_directional_behavior and has_5m_confirmation:
         confidence = "high"
     elif classification_score >= 3 or has_15m_directional_behavior:
         confidence = "medium"
@@ -2116,7 +2288,7 @@ def classify_behavior(record: dict) -> dict:
         data_limitations.append("Primary visual extraction did not succeed.")
 
     missing_visual_tfs = [
-        timeframe for timeframe in ["15M", "5M", "1H", "4H"]
+        timeframe for timeframe in ["15M", "5M"]
         if not text_by_timeframe.get(timeframe)
     ]
 
@@ -2149,7 +2321,7 @@ def classify_behavior(record: dict) -> dict:
     expansion_pattern_detected = bool(expansion_pattern_match.get("matched"))
     live_visual_clear = (has_directional_behavior and bool(visual_text_15m)) or continuation_pattern_detected or expansion_pattern_detected
     strong_visual_evidence = bool(
-        has_15m_directional_behavior and (has_5m_confirmation or has_htf_context)
+        has_15m_directional_behavior and has_5m_confirmation
     ) or bool(
         classification == "bullish_continuation_compression"
         and continuation_pattern_match.get("confidence") in ["medium", "high"]
@@ -2500,7 +2672,7 @@ def _csv_is_stale(record: dict) -> bool:
         if freshness.get("is_stale"):
             return True
 
-        for timeframe in ["1M", "15M"]:
+        for timeframe in HTF_CSV_TIMEFRAMES:
             item = freshness.get(timeframe) or {}
             if isinstance(item, dict) and item.get("is_stale"):
                 return True
@@ -3574,6 +3746,22 @@ def evaluate_chart_alert_eligibility(record: dict) -> dict:
     This is notification triage only. It does not create trade signals, entries,
     stop losses, targets, or any outbound message.
     """
+    if (
+        record.get("success") is False
+        or not structural_csv_available(record)
+        or not has_partial_live_vision(record)
+    ):
+        return {
+            "level": "none",
+            "should_notify": False,
+            "reasons": ["No chart-review alert: current scanner attempt has system/data failures."],
+            "blockers": ["Review scanner system_health before using this attempt as market context."],
+            "what_to_watch_next": ["Fix scanner system health, then rerun chart review."],
+            "signal_level": record.get("signal_level") or "informational",
+            "behavior_confirmation": record.get("behavior_confirmation") or "none",
+            "does_not_generate_trade_signals": True,
+        }
+
     opportunity = record.get("opportunity_watch") or {}
     behavior = record.get("behavior_classification") or {}
     liquidity_draw = record.get("liquidity_draw") or {}
@@ -3597,6 +3785,8 @@ def evaluate_chart_alert_eligibility(record: dict) -> dict:
     behavior_confirmation = str(record.get("behavior_confirmation") or "none").lower()
     liquidity_draw_alignment = str(record.get("liquidity_draw_alignment") or "unclear").lower()
     repeat_suppressed = bool(record.get("repeat_suppressed"))
+    partial_live_vision = has_partial_live_vision(record) and not has_full_live_vision(record)
+    live_status = live_vision_timeframe_status(record)
 
     clean_behavior = behavior_classification in [
         "acceptance",
@@ -3697,6 +3887,20 @@ def evaluate_chart_alert_eligibility(record: dict) -> dict:
         blockers.append("5M structure confirmation is unclear, so eligibility is capped at Low/Medium.")
     else:
         reasons.append(structure_confirmation)
+
+    if partial_live_vision:
+        level = _min_level(level, "low")
+        failed_timeframes = [
+            timeframe for timeframe, item in live_status.items()
+            if not item.get("capture_success") or not item.get("vision_success")
+        ]
+        blockers.append(
+            "Partial live visual context caps scanner confidence at Low: "
+            + ", ".join(failed_timeframes)
+            + " failed."
+        )
+        if not live_status.get("5M", {}).get("vision_success"):
+            blockers.append("5M vision is missing, so execution readiness cannot exceed watch/review.")
 
     primary_draw = (liquidity_draw.get("primary_draw") or {}).get("label")
     liquidity_confidence = liquidity_draw.get("confidence")
@@ -3996,6 +4200,9 @@ def write_scanner_runtime_status(
         "timezone": "America/Denver",
         "symbol": symbol,
         "timeframe": timeframe,
+        "htf_source": "CSV",
+        "live_vision_timeframes": list(SCHEDULED_SCAN_TIMEFRAMES),
+        "conditional_execution_timeframes": list(CONDITIONAL_EXECUTION_TIMEFRAMES),
         "active_sessions": sessions,
         "should_scan_now": should_scan_now(now),
         "scheduled_scan_allowed": scanner_enabled and should_scan_now(now),
@@ -4052,6 +4259,9 @@ def get_scanner_runtime_status() -> dict:
         "scheduled_scan_allowed": scanner_enabled and session_window_open,
         "scan_interval_seconds": SCAN_INTERVAL_SECONDS,
         "timeframe": runtime_status.get("timeframe") or SCAN_TIMEFRAME,
+        "htf_source": "CSV",
+        "live_vision_timeframes": list(SCHEDULED_SCAN_TIMEFRAMES),
+        "conditional_execution_timeframes": list(CONDITIONAL_EXECUTION_TIMEFRAMES),
         "running_scan": runtime_status.get("running_scan", False) if process_running else False,
         "last_scan_timestamp": latest_scan_timestamp,
         "latest_scan_success": latest_scan_success,
@@ -4213,14 +4423,23 @@ def evaluate_alert_eligibility(comparison: dict, current_record: dict) -> dict:
     """
     market_changes = comparison.get("market_changes", []) if isinstance(comparison, dict) else []
     visual_context_changes = comparison.get("visual_context_changes", []) if isinstance(comparison, dict) else []
-    system_status = comparison.get("system_status", []) if isinstance(comparison, dict) else []
-
     state = current_record.get("state", {})
 
-    should_alert = False
     reasons = []
     alert_type = "none"
     severity = "none"
+
+    if (
+        current_record.get("success") is False
+        or not structural_csv_available(current_record)
+        or not has_partial_live_vision(current_record)
+    ):
+        return {
+            "should_alert": False,
+            "alert_type": "none",
+            "severity": "none",
+            "reasons": ["No market alert decision: scanner system health is degraded or failed."],
+        }
 
     # -------------------------
     # Market structure alerts
@@ -4250,27 +4469,6 @@ def evaluate_alert_eligibility(comparison: dict, current_record: dict) -> dict:
         )
 
     # -------------------------
-    # Data quality alerts
-    # -------------------------
-    vision_success = state.get("vision_success")
-    csv_success = state.get("csv_success")
-
-    if csv_success is False:
-        should_alert = True
-        alert_type = "csv_failure"
-        severity = "high"
-        reasons.append("CSV analysis failed.")
-
-    if vision_success is False:
-        # Vision failure matters, but CSV can still carry the read.
-        should_alert = True
-        if alert_type == "none":
-            alert_type = "vision_failure"
-        if severity == "none":
-            severity = "low"
-        reasons.append("Vision extraction failed.")
-
-    # -------------------------
     # Visual-only changes
     # -------------------------
     visual_only_change = [
@@ -4278,7 +4476,7 @@ def evaluate_alert_eligibility(comparison: dict, current_record: dict) -> dict:
         if "No major visual context change detected" not in item
     ]
 
-    if visual_only_change and not should_alert:
+    if visual_only_change:
         # Save it, but do not alert from visual flicker alone.
         reasons.extend(
             f"Visual-only change, no alert: {item}"
@@ -4289,11 +4487,216 @@ def evaluate_alert_eligibility(comparison: dict, current_record: dict) -> dict:
         reasons.append("No alert-worthy change detected.")
 
     return {
-        "should_alert": should_alert,
+        "should_alert": False,
         "alert_type": alert_type,
         "severity": severity,
         "reasons": reasons,
-        "system_status": system_status,
+    }
+
+
+def _vision_success_by_timeframe(record: dict) -> dict[str, dict]:
+    status = live_vision_timeframe_status(record)
+    primary_timeframe = record.get("timeframe")
+    if primary_timeframe:
+        status.setdefault(
+            str(primary_timeframe),
+            {
+                "capture_success": bool(record.get("screenshot_path")),
+                "vision_success": bool(record.get("vision_success")),
+                "error": record.get("vision_error"),
+            },
+        )
+
+    for timeframe, capture in (record.get("timeframe_captures") or {}).items():
+        capture = capture or {}
+        status[str(timeframe)] = {
+            "capture_success": bool(capture.get("screenshot_path")),
+            "vision_success": bool(capture.get("vision_success")),
+            "error": capture.get("vision_error") or capture.get("error"),
+        }
+
+    return status
+
+
+def evaluate_system_health(record: dict) -> dict:
+    issues = []
+    affected_sources = set()
+    severity_rank = {"none": 0, "low": 1, "medium": 2, "high": 3}
+    severity = "none"
+
+    def add_issue(source: str, issue_type: str, message: str, issue_severity: str = "medium") -> None:
+        nonlocal severity
+        affected_sources.add(source)
+        issues.append({
+            "source": source,
+            "type": issue_type,
+            "message": message,
+            "severity": issue_severity,
+        })
+        if severity_rank.get(issue_severity, 0) > severity_rank.get(severity, 0):
+            severity = issue_severity
+
+    csv_available = structural_csv_available(record)
+    live_success_count = live_vision_success_count(record)
+    live_status = live_vision_timeframe_status(record)
+
+    if not csv_available:
+        csv_analysis = record.get("csv_analysis") or {}
+        error_text = str(csv_analysis.get("error") or csv_analysis.get("message") or "")
+        if "missing" in error_text.lower():
+            csv_issue_type = "csv_timeframe_missing"
+        elif "refresh" in error_text.lower():
+            csv_issue_type = "csv_refresh_failed"
+        else:
+            csv_issue_type = "csv_analysis_failed"
+        add_issue(
+            "CSV",
+            csv_issue_type,
+            error_text or "CSV structural analysis failed.",
+            "high",
+        )
+
+    if record.get("vision_success") is False and live_success_count == 0:
+        add_issue(
+            "Vision",
+            "primary_vision_failed",
+            record.get("vision_error") or "Primary vision extraction failed.",
+            "medium",
+        )
+
+    if not record.get("screenshot_path") and live_success_count == 0:
+        add_issue(
+            "Screenshot",
+            "primary_screenshot_missing",
+            "Primary TradingView screenshot was not captured.",
+            "medium",
+        )
+
+    if live_success_count == 0:
+        add_issue(
+            "Vision",
+            "all_live_timeframes_failed",
+            "Both required live vision timeframes failed.",
+            "high",
+        )
+    elif live_success_count < len(SCHEDULED_SCAN_TIMEFRAMES):
+        failed_timeframes = [
+            timeframe for timeframe, item in live_status.items()
+            if not item.get("capture_success") or not item.get("vision_success")
+        ]
+        add_issue(
+            "Vision",
+            "partial_live_timeframe_failure",
+            (
+                "Partial live visual context only; scanner confidence is capped because "
+                f"{', '.join(failed_timeframes)} failed."
+            ),
+            "medium",
+        )
+
+    for timeframe, capture in (record.get("timeframe_captures") or {}).items():
+        capture = capture or {}
+        if not capture.get("screenshot_path"):
+            issue_type = str(capture.get("error") or "").lower()
+            add_issue(
+                "TradingView" if "profile lock" in issue_type or "singletonlock" in issue_type else "Screenshot",
+                "timeframe_screenshot_failed",
+                f"{timeframe}: {capture.get('error') or 'screenshot was not captured.'}",
+                "medium",
+            )
+        elif capture.get("vision_success") is False:
+            add_issue(
+                "Vision",
+                "timeframe_vision_failed",
+                f"{timeframe}: {capture.get('vision_error') or 'vision extraction failed.'}",
+                "low",
+            )
+
+        if capture.get("system_health_issue") == "tradingview_profile_lock_busy":
+            add_issue(
+                "TradingView",
+                "tradingview_profile_lock_busy",
+                f"{timeframe}: {capture.get('error') or 'TradingView profile lock was busy.'}",
+                "medium",
+            )
+
+    error_text = str(record.get("error") or "")
+    if error_text:
+        source = "TradingView" if "profile lock" in error_text.lower() or "singletonlock" in error_text.lower() else "Scanner"
+        add_issue(source, "scan_failed", error_text, "high")
+
+    if record.get("system_health_issue") == "tradingview_profile_lock_busy":
+        add_issue(
+            "TradingView",
+            "tradingview_profile_lock_busy",
+            record.get("error") or "TradingView profile lock was busy.",
+            "medium",
+        )
+
+    if _csv_is_stale(record):
+        add_issue(
+            "CSV",
+            "csv_available_but_stale",
+            "CSV is stale; using it only for structural context.",
+            "medium",
+        )
+
+    status = "healthy"
+    if severity in {"low", "medium"}:
+        status = "degraded"
+    elif severity == "high":
+        status = "failed"
+
+    deduped_issues = []
+    seen_issues = set()
+    for issue in issues:
+        key = (
+            issue.get("source"),
+            issue.get("type"),
+            issue.get("message"),
+        )
+        if key in seen_issues:
+            continue
+        seen_issues.add(key)
+        deduped_issues.append(issue)
+
+    return {
+        "status": status,
+        "issues": deduped_issues,
+        "should_notify": status == "failed",
+        "severity": severity,
+        "affected_sources": sorted(affected_sources),
+        "vision_success_by_timeframe": _vision_success_by_timeframe(record),
+    }
+
+
+def attach_system_health(record: dict) -> None:
+    record["system_health"] = evaluate_system_health(record)
+    record["vision_success_by_timeframe"] = record["system_health"].get("vision_success_by_timeframe") or {}
+    issues = record["system_health"].get("issues") or []
+    issue_lines = [
+        f"- {issue.get('source')}: {issue.get('message')}"
+        for issue in issues
+    ] or ["- No scanner system health issues detected."]
+    record["message"] = (
+        (record.get("message") or "")
+        + "\n\n"
+        + "## Scanner System Health\n"
+        + f"Status: {str(record['system_health'].get('status') or 'healthy').capitalize()}\n"
+        + f"Severity: {str(record['system_health'].get('severity') or 'none').capitalize()}\n"
+        + "Issues:\n"
+        + "\n".join(issue_lines)
+    ).strip()
+
+
+def attach_market_alert(record: dict) -> None:
+    eligibility = record.get("alert_eligibility") or {}
+    record["market_alert"] = {
+        "level": eligibility.get("level") or "none",
+        "notify": bool(eligibility.get("should_notify")),
+        "signal_level": record.get("signal_level") or "informational",
+        "reasons": eligibility.get("reasons") or [],
+        "blockers": eligibility.get("blockers") or [],
     }
 
 
@@ -4327,8 +4730,20 @@ def build_scan_record(
         "sessions": sessions,
         "session_label": " + ".join(sessions),
         "success": result.get("success", False),
+        "error": result.get("error"),
+        "system_health_issue": result.get("system_health_issue"),
+        "affected_source": result.get("affected_source"),
         "screenshot_path": result.get("screenshot_path"),
         "timeframe_captures": result.get("timeframe_captures") or {},
+        "screenshots_requested": result.get("screenshots_requested") or list(SCHEDULED_SCAN_TIMEFRAMES),
+        "screenshots_captured": result.get("screenshots_captured")
+        or _captured_timeframes(result.get("timeframe_captures") or {}),
+        "csv_timeframes_used": result.get("csv_timeframes_used") or list(HTF_CSV_TIMEFRAMES),
+        "one_minute_capture_reason": result.get("one_minute_capture_reason"),
+        "scanner_source_roles": result.get("scanner_source_roles") or scanner_source_roles(),
+        "scanner_mode": "htf_map",
+        "scanner_state": "htf_map",
+        "scanner_mode_label": "Htf Map",
         "vision_success": visual_extraction.get("success", False),
         "vision_error": visual_extraction.get("error"),
         "csv_success": csv_analysis.get("success", False),
@@ -4348,6 +4763,22 @@ def build_scan_record(
             "severity": "none",
             "reasons": [],
         },
+        "market_alert": {
+            "level": "none",
+            "notify": False,
+            "signal_level": "informational",
+            "reasons": [],
+            "blockers": [],
+        },
+        "system_health": {
+            "status": "healthy",
+            "issues": [],
+            "should_notify": False,
+            "severity": "none",
+            "affected_sources": [],
+            "vision_success_by_timeframe": {},
+        },
+        "vision_success_by_timeframe": {},
         "alert_eligibility": {
             "level": "none",
             "should_notify": False,
@@ -4403,6 +4834,67 @@ def build_scan_record(
     return record
 
 
+def is_valid_market_scan(record: dict | None) -> bool:
+    if not record:
+        return False
+    if not structural_csv_available(record):
+        return False
+    if not has_partial_live_vision(record):
+        return False
+    system_health = record.get("system_health") or {}
+    if system_health.get("status") == "failed":
+        return False
+    return True
+
+
+def promote_partial_scan_result_if_possible(result: dict, timeframe_captures: dict | None, symbol: str) -> dict:
+    if not isinstance(result, dict):
+        result = {
+            "success": False,
+            "symbol": normalize_scanner_symbol(symbol),
+            "timeframe": SCAN_TIMEFRAME,
+            "error": "Primary TradingView analysis returned no result.",
+            "message": "Primary TradingView analysis returned no result.",
+        }
+
+    result["timeframe_captures"] = timeframe_captures or {}
+
+    if result.get("csv_analysis"):
+        return result
+
+    live_successes = [
+        capture for capture in (timeframe_captures or {}).values()
+        if isinstance(capture, dict)
+        and capture.get("screenshot_path")
+        and capture.get("vision_success")
+    ]
+    if not live_successes:
+        return result
+
+    csv_result = analyze_market_csv(symbol=symbol)
+    result["csv_analysis"] = csv_result
+    result["csv_freshness"] = csv_result.get("csv_freshness") or (csv_result.get("analysis") or {}).get("csv_freshness")
+
+    if not csv_result.get("success"):
+        return result
+
+    partial_capture = live_successes[0]
+    result.update({
+        "success": True,
+        "partial_live_context": True,
+        "partial_scan_error": result.get("error"),
+        "error": None,
+        "timeframe": partial_capture.get("timeframe") or result.get("timeframe"),
+        "screenshot_path": partial_capture.get("screenshot_path"),
+        "visual_extraction": partial_capture.get("visual_extraction") or {},
+        "message": (
+            "Partial scanner scan completed with HTF CSV structure and one live vision timeframe. "
+            "Scanner confidence is capped because another live timeframe failed."
+        ),
+    })
+    return result
+
+
 # -------------------------
 # Scan history lookup
 # -------------------------
@@ -4451,10 +4943,7 @@ def load_last_successful_scan(
             if record.get("symbol") != symbol:
                 continue
 
-            if not record.get("success"):
-                continue
-
-            if not record.get("csv_success"):
+            if not is_valid_market_scan(record):
                 continue
 
             last_scan = normalize_narrative_scanner_state(record)
@@ -4584,6 +5073,13 @@ def run_scan(
         else:
             timeframe_captures = {}
 
+        if multi_timeframe:
+            result = promote_partial_scan_result_if_possible(
+                result,
+                timeframe_captures,
+                scan_symbol,
+            )
+
         attach_news_risk(result, now)
 
         if multi_timeframe:
@@ -4616,8 +5112,16 @@ def run_scan(
         attach_behavior_classification(record)
         attach_opportunity_watch(record)
         attach_narrative_scanner_state(record)
+        _append_one_minute_execution_context(
+            record,
+            symbol=scan_symbol,
+            session_label=session_label,
+        )
+        attach_system_health(record)
         attach_scanner_signal(record, previous_scan=previous_scan, now=now)
         attach_alert_eligibility(record)
+        attach_market_alert(record)
+        attach_scanner_mode(record)
         attach_presence_notification_eligibility(record)
         deliver_scan_notification(record)
         record["screenshot_cleanup"] = screenshot_cleanup
@@ -4692,6 +5196,14 @@ def run_scan(
             "symbol": scan_symbol,
             "timeframe": primary_timeframe,
             "timeframe_captures": {},
+            "screenshots_requested": list(SCHEDULED_SCAN_TIMEFRAMES),
+            "screenshots_captured": [],
+            "csv_timeframes_used": list(HTF_CSV_TIMEFRAMES),
+            "one_minute_capture_reason": None,
+            "scanner_source_roles": scanner_source_roles(),
+            "scanner_mode": "htf_map",
+            "scanner_state": "htf_map",
+            "scanner_mode_label": "Htf Map",
             "sessions": sessions if sessions else ["Forced Scan"],
             "session_label": session_label,
             "success": False,
@@ -4745,6 +5257,8 @@ def run_scan(
             },
             "screenshot_cleanup": screenshot_cleanup,
         }
+        attach_system_health(error_record)
+        attach_market_alert(error_record)
         attach_presence_notification_eligibility(error_record)
 
         save_scan_record(error_record)

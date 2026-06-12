@@ -11,6 +11,10 @@ import base64
 from pathlib import Path
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from tradingview_profile_lock import (
+    TradingViewProfileLockTimeout,
+    tradingview_profile_lock,
+)
 
 try:
     from orbit import service as orbit_service
@@ -2135,20 +2139,21 @@ def capture_tradingview(symbol: str = "MNQ", timeframe: str | None = None):
         if interval:
             chart_url += f"&interval={interval}"
 
-        with sync_playwright() as p:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=profile_dir,
-                headless=False,
-                viewport={"width": 1600, "height": 900},
-                accept_downloads=True,
-            )
+        with tradingview_profile_lock(owner=f"capture_tradingview:{symbol}:{timeframe or 'default'}", timeout_seconds=15):
+            with sync_playwright() as p:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=profile_dir,
+                    headless=False,
+                    viewport={"width": 1600, "height": 900},
+                    accept_downloads=True,
+                )
 
-            page = context.pages[0] if context.pages else context.new_page()
-            page.goto(chart_url, wait_until="domcontentloaded", timeout=90000)
-            page.wait_for_timeout(15000)
-            page.screenshot(path=screenshot_path, full_page=False)
+                page = context.pages[0] if context.pages else context.new_page()
+                page.goto(chart_url, wait_until="domcontentloaded", timeout=90000)
+                page.wait_for_timeout(15000)
+                page.screenshot(path=screenshot_path, full_page=False)
 
-            context.close()
+                context.close()
 
         return {
             "success": True,
@@ -2159,6 +2164,16 @@ def capture_tradingview(symbol: str = "MNQ", timeframe: str | None = None):
             "message": f"TradingView screenshot captured: {screenshot_path}",
         }
 
+    except TradingViewProfileLockTimeout as e:
+        return {
+            "success": False,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "error": str(e),
+            "system_health_issue": "tradingview_profile_lock_busy",
+            "affected_source": "TradingView",
+            "message": f"TradingView capture skipped: {e}",
+        }
     except Exception as e:
         return {
             "success": False,
@@ -2173,23 +2188,24 @@ def setup_tradingview_profile():
     profile_dir = get_tradingview_profile_dir()
     os.makedirs(profile_dir, exist_ok=True)
 
-    with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=profile_dir,
-            headless=False,
-            viewport={"width": 1600, "height": 900},
-            accept_downloads=True,
-        )
+    with tradingview_profile_lock(owner="setup_tradingview_profile", timeout_seconds=30):
+        with sync_playwright() as p:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=profile_dir,
+                headless=False,
+                viewport={"width": 1600, "height": 900},
+                accept_downloads=True,
+            )
 
-        page = context.pages[0] if context.pages else context.new_page()
-        page.goto("https://www.tradingview.com/chart/", wait_until="domcontentloaded")
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto("https://www.tradingview.com/chart/", wait_until="domcontentloaded")
 
-        print("\nTradingView browser is open.")
-        print("Log in, load your layout, and make sure CSV export is available.")
-        print("You have 5 minutes...")
+            print("\nTradingView browser is open.")
+            print("Log in, load your layout, and make sure CSV export is available.")
+            print("You have 5 minutes...")
 
-        page.wait_for_timeout(300000)
-        context.close()
+            page.wait_for_timeout(300000)
+            context.close()
 
     return {
         "success": True,
@@ -2580,191 +2596,204 @@ def export_tradingview_csv(symbol: str, timeframe: str, temp_dir: Path) -> dict:
         chart_url = f"https://www.tradingview.com/chart/?symbol={tv_symbol}&interval={interval}"
         temp_dir.mkdir(parents=True, exist_ok=True)
 
-        with sync_playwright() as p:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=profile_dir,
-                headless=False,
-                viewport={"width": 1600, "height": 900},
-                accept_downloads=True,
-            )
-
-            page = context.pages[0] if context.pages else context.new_page()
-            page.bring_to_front()
-            page.goto(chart_url, wait_until="domcontentloaded", timeout=90000)
-            page.wait_for_timeout(12000)
-
-            layout_click = _click_tradingview_layout_dropdown(page)
-            logs.extend(f"{timeframe}: {message}" for message in layout_click.get("logs") or [])
-
-            if not layout_click.get("success"):
-                screenshot_path = _save_export_debug_screenshot(
-                    page,
-                    symbol,
-                    timeframe,
-                    "layout_dropdown_not_found",
-                )
-                context.close()
-                return {
-                    "success": False,
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "logs": logs + [
-                        f"{timeframe}: failed to click layout dropdown",
-                        *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
-                    ],
-                    "error": (
-                        "Could not find TradingView layout dropdown / Manage layouts button. "
-                        "UI may have changed or export may require manual action."
-                    ),
-                    "debug_screenshot": screenshot_path,
-                }
-
-            if not _click_download_chart_data_menu_item(page):
-                screenshot_path = _save_export_debug_screenshot(
-                    page,
-                    symbol,
-                    timeframe,
-                    "download_chart_data_menu_not_found",
-                )
-                context.close()
-                return {
-                    "success": False,
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "logs": logs + [
-                        f"{timeframe}: failed to click Download chart data",
-                        *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
-                    ],
-                    "error": "Could not find TradingView menu item: Download chart data...",
-                    "debug_screenshot": screenshot_path,
-                }
-
-            logs.append(f"{timeframe}: clicked Download chart data")
-
-            if not _wait_for_download_chart_data_modal(page):
-                screenshot_path = _save_export_debug_screenshot(
-                    page,
-                    symbol,
-                    timeframe,
-                    "download_chart_data_modal_not_found",
-                )
-                context.close()
-                return {
-                    "success": False,
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "logs": logs + [
-                        f"{timeframe}: Download chart data modal did not appear",
-                        *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
-                    ],
-                    "error": "TradingView Download chart data modal did not appear.",
-                    "debug_screenshot": screenshot_path,
-                }
-
-            logs.append(f"{timeframe}: modal appeared")
-
-            download_button = _download_chart_data_button(page)
-            if not download_button:
-                screenshot_path = _save_export_debug_screenshot(
-                    page,
-                    symbol,
-                    timeframe,
-                    "modal_download_button_not_found",
-                )
-                context.close()
-                return {
-                    "success": False,
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "logs": logs + [
-                        f"{timeframe}: modal Download button not found",
-                        *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
-                    ],
-                    "error": "TradingView Download chart data modal opened, but Download button was not found.",
-                    "debug_screenshot": screenshot_path,
-                }
-
-            try:
-                with page.expect_download(timeout=TRADINGVIEW_EXPORT_DOWNLOAD_TIMEOUT_SECONDS * 1000) as download_info:
-                    download_button.click(timeout=5000)
-
-                download = download_info.value
-                logs.append(f"{timeframe}: download event captured")
-
-                if final_path.exists():
-                    final_path.unlink()
-
-                download.save_as(str(final_path))
-                logs.append(f"{timeframe}: saved CSV path: {final_path}")
-                context.close()
-
-                return {
-                    "success": True,
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "downloaded_path": download.suggested_filename,
-                    "temp_path": str(final_path),
-                    "logs": logs,
-                }
-
-            except PlaywrightTimeoutError:
-                logs.append(
-                    f"{timeframe}: Playwright download event timed out; checking Downloads fallback"
+        with tradingview_profile_lock(owner=f"export_tradingview_csv:{symbol}:{timeframe}", timeout_seconds=15, logs=logs):
+            with sync_playwright() as p:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=profile_dir,
+                    headless=False,
+                    viewport={"width": 1600, "height": 900},
+                    accept_downloads=True,
                 )
 
-                handoff = move_new_downloaded_csv_to_temp(
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    temp_dir=temp_dir,
-                    snapshot=snapshot,
-                    downloads_dir=USER_DOWNLOADS_DIR,
-                )
-                if not handoff.get("success"):
+                page = context.pages[0] if context.pages else context.new_page()
+                page.bring_to_front()
+                page.goto(chart_url, wait_until="domcontentloaded", timeout=90000)
+                page.wait_for_timeout(12000)
+
+                layout_click = _click_tradingview_layout_dropdown(page)
+                logs.extend(f"{timeframe}: {message}" for message in layout_click.get("logs") or [])
+
+                if not layout_click.get("success"):
                     screenshot_path = _save_export_debug_screenshot(
                         page,
                         symbol,
                         timeframe,
-                        "download_event_and_fallback_failed",
+                        "layout_dropdown_not_found",
                     )
-                    if screenshot_path:
-                        handoff["debug_screenshot"] = screenshot_path
-                        logs.append(f"{timeframe}: failure screenshot: {screenshot_path}")
+                    context.close()
+                    return {
+                        "success": False,
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "logs": logs + [
+                            f"{timeframe}: failed to click layout dropdown",
+                            *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
+                        ],
+                        "error": (
+                            "Could not find TradingView layout dropdown / Manage layouts button. "
+                            "UI may have changed or export may require manual action."
+                        ),
+                        "debug_screenshot": screenshot_path,
+                    }
 
-                context.close()
+                if not _click_download_chart_data_menu_item(page):
+                    screenshot_path = _save_export_debug_screenshot(
+                        page,
+                        symbol,
+                        timeframe,
+                        "download_chart_data_menu_not_found",
+                    )
+                    context.close()
+                    return {
+                        "success": False,
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "logs": logs + [
+                            f"{timeframe}: failed to click Download chart data",
+                            *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
+                        ],
+                        "error": "Could not find TradingView menu item: Download chart data...",
+                        "debug_screenshot": screenshot_path,
+                    }
 
-                if not handoff.get("success"):
-                    logs.append(f"{timeframe}: {handoff.get('error')}")
+                logs.append(f"{timeframe}: clicked Download chart data")
+
+                if not _wait_for_download_chart_data_modal(page):
+                    screenshot_path = _save_export_debug_screenshot(
+                        page,
+                        symbol,
+                        timeframe,
+                        "download_chart_data_modal_not_found",
+                    )
+                    context.close()
+                    return {
+                        "success": False,
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "logs": logs + [
+                            f"{timeframe}: Download chart data modal did not appear",
+                            *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
+                        ],
+                        "error": "TradingView Download chart data modal did not appear.",
+                        "debug_screenshot": screenshot_path,
+                    }
+
+                logs.append(f"{timeframe}: modal appeared")
+
+                download_button = _download_chart_data_button(page)
+                if not download_button:
+                    screenshot_path = _save_export_debug_screenshot(
+                        page,
+                        symbol,
+                        timeframe,
+                        "modal_download_button_not_found",
+                    )
+                    context.close()
+                    return {
+                        "success": False,
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "logs": logs + [
+                            f"{timeframe}: modal Download button not found",
+                            *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
+                        ],
+                        "error": "TradingView Download chart data modal opened, but Download button was not found.",
+                        "debug_screenshot": screenshot_path,
+                    }
+
+                try:
+                    with page.expect_download(timeout=TRADINGVIEW_EXPORT_DOWNLOAD_TIMEOUT_SECONDS * 1000) as download_info:
+                        download_button.click(timeout=5000)
+
+                    download = download_info.value
+                    logs.append(f"{timeframe}: download event captured")
+
+                    if final_path.exists():
+                        final_path.unlink()
+
+                    download.save_as(str(final_path))
+                    logs.append(f"{timeframe}: saved CSV path: {final_path}")
+                    context.close()
+
+                    return {
+                        "success": True,
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "downloaded_path": download.suggested_filename,
+                        "temp_path": str(final_path),
+                        "logs": logs,
+                    }
+
+                except PlaywrightTimeoutError:
+                    logs.append(
+                        f"{timeframe}: Playwright download event timed out; checking Downloads fallback"
+                    )
+
+                    handoff = move_new_downloaded_csv_to_temp(
+                        symbol,
+                        timeframe,
+                        temp_dir=temp_dir,
+                        snapshot=snapshot,
+                        downloads_dir=USER_DOWNLOADS_DIR,
+                    )
+                    if not handoff.get("success"):
+                        screenshot_path = _save_export_debug_screenshot(
+                            page,
+                            symbol,
+                            timeframe,
+                            "download_event_and_fallback_failed",
+                        )
+                        if screenshot_path:
+                            handoff["debug_screenshot"] = screenshot_path
+                            logs.append(f"{timeframe}: failure screenshot: {screenshot_path}")
+
+                    context.close()
+
+                    if not handoff.get("success"):
+                        logs.append(f"{timeframe}: {handoff.get('error')}")
+                        handoff["logs"] = logs
+                        return handoff
+
+                    logs.append(f"{timeframe}: downloaded file detected: {handoff['downloaded_path']}")
+                    if handoff.get("warning"):
+                        logs.append(f"{timeframe}: warning: {handoff['warning']}")
+                    logs.append(f"{timeframe}: saved CSV path: {handoff['temp_path']}")
                     handoff["logs"] = logs
                     return handoff
 
-                logs.append(f"{timeframe}: downloaded file detected: {handoff['downloaded_path']}")
-                if handoff.get("warning"):
-                    logs.append(f"{timeframe}: warning: {handoff['warning']}")
-                logs.append(f"{timeframe}: saved CSV path: {handoff['temp_path']}")
-                handoff["logs"] = logs
-                return handoff
+                except Exception as e:
+                    screenshot_path = _save_export_debug_screenshot(
+                        page,
+                        symbol,
+                        timeframe,
+                        "download_click_failed",
+                    )
+                    context.close()
 
-            except Exception as e:
-                screenshot_path = _save_export_debug_screenshot(
-                    page,
-                    symbol,
-                    timeframe,
-                    "download_click_failed",
-                )
-                context.close()
+                    return {
+                        "success": False,
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "logs": logs + [
+                            f"{timeframe}: failed while clicking modal Download: {e}",
+                            *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
+                        ],
+                        "error": f"TradingView modal Download click failed: {e}",
+                        "debug_screenshot": screenshot_path,
+                    }
 
-                return {
-                    "success": False,
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "logs": logs + [
-                        f"{timeframe}: failed while clicking modal Download: {e}",
-                        *([f"{timeframe}: failure screenshot: {screenshot_path}"] if screenshot_path else []),
-                    ],
-                    "error": f"TradingView modal Download click failed: {e}",
-                    "debug_screenshot": screenshot_path,
-                }
-
+    except TradingViewProfileLockTimeout as e:
+        logs.append(str(e))
+        return {
+            "success": False,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "logs": logs,
+            "error": str(e),
+            "system_health_issue": "tradingview_profile_lock_busy",
+            "affected_source": "TradingView",
+            "message": f"TradingView CSV export skipped for {symbol} {timeframe}: {e}",
+        }
     except Exception as e:
         return {
             "success": False,
@@ -2818,76 +2847,77 @@ def export_market_csvs_to_directory(symbol: str = "MNQ", output_dir: str | None 
         exported = {}
         failures = {}
 
-        with sync_playwright() as p:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=profile_dir,
-                headless=False,
-                viewport={"width": 1600, "height": 900},
-                accept_downloads=True,
-            )
+        with tradingview_profile_lock(owner=f"export_market_csvs_to_directory:{symbol}", timeout_seconds=15):
+            with sync_playwright() as p:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=profile_dir,
+                    headless=False,
+                    viewport={"width": 1600, "height": 900},
+                    accept_downloads=True,
+                )
 
-            page = context.pages[0] if context.pages else context.new_page()
+                page = context.pages[0] if context.pages else context.new_page()
 
-            for timeframe in requested_timeframes:
-                interval = TRADINGVIEW_TIMEFRAMES.get(timeframe)
+                for timeframe in requested_timeframes:
+                    interval = TRADINGVIEW_TIMEFRAMES.get(timeframe)
 
-                if not interval:
-                    failures[timeframe] = f"Unsupported TradingView timeframe: {timeframe}"
-                    continue
-
-                chart_url = f"https://www.tradingview.com/chart/?symbol={tv_symbol}&interval={interval}"
-
-                try:
-                    page.goto(chart_url, wait_until="domcontentloaded", timeout=90000)
-                    page.wait_for_timeout(12000)
-
-                    opened = _try_open_export_menu(page)
-                    clicked = _try_click_export_chart_data(page)
-
-                    if not opened or not clicked:
-                        failures[timeframe] = (
-                            "Could not find TradingView export menu/button. "
-                            "UI may have changed or export may require manual action."
-                        )
+                    if not interval:
+                        failures[timeframe] = f"Unsupported TradingView timeframe: {timeframe}"
                         continue
 
+                    chart_url = f"https://www.tradingview.com/chart/?symbol={tv_symbol}&interval={interval}"
+
                     try:
-                        with page.expect_download(timeout=15000) as download_info:
-                            # Some TradingView dialogs require confirming export.
-                            for label in ["Export", "Download", "Save"]:
-                                try:
-                                    confirm = page.get_by_text(label, exact=False).first
-                                    if confirm.count() > 0:
-                                        confirm.click(timeout=3000)
-                                        break
-                                except Exception:
-                                    pass
+                        page.goto(chart_url, wait_until="domcontentloaded", timeout=90000)
+                        page.wait_for_timeout(12000)
 
-                        download = download_info.value
-                        temp_path = os.path.join(
-                            DOWNLOADS_DIR,
-                            f"{symbol}_{timeframe}_{int(time.time())}.csv",
-                        )
-                        download.save_as(temp_path)
+                        opened = _try_open_export_menu(page)
+                        clicked = _try_click_export_chart_data(page)
 
-                        clean_name = _normalize_downloaded_csv(
-                            temp_path,
-                            symbol=symbol,
-                            timeframe=timeframe,
-                            destination_dir=output_dir,
-                        )
+                        if not opened or not clicked:
+                            failures[timeframe] = (
+                                "Could not find TradingView export menu/button. "
+                                "UI may have changed or export may require manual action."
+                            )
+                            continue
 
-                        exported[timeframe] = clean_name
+                        try:
+                            with page.expect_download(timeout=15000) as download_info:
+                                # Some TradingView dialogs require confirming export.
+                                for label in ["Export", "Download", "Save"]:
+                                    try:
+                                        confirm = page.get_by_text(label, exact=False).first
+                                        if confirm.count() > 0:
+                                            confirm.click(timeout=3000)
+                                            break
+                                    except Exception:
+                                        pass
 
-                    except PlaywrightTimeoutError:
-                        failures[timeframe] = (
-                            "Export dialog opened, but no CSV download was detected."
-                        )
+                            download = download_info.value
+                            temp_path = os.path.join(
+                                DOWNLOADS_DIR,
+                                f"{symbol}_{timeframe}_{int(time.time())}.csv",
+                            )
+                            download.save_as(temp_path)
 
-                except Exception as e:
-                    failures[timeframe] = str(e)
+                            clean_name = _normalize_downloaded_csv(
+                                temp_path,
+                                symbol=symbol,
+                                timeframe=timeframe,
+                                destination_dir=output_dir,
+                            )
 
-            context.close()
+                            exported[timeframe] = clean_name
+
+                        except PlaywrightTimeoutError:
+                            failures[timeframe] = (
+                                "Export dialog opened, but no CSV download was detected."
+                            )
+
+                    except Exception as e:
+                        failures[timeframe] = str(e)
+
+                context.close()
 
         success = len(exported) > 0
 
@@ -2909,6 +2939,16 @@ def export_market_csvs_to_directory(symbol: str = "MNQ", output_dir: str | None 
             ),
         }
 
+    except TradingViewProfileLockTimeout as e:
+        return {
+            "success": False,
+            "symbol": symbol,
+            "exported": {},
+            "failures": {"TradingView": str(e)},
+            "system_health_issue": "tradingview_profile_lock_busy",
+            "affected_source": "TradingView",
+            "message": f"CSV refresh skipped: {e}",
+        }
     except Exception as e:
         return {
             "success": False,
@@ -3267,7 +3307,7 @@ def get_directional_targets(current_price: float, analysis: dict):
     daily = analysis.get("daily", {})
     h4 = analysis.get("h4", {})
     htf = analysis.get("htf", {})
-    mtf = analysis.get("mtf", {})
+    mtf = analysis.get("mtf") or {}
 
     raw_above = [
         htf.get("recent_high_20"),
@@ -3319,11 +3359,11 @@ def _csv_has_stale_execution_context(csv_freshness: dict) -> bool:
     freshness = csv_freshness or {}
     return any(
         bool((freshness.get(timeframe) or {}).get("is_stale"))
-        for timeframe in ["1M", "15M", "1H"]
+        for timeframe in ["1D", "4H", "1H"]
     )
 
 
-def _csv_age_text(csv_freshness: dict, timeframe: str = "1M") -> str:
+def _csv_age_text(csv_freshness: dict, timeframe: str = "1H") -> str:
     item = (csv_freshness or {}).get(timeframe) or {}
     age = item.get("age_minutes")
     if age is None:
@@ -3379,8 +3419,9 @@ def format_market_response(analysis: dict) -> str:
     daily = analysis.get("daily")
     h4 = analysis.get("h4")
     htf = analysis.get("htf", {})
-    mtf = analysis.get("mtf", {})
-    ltf = analysis.get("ltf", {})
+    mtf = analysis.get("mtf") or {}
+    ltf = analysis.get("ltf") or {}
+    lower_csv_used = bool(analysis.get("lower_timeframe_csv_used"))
 
     preferred_type = (
         "bullish" if context_bias == "bullish"
@@ -3391,8 +3432,8 @@ def format_market_response(analysis: dict) -> str:
     daily_zone = get_best_zone(daily, preferred_type)
     h4_zone = get_best_zone(h4, preferred_type)
     h1_zone = get_best_zone(htf, preferred_type)
-    m15_zone = get_best_zone(mtf, preferred_type)
-    m1_zone = get_best_zone(ltf, preferred_type)
+    m15_zone = get_best_zone(mtf, preferred_type) if lower_csv_used else None
+    m1_zone = get_best_zone(ltf, preferred_type) if lower_csv_used else None
 
     response = []
 
@@ -3400,12 +3441,12 @@ def format_market_response(analysis: dict) -> str:
         response.append(
             f"**{symbol} CSV Structural Read:** {context_tf} structure is **{context_bias}**, "
             f"but stale CSV cannot confirm live execution state. "
-            f"Stale CSV reference close is **{current_price}** ({_csv_age_text(csv_freshness, '1M')}). "
+            f"Stale HTF CSV reference close is **{current_price}** ({_csv_age_text(csv_freshness, '1H')}). "
             "Live chart/vision is primary for current price."
         )
         if context_bias == "bullish" and context.get("execution_bias") == "bearish":
             response.append(
-                "**Bias Separation:** 1D structure remains bullish, but 4H/1H/15M/1M execution context is bearish or reclaim-needed."
+                "**Bias Separation:** 1D structure remains bullish, but live 15M/5M execution context is bearish or reclaim-needed."
             )
         else:
             response.append(
@@ -3414,7 +3455,7 @@ def format_market_response(analysis: dict) -> str:
     else:
         response.append(
             f"**{symbol} Data Read:** Main context is **{context_bias}** from the "
-            f"**{context_tf}**. CSV 1M close is around **{current_price}**."
+            f"**{context_tf}**. Latest HTF CSV reference close is around **{current_price}**."
         )
 
     if stale_warning:
@@ -3429,7 +3470,10 @@ def format_market_response(analysis: dict) -> str:
         f"- **HTF structural bias:** {context_bias} from {context_tf}."
     )
     response.append(
-        f"- **CSV execution reference:** {context.get('execution_bias', 'unknown')} from 1M CSV."
+        f"- **CSV structure source:** 1D/4H/1H only."
+    )
+    response.append(
+        f"- **Live execution source:** 15M/5M vision; 1M only if execution watch is triggered."
     )
 
     response.append("## CSV Reference Zones")
@@ -3442,8 +3486,11 @@ def format_market_response(analysis: dict) -> str:
         response.append(zone_formatter("4H", h4_zone, "primary HTF battlefield"))
 
     response.append(zone_formatter("1H", h1_zone, "HTF confirmation / draw"))
-    response.append(zone_formatter("15M", m15_zone, "setup/refinement"))
-    response.append(zone_formatter("1M", m1_zone, "execution trigger only"))
+    if lower_csv_used:
+        response.append(zone_formatter("15M", m15_zone, "conditional setup/refinement CSV"))
+        response.append(zone_formatter("1M", m1_zone, "conditional execution CSV"))
+    else:
+        response.append("- **15M/5M/1M CSV:** Not used by default; lower-timeframe behavior comes from live vision.")
 
     response.append("## Live Execution State")
     if csv_execution_stale:
@@ -3455,7 +3502,7 @@ def format_market_response(analysis: dict) -> str:
         )
     else:
         response.append(
-            f"- Fresh/recent CSV execution bias is {context.get('execution_bias', 'unknown')}; still confirm with chart context before acting."
+            "- HTF CSV is fresh enough for structure. Live execution still requires 15M/5M chart context."
         )
 
     targets = trade_plan.get("targets", {})
@@ -3469,16 +3516,16 @@ def format_market_response(analysis: dict) -> str:
     response.append("## Trade Logic")
     response.append(
         "- **Bullish:** Needs price to respect/reclaim a meaningful bullish zone, "
-        "then confirm with 1M MSS/BOS and BRTC."
+        "then confirm with 5M behavior and conditional 1M execution context."
     )
     response.append(
         "- **Bearish:** Needs price to reject a meaningful bearish/overhead zone or fail "
-        "a bullish zone, then confirm with 1M MSS/BOS and BRTC."
+        "a bullish zone, then confirm with 5M behavior and conditional 1M execution context."
     )
 
     response.append(
         "**Bottom Line:** CSV controls historical structure/FVG reaction-zone mapping. "
-        "Vision controls live visible chart context when CSV is stale."
+        "Vision controls live visible chart context; 1M is conditional execution confirmation only."
     )
 
     return "\n\n".join(response)
@@ -3498,38 +3545,43 @@ def analyze_market_csv(
         daily = daily or resolve_market_csv(symbol, "1D")
         h4 = h4 or resolve_market_csv(symbol, "4H")
         htf = htf or resolve_market_csv(symbol, "1H")
-        mtf = mtf or resolve_market_csv(symbol, "15M")
-        ltf = ltf or resolve_market_csv(symbol, "1M")
 
         daily_df = load_market_csv(daily)
         h4_df = load_market_csv(h4)
         htf_df = load_market_csv(htf)
-        mtf_df = load_market_csv(mtf)
-        ltf_df = load_market_csv(ltf)
+        mtf_df = load_market_csv(mtf) if mtf else None
+        ltf_df = load_market_csv(ltf) if ltf else None
 
         csv_freshness = {
             "1D": get_csv_freshness(daily_df, "1D"),
             "4H": get_csv_freshness(h4_df, "4H"),
             "1H": get_csv_freshness(htf_df, "1H"),
-            "15M": get_csv_freshness(mtf_df, "15M"),
-            "1M": get_csv_freshness(ltf_df, "1M"),
         }
+        if mtf_df is not None:
+            csv_freshness["15M"] = get_csv_freshness(mtf_df, "15M")
+        if ltf_df is not None:
+            csv_freshness["1M"] = get_csv_freshness(ltf_df, "1M")
 
         daily_analysis = analyze_dataframe(daily_df)
         h4_analysis = analyze_dataframe(h4_df)
         htf_analysis = analyze_dataframe(htf_df)
-        mtf_analysis = analyze_dataframe(mtf_df)
-        ltf_analysis = analyze_dataframe(ltf_df)
+        mtf_analysis = analyze_dataframe(mtf_df) if mtf_df is not None else None
+        ltf_analysis = analyze_dataframe(ltf_df) if ltf_df is not None else None
 
-        current_price = ltf_analysis["current_price"]
+        current_price = htf_analysis["current_price"]
+        execution_bias = "live_vision_required"
+        if ltf_analysis:
+            execution_bias = ltf_analysis["bias"]
 
         zones_by_timeframe = {
             "1D": daily_analysis.get("bullish_fvgs", []) + daily_analysis.get("bearish_fvgs", []),
             "4H": h4_analysis.get("bullish_fvgs", []) + h4_analysis.get("bearish_fvgs", []),
             "1H": htf_analysis.get("bullish_fvgs", []) + htf_analysis.get("bearish_fvgs", []),
-            "15M": mtf_analysis.get("bullish_fvgs", []) + mtf_analysis.get("bearish_fvgs", []),
-            "1M": ltf_analysis.get("bullish_fvgs", []) + ltf_analysis.get("bearish_fvgs", []),
         }
+        if mtf_analysis:
+            zones_by_timeframe["15M"] = mtf_analysis.get("bullish_fvgs", []) + mtf_analysis.get("bearish_fvgs", [])
+        if ltf_analysis:
+            zones_by_timeframe["1M"] = ltf_analysis.get("bullish_fvgs", []) + ltf_analysis.get("bearish_fvgs", [])
 
         zone_ranking = rank_fvg_zones(
             current_price=current_price,
@@ -3538,7 +3590,6 @@ def analyze_market_csv(
 
         context_bias = daily_analysis["bias"]
         context_timeframe = "1D"
-        execution_bias = ltf_analysis["bias"]
         csv_execution_stale = _csv_has_stale_execution_context(csv_freshness)
 
         targets = get_directional_targets(
@@ -3588,6 +3639,17 @@ def analyze_market_csv(
                 "mtf": mtf,
                 "ltf": ltf,
             },
+            "csv_timeframes_used": [
+                timeframe for timeframe, path in {
+                    "1D": daily,
+                    "4H": h4,
+                    "1H": htf,
+                    "15M": mtf,
+                    "1M": ltf,
+                }.items()
+                if path
+            ],
+            "lower_timeframe_csv_used": bool(mtf or ltf),
 
             "context": {
                 "bias_timeframe": context_timeframe,
@@ -3595,22 +3657,20 @@ def analyze_market_csv(
                 "execution_bias": execution_bias,
                 "current_price": current_price,
                 "current_price_source": (
-                    "stale_csv_reference_close"
+                    "stale_htf_csv_reference_close"
                     if csv_execution_stale
-                    else "csv_1m_close"
+                    else "htf_csv_reference_close"
                 ),
                 "live_price_source": (
                     "vision_or_latest_scanner_required"
-                    if csv_execution_stale
-                    else "csv_recent"
                 ),
             },
 
             "daily": {"timeframe": "1D", **daily_analysis},
             "h4": {"timeframe": "4H", **h4_analysis},
             "htf": {"timeframe": "1H", **htf_analysis},
-            "mtf": {"timeframe": "15M", **mtf_analysis},
-            "ltf": {"timeframe": "1M", **ltf_analysis},
+            "mtf": {"timeframe": "15M", **mtf_analysis} if mtf_analysis else None,
+            "ltf": {"timeframe": "1M", **ltf_analysis} if ltf_analysis else None,
 
             "zone_ranking": zone_ranking,
             "csv_freshness": csv_freshness,
@@ -3620,9 +3680,9 @@ def analyze_market_csv(
                 "csv_reference_close_label": (
                     "stale CSV reference close"
                     if csv_execution_stale
-                    else "CSV 1M close"
+                    else "HTF CSV reference close"
                 ),
-                "live_price_primary": bool(csv_execution_stale),
+                "live_price_primary": True,
                 "warnings": (
                     [
                         "CSV is stale; using CSV only for structural context.",
@@ -3643,19 +3703,19 @@ def analyze_market_csv(
                 "invalidation": invalidation,
                 "ltf_confirmation": {
                     "bias": execution_bias,
-                    "structure": ltf_analysis["structure"],
-                    "entry_model": "Liquidity sweep -> MSS/BOS -> BRTC retest.",
+                    "structure": ltf_analysis["structure"] if ltf_analysis else "live_5m_or_conditional_1m_required",
+                    "entry_model": "Liquidity sweep -> 5M MSS/BOS or reclaim/rejection -> conditional 1M confirmation.",
                 },
                 "bullish_plan": {
                     "idea": "Only look for longs after respect/reclaim of a meaningful bullish zone.",
                     "zones": bullish_zones[:3],
-                    "confirmation": "Wait for 1M bullish MSS/BOS, then BRTC retest.",
+                    "confirmation": "Wait for 5M bullish MSS/BOS or reclaim, then conditional 1M confirmation.",
                     "invalidation": "Failure to reclaim or clean acceptance below the FVG low.",
                 },
                 "bearish_plan": {
                     "idea": "Look for shorts after rejection from an overhead bearish zone or failed bullish zone.",
                     "zones": bearish_zones[:3],
-                    "confirmation": "Wait for 1M bearish MSS/BOS, then BRTC retest.",
+                    "confirmation": "Wait for 5M bearish MSS/BOS or rejection, then conditional 1M confirmation.",
                     "invalidation": "Reclaim above the rejected zone or break above rejection high.",
                 },
             },
@@ -3663,9 +3723,9 @@ def analyze_market_csv(
             "analysis_rules": {
                 "model": "Liquidity Narrative Continuation",
                 "source_of_truth": "CSV controls historical structure/FVG reaction-zone mapping.",
-                "screenshot_role": "Vision controls live visible chart context when CSV is stale.",
-                "timeframe_priority": "1D > 4H > 1H > 15M > 1M",
-                "entry_model": "Liquidity sweep -> MSS/BOS -> BRTC retest -> continuation",
+                "screenshot_role": "15M/5M vision controls live visible chart context; 1M is conditional execution confirmation.",
+                "timeframe_priority": "1D > 4H > 1H CSV map; 15M/5M vision; conditional 1M",
+                "entry_model": "Liquidity sweep -> 5M MSS/BOS/reclaim/rejection -> conditional 1M confirmation",
                 "do_not_use": "VWAP",
                 "note": "Conditional analysis only. Not financial advice.",
             },
@@ -4297,13 +4357,13 @@ def _csv_refresh_last_success_age_minutes() -> float | None:
 
 
 def _csv_recent_context_note(csv_freshness: dict) -> str | None:
-    ltf_freshness = (csv_freshness or {}).get("1M", {})
+    htf_freshness = (csv_freshness or {}).get("1H", {})
 
-    if ltf_freshness.get("is_stale"):
+    if htf_freshness.get("is_stale"):
         return None
 
-    age = ltf_freshness.get("age_minutes")
-    threshold = CSV_STALENESS_THRESHOLDS_MINUTES.get("1M")
+    age = htf_freshness.get("age_minutes")
+    threshold = CSV_STALENESS_THRESHOLDS_MINUTES.get("1H")
 
     if age is None or threshold is None:
         return None
@@ -4312,33 +4372,33 @@ def _csv_recent_context_note(csv_freshness: dict) -> str | None:
         return None
 
     return (
-        f"1M CSV is recent CSV context ({age} minutes old; "
+        f"1H CSV is recent structural context ({age} minutes old; "
         f"stale threshold is {threshold} minutes)."
     )
 
 
 def _csv_stale_warning(csv_freshness: dict) -> str | None:
-    ltf_freshness = (csv_freshness or {}).get("1M", {})
+    htf_freshness = (csv_freshness or {}).get("1H", {})
 
-    if not ltf_freshness.get("is_stale"):
+    if not htf_freshness.get("is_stale"):
         return None
 
-    latest_time = ltf_freshness.get("latest_csv_time") or "unknown time"
-    age = ltf_freshness.get("age_minutes")
-    threshold = CSV_STALENESS_THRESHOLDS_MINUTES.get("1M")
+    latest_time = htf_freshness.get("latest_csv_time") or "unknown time"
+    age = htf_freshness.get("age_minutes")
+    threshold = CSV_STALENESS_THRESHOLDS_MINUTES.get("1H")
 
     if age is not None and threshold is not None:
         last_success_age = _csv_refresh_last_success_age_minutes()
         if age <= threshold and last_success_age is not None and last_success_age <= 20:
             return (
-                f"1M CSV is recent CSV context ({age} minutes old; "
+                f"1H CSV is recent structural context ({age} minutes old; "
                 f"stale threshold is {threshold} minutes)."
             )
 
     age_text = f"{age} minutes old" if age is not None else "age unknown"
 
     return (
-        f"Warning: 1M CSV is stale ({latest_time}, {age_text}). "
+        f"Warning: 1H CSV is stale ({latest_time}, {age_text}). "
         "CSV close is historical context, not confirmed live price; live chart price may differ."
     )
 
@@ -5267,7 +5327,7 @@ def analyze_tradingview(symbol: str = "MNQ", prompt: str = "", timeframe: str | 
                     "Screenshot was captured and visual markings were extracted, "
                     "but CSV analysis failed.\n\n"
                     f"CSV error: {csv_result.get('error')}\n\n"
-                    "Refresh or manually export CSV files for 1D, 4H, 1H, 15M, and 1M."
+                    "Refresh or manually export HTF CSV files for 1D, 4H, and 1H."
                 ),
             }
 
