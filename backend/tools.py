@@ -46,6 +46,8 @@ DEBUG_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 TEXT_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:9b")
 VISION_MODEL = os.getenv("VISION_MODEL", "qwen2.5vl:7b")
+VISION_QUALITY_USABLE_THRESHOLD = 75
+VISION_QUALITY_DEGRADED_THRESHOLD = 50
 ORBIT_CORPORATE_ESCAPE_TITLE = "Corporate Escape"
 ORBIT_INBOX_MILESTONE_TITLE = "Inbox / General"
 ORBIT_INBOX_GOAL_TITLE = "Inbox"
@@ -152,18 +154,261 @@ def ollama_generate(
     return data.get("response", "").strip()
 
 
+VISION_JSON_SCHEMA_TEMPLATE = {
+    "symbol": None,
+    "source": None,
+    "visible_timeframe": None,
+    "current_price_marker": None,
+    "visible_labels": [],
+    "levels": [],
+    "horizontal_lines": [],
+    "drawn_boxes": [],
+    "drawn_fvg_zones": [],
+    "pdh_visible": False,
+    "pdl_visible": False,
+    "fvg_labels": [],
+    "price_relation_to_zones": [],
+    "reaction_zone_candidate": None,
+    "visible_behavior_summary": None,
+    "behavior_evidence_only": [],
+    "session_shading_visible": False,
+    "order_panel_visible": False,
+    "uncertainty_flags": [],
+}
+
+
+def _ollama_chat_url() -> str:
+    if OLLAMA_URL.endswith("/api/generate"):
+        return OLLAMA_URL[: -len("/api/generate")] + "/api/chat"
+    return OLLAMA_URL.rstrip("/") + "/api/chat"
+
+
+def extract_ollama_response_text(data) -> tuple[str, str]:
+    if isinstance(data, list):
+        parts = []
+        strategies = []
+        for chunk in data:
+            text, strategy = extract_ollama_response_text(chunk)
+            if text:
+                parts.append(text)
+            if strategy != "empty":
+                strategies.append(strategy)
+        return "".join(parts).strip(), "+".join(strategies) or "empty"
+
+    if not isinstance(data, dict):
+        return "", "invalid_payload"
+
+    response_text = data.get("response")
+    if isinstance(response_text, str) and response_text.strip():
+        return response_text.strip(), "response"
+
+    message = data.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip(), "message.content"
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    item_text = item.get("text") or item.get("content")
+                    if isinstance(item_text, str):
+                        parts.append(item_text)
+                elif isinstance(item, str):
+                    parts.append(item)
+            text = "".join(parts).strip()
+            if text:
+                return text, "message.content[]"
+        thinking = message.get("thinking")
+        if isinstance(thinking, str) and thinking.strip():
+            return thinking.strip(), "message.thinking"
+
+    thinking = data.get("thinking")
+    if isinstance(thinking, str) and thinking.strip():
+        return thinking.strip(), "thinking"
+
+    return "", "empty"
+
+
+def _ollama_request_json(url: str, payload: dict, timeout: int) -> dict:
+    response = requests.post(url, json=payload, timeout=timeout)
+    response.raise_for_status()
+    data = response.json()
+    text, strategy = extract_ollama_response_text(data)
+    return {
+        "text": text,
+        "data": data,
+        "endpoint": "/api/chat" if url.endswith("/api/chat") else "/api/generate",
+        "response_keys": sorted(data.keys()) if isinstance(data, dict) else [],
+        "parse_strategy": strategy,
+    }
+
+
+def ollama_vision_generate(
+    model: str,
+    prompt: str,
+    images: list[str],
+    timeout: int = 180,
+    num_ctx: int = 4096,
+) -> dict:
+    generate_payload = {
+        "model": model,
+        "prompt": prompt,
+        "images": images,
+        "stream": False,
+        "options": {
+            "num_predict": 2048,
+            "temperature": 0,
+        },
+    }
+    chat_payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+                "images": images,
+            }
+        ],
+        "stream": False,
+        "options": {
+            "num_predict": 2048,
+            "temperature": 0,
+        },
+    }
+
+    generate_url = OLLAMA_URL
+    chat_url = _ollama_chat_url()
+    model_lower = model.lower()
+    order = ["chat", "generate"] if "qwen3-vl" in model_lower else ["generate", "chat"]
+    attempts = []
+    last_error = None
+    last_result = None
+
+    for style in order:
+        try:
+            result = _ollama_request_json(
+                chat_url if style == "chat" else generate_url,
+                chat_payload if style == "chat" else generate_payload,
+                timeout,
+            )
+            result["attempted_endpoints"] = attempts + [result["endpoint"]]
+            if result.get("text"):
+                return result
+            attempts.append(result["endpoint"])
+            last_error = "empty_model_response"
+            last_result = result
+        except requests.exceptions.RequestException as e:
+            endpoint = "/api/chat" if style == "chat" else "/api/generate"
+            attempts.append(endpoint)
+            last_error = str(e)
+            continue
+
+    return {
+        "text": "",
+        "data": (last_result or {}).get("data") or {},
+        "endpoint": (last_result or {}).get("endpoint") or (attempts[-1] if attempts else None),
+        "attempted_endpoints": attempts,
+        "response_keys": (last_result or {}).get("response_keys") or [],
+        "parse_strategy": (last_result or {}).get("parse_strategy") or "empty",
+        "error": last_error or "empty_model_response",
+    }
+
+
 def parse_json_from_text(text: str):
     try:
         return json.loads(text)
     except Exception:
         pass
 
-    match = re.search(r"\{.*\}", text, re.DOTALL)
+    first = text.find("{")
+    last = text.rfind("}")
 
-    if not match:
+    if first < 0 or last < first:
         raise ValueError("No JSON object found in model response.")
 
-    return json.loads(match.group(0))
+    return json.loads(text[first:last + 1])
+
+
+def detect_truncated_json(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped.startswith("{"):
+        return False
+    try:
+        parse_json_from_text(stripped)
+        return False
+    except Exception:
+        return stripped.rfind("}") < stripped.rfind("{") or not stripped.endswith("}")
+
+
+def _default_visuals(symbol: str = "", source: str = "TradingView screenshot") -> dict:
+    visuals = dict(VISION_JSON_SCHEMA_TEMPLATE)
+    visuals["symbol"] = symbol or None
+    visuals["source"] = source
+    return visuals
+
+
+def build_visual_json_repair_prompt(
+    raw_response: str,
+    *,
+    symbol: str = "",
+    source: str = "TradingView screenshot",
+) -> str:
+    schema = dict(VISION_JSON_SCHEMA_TEMPLATE)
+    schema["symbol"] = None
+    schema["source"] = source
+    return (
+        "You repair chart-vision extraction output into strict JSON.\n"
+        "Return exactly one valid JSON object and nothing else.\n"
+        "Do not include markdown, prose, thinking, explanations, or code fences.\n"
+        "Use only facts present in the raw model output. Do not add new chart facts.\n"
+        "Use null, false, or [] when a field is missing or uncertain.\n"
+        "All keys from this schema must exist:\n"
+        f"{json.dumps(schema, separators=(',', ':'))}\n\n"
+        f"Expected symbol if supported by raw facts: {symbol or 'unknown'}\n"
+        f"Source: {source}\n\n"
+        "Raw model output to repair:\n"
+        f"{str(raw_response or '')[:12000]}"
+    )
+
+
+def repair_visual_extraction_json(
+    raw_response: str,
+    *,
+    symbol: str = "",
+    source: str = "TradingView screenshot",
+    repair_model: str | None = None,
+) -> dict:
+    model = repair_model or TEXT_MODEL
+    prompt = build_visual_json_repair_prompt(
+        raw_response,
+        symbol=symbol,
+        source=source,
+    )
+
+    try:
+        repaired_text = ollama_generate(
+            model=model,
+            prompt=prompt,
+            timeout=120,
+            num_ctx=8192,
+        )
+        repaired = parse_json_from_text(repaired_text)
+        repaired = normalize_visual_extraction(repaired)
+        return {
+            "success": True,
+            "repair_model": model,
+            "raw_repair_response": repaired_text,
+            "visuals": repaired,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "repair_model": model,
+            "error": str(e),
+            "raw_repair_response": locals().get("repaired_text", ""),
+            "visuals": None,
+        }
 
 
 def get_symbol_config(symbol: str):
@@ -3490,7 +3735,7 @@ def format_market_response(analysis: dict) -> str:
         response.append(zone_formatter("15M", m15_zone, "conditional setup/refinement CSV"))
         response.append(zone_formatter("1M", m1_zone, "conditional execution CSV"))
     else:
-        response.append("- **15M/5M/1M CSV:** Not used by default; lower-timeframe behavior comes from live vision.")
+        response.append("- **Lower-timeframe CSV:** Not used by default; 15M/5M behavior comes from live vision and 1M is conditional only.")
 
     response.append("## Live Execution State")
     if csv_execution_stale:
@@ -3758,50 +4003,43 @@ def build_tradingview_visual_extraction_prompt(
     source: str = "TradingView screenshot",
 ):
     return f"""
-You are a visual extraction agent.
+You are a TradingView chart visual extraction agent.
 
-Your only job is to extract visible chart markings from this {source}.
-Do not provide trading advice.
-Do not determine bias.
-Do not calculate market structure.
-Do not invent exact levels.
-
+Your only job is to extract visible facts from this {source}.
+Return only the JSON object. Do not include thinking, explanation, markdown, code fences, or commentary.
 Return valid JSON only.
 
-Extract:
-- visible_timeframe
-- current_price_marker if clearly visible, otherwise null
-- visible_labels exactly as shown
-- horizontal_lines with label/color/approx_price if visible
-- drawn_boxes with label/color/location/approx_low/approx_high if visible
-- arrows_or_annotations
-- notes_about_user_markings
-- uncertainty_flags
+Do not provide trade advice.
+Do not determine bullish/bearish bias.
+Do not calculate market structure.
+Do not invent labels, prices, zones, or invisible context.
+Preserve visible label wording exactly.
+
+Distinguish these visual object types:
+- horizontal line
+- drawn FVG box / rectangle
+- shaded session background
+- price marker / price axis context
+- order panel / broker UI
+- text label / annotation
 
 Hard label discipline rules:
-- Preserve labels exactly. Do not reinterpret, rename, or translate them.
 - If the chart says "5min FVG", output "5min FVG" only.
 - Never call an FVG a Fibonacci retracement unless the exact visible text says "Fibonacci", "Fib", or "retracement".
 - Never call a line support/resistance unless the chart label explicitly says that.
 - Never convert session levels into FVGs.
-- Never convert ranges/averages into trade signals.
-- If uncertain, put the uncertainty in uncertainty_flags instead of guessing.
-
-Rules:
-- User-drawn boxes, rectangles, horizontal lines, arrows, and labels matter most.
-- If a number is unclear, use null.
-- If a zone boundary is unclear, use null.
-- Do not classify bias as bullish or bearish.
-- Do not say price is above/below/inside unless visually obvious.
-- CSV data will handle all numeric truth later.
+- Never convert boxes/ranges into trade signals.
+- If uncertain, add an uncertainty flag instead of guessing.
+- Price relation is allowed only when explicitly visible, such as a price marker clearly inside/above/below a visible zone.
 
 JSON schema:
 {{
-  "symbol": "{symbol or "Unknown"}",
+  "symbol": "{symbol or None}",
   "source": "{source}",
   "visible_timeframe": null,
   "current_price_marker": null,
   "visible_labels": [],
+  "levels": [],
   "horizontal_lines": [
     {{
       "label": null,
@@ -3818,14 +4056,48 @@ JSON schema:
       "location_notes": null
     }}
   ],
+  "drawn_fvg_zones": [],
+  "session_shading_visible": false,
+  "price_relation_to_zones": [],
   "arrows_or_annotations": [],
   "notes_about_user_markings": [],
+  "pdh_visible": false,
+  "pdl_visible": false,
+  "fvg_labels": [],
+  "reaction_zone_candidate": null,
+  "visible_behavior_summary": null,
+  "behavior_evidence_only": [],
+  "order_panel_visible": false,
   "uncertainty_flags": []
 }}
 
 User request:
-{prompt or "Extract the visible chart markings."}
+{prompt or "Extract only visible chart markings and labels."}
 """
+
+
+def build_qwen3_visual_json_prompt(
+    prompt: str = "",
+    symbol: str = "",
+    source: str = "TradingView screenshot",
+) -> str:
+    schema = dict(VISION_JSON_SCHEMA_TEMPLATE)
+    schema["symbol"] = None
+    schema["source"] = source
+    return (
+        "You are a visual JSON extraction engine.\n"
+        "Return only one valid JSON object.\n"
+        "Your entire response must start with { and end with }.\n"
+        "Do not include markdown, explanations, thinking, chain-of-thought, or text outside JSON.\n"
+        "Use null or empty arrays when uncertain.\n"
+        "Extract visible facts only. Do not provide trading advice or market interpretation.\n"
+        "Preserve visible labels exactly.\n"
+        f"Expected symbol if visible: {symbol or 'unknown'}.\n"
+        f"Source: {source}.\n"
+        "All keys must exist. Use this exact compact schema:\n"
+        f"{json.dumps(schema, separators=(',', ':'))}\n"
+        f"Task: {prompt or 'Extract only visible chart facts.'}"
+    )
 
 
 def build_simple_visual_fallback_prompt(
@@ -3910,30 +4182,221 @@ def normalize_visual_extraction(visuals: dict):
     return visuals
 
 
+def get_vision_model_candidates() -> list[str]:
+    raw_candidates = os.getenv("VISION_MODEL_CANDIDATES", "").strip()
+    if not raw_candidates:
+        return [VISION_MODEL]
+
+    candidates = []
+    for item in raw_candidates.split(","):
+        model = item.strip()
+        if model and model not in candidates:
+            candidates.append(model)
+
+    if VISION_MODEL not in candidates:
+        candidates.insert(0, VISION_MODEL)
+
+    return candidates or [VISION_MODEL]
+
+
+def _flatten_visual_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, dict):
+        return " ".join(_flatten_visual_text(item) for item in value.values())
+    if isinstance(value, list):
+        return " ".join(_flatten_visual_text(item) for item in value)
+    return str(value)
+
+
+def _list_has_items(value) -> bool:
+    return isinstance(value, list) and any(item is not None and str(item).strip() for item in value)
+
+
+def score_chart_visual_extraction(
+    visuals: dict | None,
+    *,
+    raw_response: str = "",
+    expected_context: dict | None = None,
+    parseable_json: bool = True,
+) -> dict:
+    score = 0
+    issues = []
+    strengths = []
+    expected_context = expected_context or {}
+    visuals = visuals if isinstance(visuals, dict) else {}
+
+    if not parseable_json:
+        return {
+            "score": 0,
+            "status": "unreliable",
+            "issues": ["unparseable_json"],
+            "strengths": [],
+            "thresholds": {
+                "usable": VISION_QUALITY_USABLE_THRESHOLD,
+                "degraded": VISION_QUALITY_DEGRADED_THRESHOLD,
+            },
+        }
+
+    visible_text = _flatten_visual_text(visuals).lower()
+    raw_text = str(raw_response or "").lower()
+    combined_text = f"{visible_text} {raw_text}"
+
+    expected_timeframe = str(expected_context.get("timeframe") or "").upper()
+    visible_timeframe = str(visuals.get("visible_timeframe") or "").upper()
+    if visible_timeframe and (not expected_timeframe or expected_timeframe in visible_timeframe):
+        score += 15
+        strengths.append("detected_visible_timeframe")
+    elif expected_timeframe and expected_timeframe in combined_text.upper():
+        score += 15
+        strengths.append("detected_visible_timeframe")
+
+    if visuals.get("pdh_visible") or "pdh" in combined_text or "previous day high" in combined_text:
+        score += 15
+        strengths.append("detected_pdh")
+
+    if (
+        _list_has_items(visuals.get("fvg_labels"))
+        or _list_has_items(visuals.get("drawn_fvg_zones"))
+        or "fvg" in combined_text
+    ):
+        score += 20
+        strengths.append("detected_fvg_labels_or_zones")
+
+    if _list_has_items(visuals.get("drawn_boxes")) or _list_has_items(visuals.get("zones")):
+        score += 15
+        strengths.append("detected_drawn_boxes_or_zones")
+
+    if (
+        visuals.get("current_price_marker")
+        or "price marker" in combined_text
+        or "price axis" in combined_text
+        or "current_price_marker" in combined_text
+        or "current price" in combined_text
+    ):
+        score += 10
+        strengths.append("detected_price_marker_or_axis")
+
+    if visuals.get("session_shading_visible") or "session" in combined_text or "ny" in combined_text:
+        score += 10
+        strengths.append("detected_session_context")
+
+    if _list_has_items(visuals.get("visible_labels")):
+        score += 10
+        strengths.append("preserved_visible_labels")
+
+    invented_terms = expected_context.get("forbidden_labels") or []
+    for term in invented_terms:
+        if str(term).strip() and str(term).lower() in combined_text:
+            score -= 20
+            issues.append(f"invented_label:{term}")
+
+    advice_terms = [
+        "buy now",
+        "sell now",
+        "enter long",
+        "enter short",
+        "stop loss",
+        "take profit",
+        "risk/reward",
+        "trade setup",
+    ]
+    if any(term in combined_text for term in advice_terms):
+        score -= 20
+        issues.append("trade_advice_instead_of_extraction")
+
+    if not parseable_json:
+        score -= 15
+        issues.append("unparseable_json")
+
+    uncertainty_flags = visuals.get("uncertainty_flags") or []
+    if uncertainty_flags:
+        strengths.append("uncertainty_flags_present")
+
+    score = max(0, min(100, score))
+    has_timeframe = bool(visible_timeframe or (expected_timeframe and expected_timeframe in combined_text.upper()))
+    has_meaningful_chart_item = any([
+        _list_has_items(visuals.get("visible_labels")),
+        _list_has_items(visuals.get("levels")),
+        _list_has_items(visuals.get("horizontal_lines")),
+        _list_has_items(visuals.get("drawn_boxes")),
+        _list_has_items(visuals.get("drawn_fvg_zones")),
+        _list_has_items(visuals.get("fvg_labels")),
+        bool(visuals.get("current_price_marker")),
+        bool(visuals.get("pdh_visible")),
+        bool(visuals.get("pdl_visible")),
+    ])
+
+    if score >= VISION_QUALITY_USABLE_THRESHOLD and has_timeframe and has_meaningful_chart_item and not issues:
+        status = "usable"
+    elif score >= VISION_QUALITY_DEGRADED_THRESHOLD:
+        status = "degraded"
+    else:
+        status = "unreliable"
+
+    return {
+        "score": score,
+        "status": status,
+        "issues": issues,
+        "strengths": strengths,
+        "thresholds": {
+            "usable": VISION_QUALITY_USABLE_THRESHOLD,
+            "degraded": VISION_QUALITY_DEGRADED_THRESHOLD,
+        },
+    }
+
+
 def extract_tradingview_visuals_from_image(
     image_base64: str,
     prompt: str = "",
     symbol: str = "",
     source: str = "TradingView screenshot",
+    model: str | None = None,
 ):
     raw_response = ""
     used_fallback_prompt = False
+    parseable_json = True
+    selected_model = model or VISION_MODEL
+    request_debug = {}
+    used_json_repair = False
+    repair_result = None
+    json_parse_error = None
+    detected_truncated_json = False
 
     try:
-        extraction_prompt = build_tradingview_visual_extraction_prompt(
-            prompt=prompt,
-            symbol=symbol,
-            source=source,
-        )
+        if "qwen3-vl" in selected_model.lower():
+            extraction_prompt = build_qwen3_visual_json_prompt(
+                prompt=prompt,
+                symbol=symbol,
+                source=source,
+            )
+        else:
+            extraction_prompt = build_tradingview_visual_extraction_prompt(
+                prompt=prompt,
+                symbol=symbol,
+                source=source,
+            )
 
         try:
-            raw_response = ollama_generate(
-                model=VISION_MODEL,
+            vision_response = ollama_vision_generate(
+                model=selected_model,
                 prompt=extraction_prompt,
                 images=[image_base64],
                 timeout=180,
                 num_ctx=4096,
             )
+            raw_response = vision_response.get("text") or ""
+            request_debug = {
+                "ollama_endpoint": vision_response.get("endpoint"),
+                "attempted_endpoints": vision_response.get("attempted_endpoints") or [],
+                "response_keys": vision_response.get("response_keys") or [],
+                "extracted_text_length": len(raw_response),
+                "parse_strategy": vision_response.get("parse_strategy"),
+            }
         except requests.exceptions.RequestException:
             used_fallback_prompt = True
             fallback_prompt = build_simple_visual_fallback_prompt(
@@ -3942,34 +4405,105 @@ def extract_tradingview_visuals_from_image(
                 source=source,
             )
 
-            raw_response = ollama_generate(
-                model=VISION_MODEL,
+            vision_response = ollama_vision_generate(
+                model=selected_model,
                 prompt=fallback_prompt,
                 images=[image_base64],
                 timeout=180,
                 num_ctx=2048,
             )
+            raw_response = vision_response.get("text") or ""
+            request_debug = {
+                "ollama_endpoint": vision_response.get("endpoint"),
+                "attempted_endpoints": vision_response.get("attempted_endpoints") or [],
+                "response_keys": vision_response.get("response_keys") or [],
+                "extracted_text_length": len(raw_response),
+                "parse_strategy": vision_response.get("parse_strategy"),
+            }
+
+        if not raw_response.strip():
+            empty_issues = ["empty_model_response", "ollama_response_parse_failed"]
+            if request_debug.get("parse_strategy") != "empty":
+                empty_issues = ["ollama_request_failed", "ollama_response_parse_failed"]
+            return {
+                "success": False,
+                "model": selected_model,
+                "error": "Ollama returned an empty vision response.",
+                "raw_response": "",
+                "used_fallback_prompt": used_fallback_prompt,
+                "parseable_json": False,
+                "vision_quality_score": 0,
+                "vision_quality_status": "unreliable",
+                "vision_quality_issues": empty_issues,
+                "vision_quality_strengths": [],
+                "ollama_debug": request_debug,
+                "visuals": {
+                    "symbol": symbol,
+                    "source": source,
+                    "visible_timeframe": None,
+                    "current_price_marker": None,
+                    "visible_labels": [],
+                    "levels": [],
+                    "horizontal_lines": [],
+                    "drawn_boxes": [],
+                    "drawn_fvg_zones": [],
+                    "pdh_visible": False,
+                    "pdl_visible": False,
+                    "fvg_labels": [],
+                    "price_relation_to_zones": [],
+                    "reaction_zone_candidate": None,
+                    "visible_behavior_summary": None,
+                    "behavior_evidence_only": [],
+                    "session_shading_visible": False,
+                    "order_panel_visible": False,
+                    "uncertainty_flags": ["Vision model returned empty text."],
+                },
+            }
 
         try:
             extracted = parse_json_from_text(raw_response)
-        except Exception:
-            extracted = {
-                "symbol": symbol,
-                "source": source,
-                "visible_timeframe": None,
-                "current_price_marker": None,
-                "visible_labels": [],
-                "horizontal_lines": [],
-                "drawn_boxes": [],
-                "arrows_or_annotations": [],
-                "notes_about_user_markings": [],
-                "uncertainty_flags": [
+        except Exception as e:
+            parseable_json = False
+            json_parse_error = str(e)
+            detected_truncated_json = detect_truncated_json(raw_response)
+            repair_result = repair_visual_extraction_json(
+                raw_response,
+                symbol=symbol,
+                source=source,
+            )
+            used_json_repair = True
+            if repair_result.get("success"):
+                extracted = repair_result.get("visuals") or _default_visuals(symbol, source)
+                parseable_json = True
+            else:
+                extracted = _default_visuals(symbol, source)
+                extracted.setdefault("uncertainty_flags", []).extend([
                     "Vision model responded, but did not return parseable JSON.",
                     raw_response[:500],
-                ],
-            }
+                ])
 
         extracted = normalize_visual_extraction(extracted)
+        score_raw_response = raw_response if parseable_json and not used_json_repair else ""
+        quality = score_chart_visual_extraction(
+            extracted,
+            raw_response=score_raw_response,
+            expected_context={"symbol": symbol},
+            parseable_json=parseable_json,
+        )
+        quality_issues = list(quality["issues"])
+        if detected_truncated_json and "truncated_json" not in quality_issues:
+            quality_issues.append("truncated_json")
+        if not parseable_json and "unparseable_json" not in quality_issues:
+            quality_issues.append("unparseable_json")
+        if used_json_repair:
+            quality_issues.append("json_repair_used")
+            if repair_result and repair_result.get("success"):
+                quality_issues.append("json_repair_succeeded")
+            else:
+                quality_issues.append("json_repair_failed")
+        if request_debug.get("parse_strategy") in {"message.thinking", "thinking"} and not used_json_repair:
+            quality["status"] = "unreliable"
+            quality["score"] = min(quality["score"], VISION_QUALITY_DEGRADED_THRESHOLD - 1)
 
         if used_fallback_prompt:
             extracted.setdefault("uncertainty_flags", []).append(
@@ -3977,19 +4511,35 @@ def extract_tradingview_visuals_from_image(
             )
 
         return {
-            "success": True,
-            "model": VISION_MODEL,
+            "success": bool(parseable_json),
+            "model": selected_model,
             "raw_response": raw_response,
             "used_fallback_prompt": used_fallback_prompt,
+            "parseable_json": parseable_json,
+            "vision_quality_score": quality["score"],
+            "vision_quality_status": quality["status"],
+            "vision_quality_issues": list(dict.fromkeys(quality_issues)),
+            "vision_quality_strengths": quality["strengths"],
+            "json_parse_error": json_parse_error,
+            "detected_truncated_json": detected_truncated_json,
+            "used_json_repair": used_json_repair,
+            "repair_model": repair_result.get("repair_model") if repair_result else None,
+            "repair_success": bool(repair_result and repair_result.get("success")),
+            "repair_response": repair_result.get("raw_repair_response") if repair_result else None,
+            "ollama_debug": request_debug,
             "visuals": extracted,
         }
 
     except Exception as e:
         return {
             "success": False,
-            "model": VISION_MODEL,
+            "model": selected_model,
             "error": str(e),
             "raw_response": raw_response,
+            "vision_quality_score": 0,
+            "vision_quality_status": "unreliable",
+            "vision_quality_issues": ["vision_extraction_failed"],
+            "ollama_debug": request_debug,
             "visuals": {
                 "symbol": symbol,
                 "source": source,
@@ -4010,6 +4560,7 @@ def extract_tradingview_visuals_from_path(
     prompt: str = "",
     symbol: str = "",
     source: str = "TradingView screenshot",
+    model: str | None = None,
 ):
     with open(image_path, "rb") as image_file:
         image_base64 = base64.b64encode(image_file.read()).decode("utf-8")
@@ -4019,7 +4570,125 @@ def extract_tradingview_visuals_from_path(
         prompt=prompt,
         symbol=symbol,
         source=source,
+        model=model,
     )
+
+
+def evaluate_vision_models_for_chart(
+    image_path: str,
+    symbol: str,
+    timeframe: str,
+    expected_context: dict | None = None,
+    debug: bool = False,
+) -> dict:
+    expected_context = dict(expected_context or {})
+    expected_context.setdefault("symbol", symbol)
+    expected_context.setdefault("timeframe", timeframe)
+
+    candidates = get_vision_model_candidates()
+    prompt = (
+        f"Evaluate visible TradingView chart extraction for {symbol} {timeframe}. "
+        "Extract only visible chart facts, labels, levels, FVG zones, PDH/PDL, current price marker, "
+        "session shading, and uncertainty flags."
+    )
+    results = []
+
+    for model in candidates:
+        try:
+            extraction = extract_tradingview_visuals_from_path(
+                image_path=image_path,
+                prompt=prompt,
+                symbol=symbol,
+                source=f"{symbol} {timeframe} TradingView evaluation screenshot",
+                model=model,
+            )
+            visuals = extraction.get("visuals") or {}
+            raw_response = extraction.get("raw_response") or ""
+            success = bool(extraction.get("success") and raw_response.strip())
+            issues = list(extraction.get("vision_quality_issues") or [])
+            if not raw_response.strip() and "empty_model_response" not in issues:
+                issues.append("empty_model_response")
+            item = {
+                "model": model,
+                "success": success,
+                "available": success,
+                "raw_response": raw_response,
+                "visuals": visuals,
+                "score": extraction.get("vision_quality_score", 0) if success else 0,
+                "quality_status": extraction.get("vision_quality_status", "unreliable") if success else "unreliable",
+                "issues": list(dict.fromkeys(issues)),
+                "strengths": extraction.get("vision_quality_strengths") or [],
+                "used_fallback_prompt": bool(extraction.get("used_fallback_prompt")),
+                "parseable_json": bool(extraction.get("parseable_json")),
+                "used_json_repair": bool(extraction.get("used_json_repair")),
+                "repair_success": bool(extraction.get("repair_success")),
+                "detected_truncated_json": bool(extraction.get("detected_truncated_json")),
+            }
+            if debug:
+                ollama_debug = extraction.get("ollama_debug") or {}
+                item.update({
+                    "ollama_endpoint": ollama_debug.get("ollama_endpoint"),
+                    "attempted_endpoints": ollama_debug.get("attempted_endpoints") or [],
+                    "response_keys": ollama_debug.get("response_keys") or [],
+                    "extracted_text_length": ollama_debug.get("extracted_text_length", len(raw_response)),
+                    "raw_response_preview": raw_response[:1000],
+                    "parse_strategy": ollama_debug.get("parse_strategy"),
+                    "json_parse_error": extraction.get("json_parse_error"),
+                    "repair_preview": (extraction.get("repair_response") or "")[:1000] if extraction.get("used_json_repair") else None,
+                })
+            results.append(item)
+        except requests.exceptions.HTTPError as e:
+            status_code = getattr(e.response, "status_code", None)
+            results.append({
+                "model": model,
+                "success": False,
+                "available": False,
+                "raw_response": "",
+                "visuals": {},
+                "score": 0,
+                "quality_status": "unreliable",
+                "issues": [f"model_unavailable:{status_code or 'http_error'}"],
+                "error": str(e),
+            })
+        except requests.exceptions.RequestException as e:
+            results.append({
+                "model": model,
+                "success": False,
+                "available": False,
+                "raw_response": "",
+                "visuals": {},
+                "score": 0,
+                "quality_status": "unreliable",
+                "issues": ["model_unavailable"],
+                "error": str(e),
+            })
+        except Exception as e:
+            results.append({
+                "model": model,
+                "success": False,
+                "available": False,
+                "raw_response": "",
+                "visuals": {},
+                "score": 0,
+                "quality_status": "unreliable",
+                "issues": ["evaluation_failed"],
+                "error": str(e),
+            })
+
+    successful_results = [item for item in results if item.get("success")]
+    best = max(successful_results, key=lambda item: item.get("score", 0), default=None)
+
+    return {
+        "success": bool(successful_results),
+        "image_path": image_path,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "candidates": candidates,
+        "results": results,
+        "best_model": best.get("model") if best else None,
+        "best_score": best.get("score") if best else None,
+        "note": "Extraction quality score only; this is not a trading signal.",
+    }
 
 
 # Backward-compatible name for main.py imports.
@@ -4061,8 +4730,9 @@ def build_merged_market_state(
         "success": True,
         "source_priority": [
             "CSV controls historical structure/FVG reaction-zone mapping.",
-            "Vision controls live visible chart context when CSV is stale.",
-            "If LTF CSV is stale, do not treat CSV close as live current price.",
+            "15M/5M vision controls live visible chart context.",
+            "1M is conditional execution confirmation only.",
+            "Never treat stale CSV closes as live current price.",
         ],
         "symbol": analysis.get("symbol"),
         "csv_state": {
@@ -4997,19 +5667,20 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
 
     if ltf_csv_stale:
         price_line = (
-            f"{symbol} stale CSV reference close is {_fmt_price(current_price)} "
-            f"({_csv_age_text(csv_freshness, '1M')})."
+            f"{symbol} stale HTF CSV reference close is {_fmt_price(current_price)} "
+            f"({_csv_age_text(csv_freshness, '1H')})."
         )
         if vision_price is not None:
             price_line += f" Vision price estimate is {_fmt_price(vision_price)}."
         price_line += (
-            f" Live vision is primary for current price. {htf_tf} structural bias is {htf_bias}; "
+            f" Live 15M/5M vision is primary for current price. {htf_tf} structural bias is {htf_bias}; "
             f"H4 is {h4.get('bias', 'unknown')} and H1 is {h1.get('bias', 'unknown')}."
         )
     else:
         price_line = (
-            f"{symbol} CSV 1M close is around {_fmt_price(current_price)}. "
-            f"{htf_tf} bias is {htf_bias}. H4 is {h4.get('bias', 'unknown')} and H1 is {h1.get('bias', 'unknown')}."
+            f"{symbol} latest HTF CSV reference close is around {_fmt_price(current_price)}. "
+            f"{htf_tf} bias is {htf_bias}. H4 is {h4.get('bias', 'unknown')} and H1 is {h1.get('bias', 'unknown')}. "
+            "Live execution still requires 15M/5M vision."
         )
 
     lines = [
@@ -5034,10 +5705,10 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
         "",
         "## Current Structure",
         (
-            f"Execution bias from stale CSV is {execution_bias}; live execution state needs chart confirmation. "
-            f"M15 CSV structure is {m15.get('structure', 'unknown')}; M1 CSV structure is {m1.get('structure', 'unknown')}."
+            f"HTF CSV structure bias is {htf_bias}; live execution state needs 15M/5M chart confirmation. "
+            "1M is conditional only."
             if ltf_csv_stale
-            else f"Execution bias is {execution_bias}. M15 structure is {m15.get('structure', 'unknown')}; M1 structure is {m1.get('structure', 'unknown')}."
+            else f"HTF CSV structure bias is {htf_bias}. Live execution state comes from 15M/5M vision; 1M is conditional only."
         ),
         (
             f"Active computed CSV zone: {_fmt_zone(active_zone)}. Treat as a reference zone until live vision confirms interaction."
@@ -5068,7 +5739,7 @@ def format_deterministic_market_summary(merged_state: dict) -> str:
         f"- Bearish scenario: {scenario_down}",
         "",
         "## Bottom Line",
-        "CSV controls historical structure/FVG reaction-zone mapping. Vision controls live visible chart context when CSV is stale.",
+        "CSV controls HTF structure/FVG reaction-zone mapping. 15M/5M vision controls live visible context. 1M is conditional only.",
     ])
 
     return "\n".join(lines)
@@ -5144,8 +5815,9 @@ Your job is to describe:
 
 Use this source priority:
 1. CSV controls historical structure/FVG reaction-zone mapping.
-2. Vision controls live visible chart context when CSV is stale.
-3. If LTF CSV is stale, do not describe CSV close or CSV-derived zone distances as live current price.
+2. 15M/5M vision controls live visible chart context.
+3. 1M is conditional execution confirmation only.
+4. Never describe stale CSV closes or CSV-derived zone distances as live current price.
 
 DO NOT:
 - invent indicators

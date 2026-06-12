@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
-from tools import TOOLS, analyze_uploaded_chart_image
+from tools import TOOLS, analyze_uploaded_chart_image, evaluate_vision_models_for_chart
 from database import get_connection, log_tool
 from database import init_db, save_message, get_recent_messages, clear_messages
 from notification_config import get_default_imessage_recipient, get_notification_config
@@ -495,7 +495,7 @@ Examples:
 TOOL: capture_tradingview symbol=MNQ
 TOOL: capture_tradingview symbol=MES
 
-- refresh_market_csvs: tries to export fresh TradingView CSVs for 1D, 4H, 1H, 15M, and 1M
+- refresh_market_csvs: tries to export fresh TradingView CSVs for HTF structure; scheduled refresh uses 1D, 4H, and 1H by default
 
 Supported symbols:
 - MNQ
@@ -622,6 +622,14 @@ General rules:
 class ChatRequest(BaseModel):
     message: str
     tool_mode: str = "auto"
+
+
+class VisionChartEvaluationRequest(BaseModel):
+    image_path: str
+    symbol: str = "MES"
+    timeframe: str = "15M"
+    expected_context: dict | None = None
+    debug: bool = False
 
 
 class PresenceRequest(BaseModel):
@@ -1080,6 +1088,28 @@ async def analyze_image(
         raise HTTPException(status_code=500, detail=f"Image analysis failed: {e}")
 
 
+@app.post("/vision/evaluate-chart")
+def evaluate_chart_vision(request: VisionChartEvaluationRequest):
+    try:
+        image_path = request.image_path.strip()
+        if not image_path:
+            raise HTTPException(status_code=400, detail="image_path is required.")
+        if not os.path.exists(image_path):
+            raise HTTPException(status_code=404, detail=f"Screenshot not found: {image_path}")
+
+        return evaluate_vision_models_for_chart(
+            image_path=image_path,
+            symbol=normalize_scanner_symbol(request.symbol),
+            timeframe=request.timeframe.upper(),
+            expected_context=request.expected_context,
+            debug=request.debug,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Vision model evaluation failed: {e}")
+
+
 # -------------------------
 # Scan endpoints
 # -------------------------
@@ -1159,6 +1189,11 @@ def latest_scan(symbol: str | None = None):
             "symbol": scan_symbol,
             "message": "No scan history found yet.",
             "record": None,
+            "latest_attempt": None,
+            "latest_successful_market_scan": None,
+            "last_valid_record": None,
+            "current_attempt_valid_market_state": False,
+            "system_health": None,
         }
 
     latest = load_latest_scan(symbol=scan_symbol)
@@ -1173,6 +1208,8 @@ def latest_scan(symbol: str | None = None):
             "latest_attempt": None,
             "latest_successful_market_scan": None,
             "last_valid_record": None,
+            "current_attempt_valid_market_state": False,
+            "system_health": None,
         }
 
     record = latest if is_valid_market_scan(latest) else latest_successful
