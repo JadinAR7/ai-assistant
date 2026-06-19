@@ -26,6 +26,7 @@ from .models import (
     Review,
     ReviewCreate,
     ScheduleBlock,
+    ScheduleBlockApplyDays,
     ScheduleBlockCreate,
     ScheduleBlockPlacementResult,
     ScheduleBlockUpdate,
@@ -121,13 +122,36 @@ def update_schedule_block(schedule_block_id: int, payload: ScheduleBlockUpdate):
     return record
 
 
+@router.patch("/schedule-blocks/{schedule_block_id}/apply-days", response_model=list[ScheduleBlock])
+def apply_schedule_block_to_days(
+    schedule_block_id: int,
+    payload: ScheduleBlockApplyDays,
+):
+    try:
+        records = service.apply_schedule_block_to_days(schedule_block_id, payload)
+    except ValueError as error:
+        raise _validation_error(str(error)) from error
+
+    if records is None:
+        raise _not_found("Schedule block", schedule_block_id)
+    return records
+
+
 @router.post(
     "/schedule-blocks/{schedule_block_id}/place",
     response_model=ScheduleBlockPlacementResult,
 )
-def place_flexible_schedule_block(schedule_block_id: int):
+def place_flexible_schedule_block(
+    schedule_block_id: int,
+    date: str | None = None,
+    start_time: str | None = None,
+):
     try:
-        record = service.place_flexible_schedule_block(schedule_block_id)
+        record = service.place_flexible_schedule_block(
+            schedule_block_id,
+            target_date=date,
+            target_start_time=start_time,
+        )
     except ValueError as error:
         raise _validation_error(str(error)) from error
 
