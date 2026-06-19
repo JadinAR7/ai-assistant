@@ -46,6 +46,11 @@ type ScanRecord = {
   screenshot_path?: string;
   vision_success?: boolean;
   vision_error?: string | null;
+  vision_success_by_timeframe?: Record<string, {
+    capture_success?: boolean;
+    vision_success?: boolean;
+    error?: string | null;
+  }>;
   csv_success?: boolean;
   message?: string;
   comparison?: {
@@ -93,6 +98,30 @@ type ScanRecord = {
   presence_mode?: string;
   notification_allowed_by_presence?: boolean;
   presence_reason?: string;
+  market_alert?: {
+    level?: string;
+    notify?: boolean;
+    signal_level?: string;
+    reasons?: string[];
+    blockers?: string[];
+  };
+  system_health?: {
+    status?: string;
+    issues?: Array<{
+      source?: string;
+      type?: string;
+      message?: string;
+      severity?: string;
+    }>;
+    should_notify?: boolean;
+    severity?: string;
+    affected_sources?: string[];
+    vision_success_by_timeframe?: Record<string, {
+      capture_success?: boolean;
+      vision_success?: boolean;
+      error?: string | null;
+    }>;
+  };
   state?: {
     htf_bias?: string;
     execution_bias?: string;
@@ -121,6 +150,9 @@ type ScanStatus = {
   should_scan_now?: boolean;
   scheduled_scan_allowed?: boolean;
   automatic_scans_paused?: boolean;
+  htf_source?: string;
+  live_vision_timeframes?: string[];
+  conditional_execution_timeframes?: string[];
 };
 
 type ScannerSettings = {
@@ -313,6 +345,47 @@ function inferMessageSource(
   }
 
   return "Chat";
+}
+
+const LEGIT_SHORT_ASSISTANT_RESPONSES = new Set([
+  "yes",
+  "yes.",
+  "no",
+  "no.",
+  "done",
+  "done.",
+  "saved",
+  "saved.",
+  "ok",
+  "ok.",
+  "okay",
+  "okay.",
+  "speaking now",
+  "speaking now.",
+]);
+
+const ASSISTANT_FRAGMENT_RESPONSES = new Set([
+  "based",
+  "based on",
+  "the",
+  "it",
+  "i",
+  "here",
+  "sure",
+  "because",
+  "given",
+]);
+
+function isIncompleteAssistantResponse(content: string, source?: ResponseSource) {
+  if (source && source !== "Chat") return false;
+
+  const normalized = content.trim().replace(/\s+/g, " ").toLowerCase();
+  if (!normalized) return true;
+  if (LEGIT_SHORT_ASSISTANT_RESPONSES.has(normalized)) return false;
+  if (ASSISTANT_FRAGMENT_RESPONSES.has(normalized)) return true;
+
+  const words = normalized.match(/[a-z0-9']+/g) || [];
+  return words.length <= 2 && normalized.length < 24;
 }
 
 function isLongResponse(content: string) {
@@ -567,6 +640,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [scanLoading, setScanLoading] = useState(false);
   const [latestScan, setLatestScan] = useState<ScanRecord | null>(null);
+  const [latestAttempt, setLatestAttempt] = useState<ScanRecord | null>(null);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
   const [scanStatusError, setScanStatusError] = useState(false);
   const [scannerSettings, setScannerSettings] = useState<ScannerSettings | null>(null);
@@ -729,9 +803,11 @@ ${record.message || "No scan message returned."}`;
 
       if (data?.record) {
         setLatestScan(data.record);
+        setLatestAttempt(data.latest_attempt || data.record);
         return data.record;
       }
 
+      setLatestAttempt(data.latest_attempt || null);
       return null;
     } catch {
       console.log("Could not load latest scan.");
@@ -996,15 +1072,24 @@ ${record.message || "No scan message returned."}`;
 
       const data = await res.json();
       const responseContent = data.message || "No response.";
+      const responseSource = inferMessageSource(responseContent, "assistant");
+      const incompleteResponse = isIncompleteAssistantResponse(
+        responseContent,
+        responseSource
+      );
 
       setMessages((prev) => [
         ...prev,
         {
           id: generateId(),
           role: "assistant",
-          content: responseContent,
+          content: incompleteResponse
+            ? "Helix returned an incomplete response. Please retry."
+            : responseContent,
+          error: incompleteResponse,
+          retryText: incompleteResponse ? text : undefined,
           createdAt: new Date().toISOString(),
-          source: inferMessageSource(responseContent, "assistant"),
+          source: incompleteResponse ? "System" : responseSource,
         },
       ]);
     } catch {
@@ -1074,14 +1159,20 @@ ${record.message || "No scan message returned."}`;
       const loadedMessages: Message[] = data.history.map(
         (item: { role: string; content: string; timestamp?: string; created_at?: string }) => {
           const role = item.role.toLowerCase() === "user" ? "user" : "assistant";
+          const source = inferMessageSource(item.content, role);
+          const incompleteResponse =
+            role === "assistant" && isIncompleteAssistantResponse(item.content, source);
 
           return {
-          id: generateId(),
-          role,
-          content: item.content,
-          createdAt: item.timestamp || item.created_at || new Date().toISOString(),
-          source: inferMessageSource(item.content, role),
-        };
+            id: generateId(),
+            role,
+            content: incompleteResponse
+              ? "Helix returned an incomplete response. Please retry."
+              : item.content,
+            error: incompleteResponse,
+            createdAt: item.timestamp || item.created_at || new Date().toISOString(),
+            source: incompleteResponse ? "System" : source,
+          };
         }
       );
 
@@ -1207,6 +1298,24 @@ ${record.message || "No scan message returned."}`;
   const alertEligibilityLevel = latestScan?.alert_eligibility?.level || "none";
   const alertEligibilityNotify = latestScan?.alert_eligibility?.should_notify || false;
   const presenceAllows = latestScan?.notification_allowed_by_presence || false;
+  const latestAttemptHealth = latestAttempt?.system_health;
+  const latestAttemptHealthStatus = latestAttemptHealth?.status || "unknown";
+  const latestAttemptIssues = latestAttemptHealth?.issues || [];
+  const latestAttemptVisionByTimeframe =
+    latestAttempt?.vision_success_by_timeframe ||
+    latestAttemptHealth?.vision_success_by_timeframe ||
+    {};
+  const latestAttemptCsvIssue = latestAttemptIssues.find((issue) => issue.source === "CSV");
+  const latestAttemptCsvStatus =
+    latestAttempt?.csv_success === false
+      ? "failed"
+      : latestAttemptCsvIssue?.type === "csv_available_but_stale"
+        ? "stale"
+        : latestAttempt?.csv_success === true
+          ? "available"
+          : "unknown";
+  const latestAttemptFailed =
+    latestAttemptHealthStatus === "failed" || latestAttemptHealthStatus === "degraded";
   const presenceModes = ["home", "trading", "away", "focus"];
   function renderComposerControls() {
     return (
@@ -1571,8 +1680,49 @@ ${record.message || "No scan message returned."}`;
                       : "Unknown"}
                   </p>
                 </div>
+
+                <div className="rounded-xl bg-neutral-950/70 p-3">
+                  <p className="text-neutral-500">HTF source</p>
+                  <p className="mt-1 font-semibold text-neutral-100">
+                    {scanStatus?.htf_source || "CSV"}
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-neutral-950/70 p-3">
+                  <p className="text-neutral-500">Live vision</p>
+                  <p className="mt-1 font-semibold text-neutral-100">
+                    {(scanStatus?.live_vision_timeframes || ["15M", "5M"]).join(" / ")}
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-neutral-950/70 p-3">
+                  <p className="text-neutral-500">1M</p>
+                  <p className="mt-1 font-semibold text-neutral-100">
+                    Conditional
+                  </p>
+                </div>
               </div>
             )}
+
+            {latestAttemptFailed ? (
+              <div className="mb-3 rounded-xl border border-yellow-500/20 bg-yellow-950/30 p-3 text-xs text-yellow-100">
+                <p className="font-semibold">
+                  Current attempt {formatLabel(latestAttemptHealthStatus)}
+                </p>
+                <p className="mt-1 text-yellow-100/80">
+                  Last valid scan: {formatTimestamp(latestScan?.timestamp)}
+                </p>
+                {latestAttemptIssues.length ? (
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    {latestAttemptIssues.slice(0, 3).map((issue, index) => (
+                      <li key={`${issue.source || "issue"}-${index}`}>
+                        {issue.source || "Scanner"}: {issue.message || issue.type || "System issue"}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
 
             <div className="mb-3">
               <p className="mb-2 text-xs text-blue-200/70">Default symbol</p>
@@ -1799,7 +1949,7 @@ ${record.message || "No scan message returned."}`;
           </section>
 
           <section className="rounded-2xl border border-white/10 bg-neutral-900 p-3 sm:p-4">
-            <h2 className="mb-3 text-sm font-semibold">Alert Decision</h2>
+            <h2 className="mb-3 text-sm font-semibold">Market Alert</h2>
 
             {latestScan?.alert ? (
               <div className="space-y-2 text-sm">
@@ -1808,8 +1958,8 @@ ${record.message || "No scan message returned."}`;
                   {alertEligibilityNotify ? "Yes" : "No"} ({alertEligibilityLevel})
                 </p>
                 <p>
-                  <span className="text-neutral-400">Should alert:</span>{" "}
-                  {latestScan.alert.should_alert ? "Yes" : "No"}
+                  <span className="text-neutral-400">Market notify:</span>{" "}
+                  {latestScan.market_alert?.notify ? "Yes" : "No"}
                 </p>
                 <p>
                   <span className="text-neutral-400">Type:</span>{" "}
@@ -1832,6 +1982,68 @@ ${record.message || "No scan message returned."}`;
             ) : (
               <p className="text-sm text-neutral-400">
                 No alert decision loaded.
+              </p>
+            )}
+          </section>
+
+          <section className="rounded-2xl border border-white/10 bg-neutral-900 p-3 sm:p-4">
+            <h2 className="mb-3 text-sm font-semibold">Scanner Health</h2>
+
+            {latestAttemptHealth ? (
+              <div className="space-y-2 text-sm">
+                <p>
+                  <span className="text-neutral-400">Status:</span>{" "}
+                  {formatLabel(latestAttemptHealth.status || "unknown")}
+                </p>
+                <p>
+                  <span className="text-neutral-400">Severity:</span>{" "}
+                  {formatLabel(latestAttemptHealth.severity || "none")}
+                </p>
+                {latestAttemptHealth.affected_sources?.length ? (
+                  <p>
+                    <span className="text-neutral-400">Affected:</span>{" "}
+                    {latestAttemptHealth.affected_sources.join(", ")}
+                  </p>
+                ) : null}
+                <p>
+                  <span className="text-neutral-400">CSV:</span>{" "}
+                  {formatLabel(latestAttemptCsvStatus)}
+                </p>
+                <div className="grid grid-cols-2 gap-2 pt-1 text-xs">
+                  {["15M", "5M"].map((timeframe) => {
+                    const item = latestAttemptVisionByTimeframe[timeframe];
+                    const ok = item?.capture_success && item?.vision_success;
+                    return (
+                      <div
+                        key={timeframe}
+                        className="rounded-xl bg-neutral-950/70 p-2"
+                      >
+                        <p className="text-neutral-500">{timeframe} vision</p>
+                        <p className={ok ? "text-emerald-300" : "text-yellow-200"}>
+                          {ok ? "Ok" : "Failed"}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="pt-2">
+                  <p className="mb-1 text-xs text-neutral-500">Issues</p>
+                  <ul className="list-disc space-y-1 pl-5 text-xs text-neutral-300">
+                    {(latestAttemptHealth.issues || []).length ? (
+                      latestAttemptHealth.issues?.slice(0, 5).map((issue, index) => (
+                        <li key={`${issue.type || "issue"}-${index}`}>
+                          {issue.source || "Scanner"}: {issue.message || issue.type || "System issue"}
+                        </li>
+                      ))
+                    ) : (
+                      <li>No scanner system health issues detected.</li>
+                    )}
+                  </ul>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-neutral-400">
+                No scanner health loaded.
               </p>
             )}
           </section>
