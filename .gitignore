@@ -9,6 +9,7 @@ backend/.venv/
 backend/.env
 backend/assistant.db
 assistant.db
+.env*
 
 # Frontend
 frontend/node_modules/

@@ -28,6 +28,7 @@ DayOfWeek = Literal[
 ScheduleBlockPriority = Literal["low", "medium", "high"]
 ScheduleTimePreference = Literal["anytime", "morning", "afternoon", "evening", "night"]
 FlexiblePlacementMode = Literal["whenever_free", "preferred_day"]
+ScheduleRecurrenceEndType = Literal["never", "date", "occurrences", "weeks"]
 MajorEventStatus = Literal["active", "paused", "completed", "archived"]
 ScheduleDayStatus = Literal["healthy", "busy", "overloaded"]
 TradeDirection = Literal["Long", "Short"]
@@ -46,6 +47,11 @@ class ScheduleBlockBase(BaseModel):
     end_time: Optional[str] = None
     duration_minutes: Optional[int] = Field(default=None, gt=0, le=480)
     recurrence: Optional[str] = None
+    recurrence_end_type: Optional[ScheduleRecurrenceEndType] = "never"
+    recurrence_end_date: Optional[date] = None
+    recurrence_count: Optional[int] = Field(default=None, gt=0)
+    recurrence_weeks: Optional[int] = Field(default=None, gt=0)
+    preferred_days: list[DayOfWeek] = Field(default_factory=list)
     time_preference: Optional[ScheduleTimePreference] = "anytime"
     flexible_placement_mode: Optional[FlexiblePlacementMode] = "preferred_day"
     priority: ScheduleBlockPriority = "medium"
@@ -82,11 +88,27 @@ class ScheduleBlockUpdate(BaseModel):
     end_time: Optional[str] = None
     duration_minutes: Optional[int] = Field(default=None, gt=0, le=480)
     recurrence: Optional[str] = None
+    recurrence_end_type: Optional[ScheduleRecurrenceEndType] = None
+    recurrence_end_date: Optional[date] = None
+    recurrence_count: Optional[int] = Field(default=None, gt=0)
+    recurrence_weeks: Optional[int] = Field(default=None, gt=0)
+    preferred_days: Optional[list[DayOfWeek]] = None
     time_preference: Optional[ScheduleTimePreference] = None
     flexible_placement_mode: Optional[FlexiblePlacementMode] = None
     priority: Optional[ScheduleBlockPriority] = None
     notes: Optional[str] = None
     active: Optional[bool] = None
+
+
+class ScheduleDayTime(BaseModel):
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+
+
+class ScheduleBlockApplyDays(ScheduleBlockUpdate):
+    selected_days: list[DayOfWeek]
+    same_time: bool = True
+    day_times: dict[DayOfWeek, ScheduleDayTime] = Field(default_factory=dict)
 
 
 class ScheduleBlock(ScheduleBlockBase):

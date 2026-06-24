@@ -257,6 +257,11 @@ def init_orbit_db() -> None:
             end_time TEXT,
             duration_minutes INTEGER,
             recurrence TEXT,
+            recurrence_end_type TEXT DEFAULT 'never',
+            recurrence_end_date TEXT,
+            recurrence_count INTEGER,
+            recurrence_weeks INTEGER,
+            preferred_days TEXT,
             time_preference TEXT DEFAULT 'anytime',
             flexible_placement_mode TEXT DEFAULT 'preferred_day',
             priority TEXT NOT NULL DEFAULT 'medium',
@@ -320,6 +325,18 @@ def init_orbit_db() -> None:
         cursor.execute(
             "ALTER TABLE schedule_blocks ADD COLUMN flexible_placement_mode TEXT DEFAULT 'preferred_day'"
         )
+    if "recurrence_end_type" not in schedule_block_columns:
+        cursor.execute(
+            "ALTER TABLE schedule_blocks ADD COLUMN recurrence_end_type TEXT DEFAULT 'never'"
+        )
+    if "recurrence_end_date" not in schedule_block_columns:
+        cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN recurrence_end_date TEXT")
+    if "recurrence_count" not in schedule_block_columns:
+        cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN recurrence_count INTEGER")
+    if "recurrence_weeks" not in schedule_block_columns:
+        cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN recurrence_weeks INTEGER")
+    if "preferred_days" not in schedule_block_columns:
+        cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN preferred_days TEXT")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS agent_definitions (

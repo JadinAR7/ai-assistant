@@ -18,6 +18,7 @@ from .models import (
     RecommendationTaskDraft,
     ReviewCreate,
     ScheduleBlockCreate,
+    ScheduleBlockApplyDays,
     ScheduleBlockUpdate,
     TaskCreate,
     TaskUpdate,
@@ -121,6 +122,11 @@ TABLE_COLUMNS = {
         "end_time",
         "duration_minutes",
         "recurrence",
+        "recurrence_end_type",
+        "recurrence_end_date",
+        "recurrence_count",
+        "recurrence_weeks",
+        "preferred_days",
         "time_preference",
         "flexible_placement_mode",
         "priority",
@@ -151,6 +157,7 @@ SCHEDULE_TIME_PREFERENCES = {
     *SCHEDULE_TIME_PREFERENCE_WINDOWS.keys(),
 }
 SCHEDULE_FLEXIBLE_PLACEMENT_MODES = {"whenever_free", "preferred_day"}
+SCHEDULE_RECURRENCE_END_TYPES = {"never", "date", "occurrences", "weeks"}
 SCHEDULE_DAY_ORDER = [
     "monday",
     "tuesday",
@@ -180,7 +187,18 @@ def _model_data(model: Any, exclude_unset: bool = False) -> dict[str, Any]:
 def _row_to_dict(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if row is None:
         return None
-    return dict(row)
+    data = dict(row)
+    if "preferred_days" in data:
+        raw_preferred_days = data.get("preferred_days")
+        if isinstance(raw_preferred_days, str) and raw_preferred_days:
+            try:
+                parsed = json.loads(raw_preferred_days)
+                data["preferred_days"] = parsed if isinstance(parsed, list) else []
+            except json.JSONDecodeError:
+                data["preferred_days"] = []
+        elif raw_preferred_days in (None, ""):
+            data["preferred_days"] = []
+    return data
 
 
 def _create_record(table: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -247,7 +265,7 @@ def list_records(table: str) -> list[dict[str, Any]]:
     rows = cursor.fetchall()
     conn.close()
 
-    return [dict(row) for row in rows]
+    return [_row_to_dict(row) or {} for row in rows]
 
 
 def get_record(table: str, record_id: int) -> dict[str, Any] | None:
@@ -281,6 +299,10 @@ def _validate_schedule_block_data(data: dict[str, Any]) -> None:
     specific_date = data.get("specific_date")
     time_preference = data.get("time_preference")
     flexible_placement_mode = data.get("flexible_placement_mode")
+    recurrence_end_type = data.get("recurrence_end_type") or "never"
+    recurrence_end_date = data.get("recurrence_end_date")
+    recurrence_count = data.get("recurrence_count")
+    recurrence_weeks = data.get("recurrence_weeks")
 
     if specific_date not in (None, ""):
         try:
@@ -293,6 +315,21 @@ def _validate_schedule_block_data(data: dict[str, Any]) -> None:
 
     if flexible_placement_mode not in (None, "") and str(flexible_placement_mode) not in SCHEDULE_FLEXIBLE_PLACEMENT_MODES:
         raise ValueError("flexible_placement_mode must be whenever_free or preferred_day.")
+
+    if str(recurrence_end_type) not in SCHEDULE_RECURRENCE_END_TYPES:
+        raise ValueError("recurrence_end_type must be never, date, occurrences, or weeks.")
+
+    if recurrence_end_date not in (None, ""):
+        try:
+            date.fromisoformat(str(recurrence_end_date))
+        except ValueError as exc:
+            raise ValueError("recurrence_end_date must use YYYY-MM-DD format.") from exc
+
+    if recurrence_count is not None and int(recurrence_count) <= 0:
+        raise ValueError("recurrence_count must be greater than 0.")
+
+    if recurrence_weeks is not None and int(recurrence_weeks) <= 0:
+        raise ValueError("recurrence_weeks must be greater than 0.")
 
     if block_type == "fixed":
         has_schedule_anchor = data.get("day_of_week") not in (None, "") or specific_date not in (None, "")
@@ -315,6 +352,38 @@ def _normalize_schedule_block_data(data: dict[str, Any]) -> dict[str, Any]:
         normalized["title"] = ""
 
     block_type = str(normalized.get("block_type") or "").casefold()
+    recurrence = str(normalized.get("recurrence") or "once").casefold()
+    normalized["recurrence"] = recurrence
+
+    if recurrence == "once":
+        normalized["recurrence_end_type"] = "never"
+        normalized["recurrence_end_date"] = None
+        normalized["recurrence_count"] = None
+        normalized["recurrence_weeks"] = None
+    else:
+        normalized["recurrence_end_type"] = normalized.get("recurrence_end_type") or "never"
+        if normalized["recurrence_end_type"] != "date":
+            normalized["recurrence_end_date"] = None
+        if normalized["recurrence_end_type"] != "occurrences":
+            normalized["recurrence_count"] = None
+        if normalized["recurrence_end_type"] != "weeks":
+            normalized["recurrence_weeks"] = None
+
+    preferred_days = normalized.get("preferred_days")
+    if isinstance(preferred_days, str):
+        try:
+            preferred_days = json.loads(preferred_days) if preferred_days else []
+        except json.JSONDecodeError:
+            preferred_days = []
+    if not isinstance(preferred_days, list):
+        preferred_days = []
+    normalized_preferred_days = [
+        str(day).casefold()
+        for day in preferred_days
+        if str(day).casefold() in SCHEDULE_DAY_ORDER
+    ]
+    normalized["preferred_days"] = normalized_preferred_days
+
     if block_type == "flexible":
         if normalized.get("time_preference") in (None, ""):
             normalized["time_preference"] = "anytime"
@@ -328,7 +397,15 @@ def _normalize_schedule_block_data(data: dict[str, Any]) -> dict[str, Any]:
         if normalized.get("flexible_placement_mode") == "whenever_free":
             normalized["day_of_week"] = None
             normalized["specific_date"] = None
+            normalized["preferred_days"] = []
+        elif normalized["preferred_days"]:
+            normalized["day_of_week"] = normalized["preferred_days"][0]
+        elif normalized.get("day_of_week") not in (None, ""):
+            normalized["preferred_days"] = [str(normalized["day_of_week"]).casefold()]
+    else:
+        normalized["preferred_days"] = []
 
+    normalized["preferred_days"] = json.dumps(normalized["preferred_days"])
     return normalized
 
 
@@ -341,7 +418,7 @@ def _list_records_ordered(table: str, order_by: str) -> list[dict[str, Any]]:
     rows = cursor.fetchall()
     conn.close()
 
-    return [dict(row) for row in rows]
+    return [_row_to_dict(row) or {} for row in rows]
 
 
 def create_major_event(payload: MajorEventCreate) -> dict[str, Any]:
@@ -672,6 +749,9 @@ def list_schedule_blocks() -> list[dict[str, Any]]:
 def create_schedule_block(payload: ScheduleBlockCreate) -> dict[str, Any]:
     data = _normalize_schedule_block_data(_model_data(payload))
     _validate_schedule_block_data(data)
+    existing = _find_duplicate_schedule_block(data)
+    if existing is not None:
+        return _update_record("schedule_blocks", int(existing["id"]), data) or existing
     return _create_record("schedule_blocks", data)
 
 
@@ -687,6 +767,188 @@ def update_schedule_block(
     merged = {**existing, **data}
     _validate_schedule_block_data(merged)
     return _update_record("schedule_blocks", record_id, data)
+
+
+def apply_schedule_block_to_days(
+    record_id: int,
+    payload: ScheduleBlockApplyDays,
+) -> list[dict[str, Any]] | None:
+    source_block = get_record("schedule_blocks", record_id)
+    if source_block is None:
+        return None
+    if str(source_block.get("block_type") or "").casefold() != "fixed":
+        raise ValueError("Only fixed schedule blocks can be applied to selected days.")
+
+    payload_data = payload.model_dump(exclude_unset=True)
+    selected_days = _normalize_selected_schedule_days(payload_data.get("selected_days"))
+    if not selected_days:
+        raise ValueError("At least one selected day is required.")
+
+    same_time = bool(payload_data.get("same_time", True))
+    day_times = payload_data.get("day_times") or {}
+    update_fields = {
+        key: value
+        for key, value in payload_data.items()
+        if key not in {"selected_days", "same_time", "day_times"}
+    }
+
+    if same_time:
+        start_time = update_fields.get("start_time")
+        end_time = update_fields.get("end_time")
+        if start_time in (None, "") or end_time in (None, ""):
+            raise ValueError("Same-time updates require start_time and end_time.")
+    else:
+        update_fields["start_time"] = None
+        update_fields["end_time"] = None
+
+    saved_blocks: list[dict[str, Any]] = []
+    selected_day_set = set(selected_days)
+    all_blocks = list_schedule_blocks()
+
+    for day in selected_days:
+        day_update = dict(update_fields)
+        day_update.update(
+            {
+                "block_type": "fixed",
+                "day_of_week": day,
+                "specific_date": None,
+                "duration_minutes": None,
+                "preferred_days": "[]",
+            }
+        )
+
+        if same_time:
+            day_update["start_time"] = update_fields.get("start_time")
+            day_update["end_time"] = update_fields.get("end_time")
+        else:
+            day_time = day_times.get(day) or {}
+            day_start_time = day_time.get("start_time")
+            day_end_time = day_time.get("end_time")
+            if day_start_time in (None, "") or day_end_time in (None, ""):
+                raise ValueError(f"{_schedule_day_label(day)} needs start and end times.")
+            day_update["start_time"] = day_start_time
+            day_update["end_time"] = day_end_time
+
+        merged = _normalize_schedule_block_data({**source_block, **day_update})
+        _validate_schedule_block_data(merged)
+
+        matching_blocks = [
+            block
+            for block in all_blocks
+            if _schedule_fixed_block_matches_apply_family(
+                block,
+                source_block,
+                day,
+                selected_day_set,
+            )
+        ]
+        matching_blocks.sort(
+            key=lambda block: (
+                0 if int(block.get("id") or 0) == record_id else 1,
+                int(block.get("id") or 0),
+            )
+        )
+
+        target_block = matching_blocks[0] if matching_blocks else None
+        if target_block is not None:
+            saved_block = _update_record(
+                "schedule_blocks",
+                int(target_block["id"]),
+                day_update,
+            )
+            if saved_block is not None:
+                saved_blocks.append(saved_block)
+            for duplicate_block in matching_blocks[1:]:
+                delete_record("schedule_blocks", int(duplicate_block["id"]))
+        else:
+            created_data = _normalize_schedule_block_data(
+                {
+                    **source_block,
+                    **day_update,
+                    "id": None,
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            )
+            _validate_schedule_block_data(created_data)
+            saved_blocks.append(_create_record("schedule_blocks", created_data))
+
+    return saved_blocks
+
+
+def _normalize_selected_schedule_days(days: Any) -> list[str]:
+    selected_days: list[str] = []
+    if not isinstance(days, list):
+        return selected_days
+    for day in days:
+        normalized_day = str(day).casefold()
+        if normalized_day in SCHEDULE_DAY_ORDER and normalized_day not in selected_days:
+            selected_days.append(normalized_day)
+    return selected_days
+
+
+def _schedule_fixed_block_matches_apply_family(
+    block: dict[str, Any],
+    source_block: dict[str, Any],
+    target_day: str,
+    selected_days: set[str],
+) -> bool:
+    if str(block.get("block_type") or "").casefold() != "fixed":
+        return False
+    if str(block.get("day_of_week") or "").casefold() != target_day:
+        return False
+    if not _truthy(block.get("active")) and _truthy(source_block.get("active")):
+        return False
+    if str(block.get("category") or "") != str(source_block.get("category") or ""):
+        return False
+    if _schedule_block_title(block) != _schedule_block_title(source_block):
+        return False
+
+    source_recurrence = str(source_block.get("recurrence") or "once").casefold()
+    block_recurrence = str(block.get("recurrence") or "once").casefold()
+    if block_recurrence != source_recurrence:
+        return False
+
+    block_day = str(block.get("day_of_week") or "").casefold()
+    return block_day in selected_days
+
+
+def _find_duplicate_schedule_block(
+    data: dict[str, Any],
+    excluded_id: int | None = None,
+) -> dict[str, Any] | None:
+    signature = _schedule_block_signature(data)
+    for block in list_schedule_blocks():
+        if excluded_id is not None and int(block.get("id") or 0) == excluded_id:
+            continue
+        if _schedule_block_signature(block) == signature:
+            return block
+    return None
+
+
+def _schedule_block_signature(block: dict[str, Any]) -> tuple[Any, ...]:
+    preferred_days = _schedule_preferred_days(block)
+    return (
+        str(block.get("title") or "").strip().casefold(),
+        str(block.get("block_type") or "").casefold(),
+        str(block.get("category") or "").casefold(),
+        str(block.get("day_of_week") or "").casefold(),
+        str(block.get("specific_date") or ""),
+        str(block.get("start_time") or ""),
+        str(block.get("end_time") or ""),
+        int(block.get("duration_minutes") or 0),
+        str(block.get("recurrence") or "once").casefold(),
+        str(block.get("recurrence_end_type") or "never").casefold(),
+        str(block.get("recurrence_end_date") or ""),
+        int(block.get("recurrence_count") or 0),
+        int(block.get("recurrence_weeks") or 0),
+        tuple(sorted(str(day).casefold() for day in preferred_days)),
+        str(block.get("time_preference") or "anytime").casefold(),
+        str(block.get("flexible_placement_mode") or "preferred_day").casefold(),
+        str(block.get("priority") or "medium").casefold(),
+        str(block.get("notes") or "").strip(),
+        bool(_truthy(block.get("active"))),
+    )
 
 
 def get_schedule_intelligence() -> dict[str, Any]:
@@ -709,7 +971,6 @@ def get_schedule_intelligence() -> dict[str, Any]:
     unplaced_flexible_blocks = [
         block
         for block in flexible_blocks
-        if not block.get("day_of_week") and not block.get("specific_date")
     ]
     high_priority_due_by_date = _schedule_high_priority_due_counts(week_dates)
 
@@ -815,11 +1076,6 @@ def _schedule_fixed_instances(
     week_dates: list[date],
 ) -> dict[str, list[dict[str, Any]]]:
     instances = {current_date.isoformat(): [] for current_date in week_dates}
-    day_by_date = {
-        current_date.isoformat(): SCHEDULE_DAY_ORDER[index]
-        for index, current_date in enumerate(week_dates)
-    }
-
     for block in blocks:
         if str(block.get("block_type") or "").casefold() != "fixed":
             continue
@@ -828,19 +1084,10 @@ def _schedule_fixed_instances(
         if start_minute is None or end_minute is None or end_minute <= start_minute:
             continue
 
-        recurrence = str(block.get("recurrence") or "once").casefold()
-        specific_date = str(block.get("specific_date") or "")
-        if recurrence == "daily":
-            target_dates = list(instances.keys())
-        elif specific_date in instances:
-            target_dates = [specific_date]
-        else:
-            block_day = str(block.get("day_of_week") or "").casefold()
-            target_dates = [
-                current_date
-                for current_date, day in day_by_date.items()
-                if day == block_day
-            ]
+        target_dates = [
+            target_date.isoformat()
+            for target_date in _schedule_block_target_dates(block, week_dates)
+        ]
 
         for target_date in target_dates:
             instances[target_date].append(
@@ -868,24 +1115,148 @@ def _schedule_flexible_blocks_by_date(
     week_dates: list[date],
 ) -> dict[str, list[dict[str, Any]]]:
     blocks_by_date = {current_date.isoformat(): [] for current_date in week_dates}
-    day_by_date = {
-        current_date.isoformat(): SCHEDULE_DAY_ORDER[index]
-        for index, current_date in enumerate(week_dates)
-    }
 
     for block in blocks:
-        specific_date = str(block.get("specific_date") or "")
-        if specific_date in blocks_by_date:
-            blocks_by_date[specific_date].append(block)
-            continue
-
-        block_day = str(block.get("day_of_week") or "").casefold()
-        for date_key, day in day_by_date.items():
-            if day == block_day:
-                blocks_by_date[date_key].append(block)
-                break
+        for target_date in _schedule_block_target_dates(block, week_dates):
+            blocks_by_date[target_date.isoformat()].append(block)
 
     return blocks_by_date
+
+
+def _schedule_block_target_dates(
+    block: dict[str, Any],
+    week_dates: list[date],
+) -> list[date]:
+    if not week_dates:
+        return []
+
+    recurrence = str(block.get("recurrence") or "once").casefold()
+    specific_date = _parse_date(block.get("specific_date"))
+    if recurrence == "once":
+        if specific_date is not None:
+            return [specific_date] if specific_date in week_dates else []
+        block_days = _schedule_block_days(block)
+        return [
+            current_date
+            for current_date in week_dates
+            if SCHEDULE_DAY_ORDER[current_date.weekday()] in block_days
+        ][:1]
+
+    candidates: list[date] = []
+    if recurrence == "daily":
+        candidates = list(week_dates)
+    else:
+        block_days = _schedule_block_days(block)
+        candidates = [
+            current_date
+            for current_date in week_dates
+            if SCHEDULE_DAY_ORDER[current_date.weekday()] in block_days
+        ]
+
+    if recurrence == "every_other_week":
+        anchor_date = specific_date
+        if anchor_date is None:
+            created_at = _parse_date(str(block.get("created_at") or "")[:10])
+            anchor_date = created_at or week_dates[0]
+        candidates = [
+            current_date
+            for current_date in candidates
+            if ((current_date - anchor_date).days // 7) % 2 == 0
+        ]
+
+    return _filter_schedule_dates_by_recurrence_end(block, candidates)
+
+
+def _schedule_block_days(block: dict[str, Any]) -> list[str]:
+    preferred_days = _schedule_preferred_days(block)
+    days = [
+        str(day).casefold()
+        for day in preferred_days
+        if str(day).casefold() in SCHEDULE_DAY_ORDER
+    ]
+    day_of_week = str(block.get("day_of_week") or "").casefold()
+    if day_of_week in SCHEDULE_DAY_ORDER and day_of_week not in days:
+        days.append(day_of_week)
+    return days
+
+
+def _schedule_preferred_days(block: dict[str, Any]) -> list[Any]:
+    preferred_days = block.get("preferred_days") or []
+    if isinstance(preferred_days, str):
+        try:
+            parsed = json.loads(preferred_days) if preferred_days else []
+        except json.JSONDecodeError:
+            parsed = []
+        preferred_days = parsed
+    return preferred_days if isinstance(preferred_days, list) else []
+
+
+def _filter_schedule_dates_by_recurrence_end(
+    block: dict[str, Any],
+    candidates: list[date],
+) -> list[date]:
+    recurrence = str(block.get("recurrence") or "once").casefold()
+    if recurrence == "once":
+        return candidates
+
+    end_type = str(block.get("recurrence_end_type") or "never").casefold()
+    if end_type == "date":
+        end_date = _parse_date(block.get("recurrence_end_date"))
+        return [
+            current_date
+            for current_date in candidates
+            if end_date is None or current_date <= end_date
+        ]
+
+    anchor_date = (
+        _parse_date(block.get("specific_date"))
+        or _parse_date(str(block.get("created_at") or "")[:10])
+        or (candidates[0] if candidates else None)
+    )
+    if anchor_date is None:
+        return candidates
+
+    if end_type == "weeks":
+        recurrence_weeks = int(block.get("recurrence_weeks") or 0)
+        if recurrence_weeks <= 0:
+            return candidates
+        end_date = anchor_date + timedelta(days=(recurrence_weeks * 7) - 1)
+        return [current_date for current_date in candidates if current_date <= end_date]
+
+    if end_type == "occurrences":
+        recurrence_count = int(block.get("recurrence_count") or 0)
+        if recurrence_count <= 0:
+            return candidates
+        occurrence_index = _schedule_occurrence_index(block, anchor_date, recurrence)
+        return [
+            current_date
+            for current_date in candidates
+            if 1 <= occurrence_index(current_date) <= recurrence_count
+        ]
+
+    return candidates
+
+
+def _schedule_occurrence_index(
+    block: dict[str, Any],
+    anchor_date: date,
+    recurrence: str,
+):
+    days = _schedule_block_days(block)
+    day_indexes = sorted(SCHEDULE_DAY_ORDER.index(day) for day in days)
+
+    def index_for(current_date: date) -> int:
+        if recurrence == "daily":
+            return (current_date - anchor_date).days + 1
+
+        week_delta = max(0, (current_date - anchor_date).days // 7)
+        weeks_per_cycle = 2 if recurrence == "every_other_week" else 1
+        cycle_delta = week_delta // weeks_per_cycle
+        day_index = current_date.weekday()
+        day_position = day_indexes.index(day_index) if day_index in day_indexes else 0
+        return cycle_delta * max(len(day_indexes), 1) + day_position + 1
+
+    return index_for
 
 
 def _schedule_high_priority_due_counts(week_dates: list[date]) -> dict[str, int]:
@@ -1051,22 +1422,54 @@ def _schedule_placement_candidates(
         ),
     )
 
-    return [
-        candidate
-        for block in candidate_blocks
-        if (
-            candidate := _schedule_flexible_block_placement_candidate(
-                block,
-                available_windows,
-            )
+    candidates: list[dict[str, Any]] = []
+    for block in candidate_blocks:
+        candidates.extend(
+            _schedule_flexible_block_placement_candidates(block, available_windows)
         )
-        is not None
-    ]
+    return candidates
+
+
+def _schedule_flexible_block_placement_candidates(
+    block: dict[str, Any],
+    available_windows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    preferred_dates = _schedule_block_target_dates(
+        block,
+        sorted({
+            parsed_date
+            for window in available_windows
+            if (parsed_date := _parse_date(window.get("date"))) is not None
+        }),
+    )
+    if not preferred_dates:
+        candidate = _schedule_flexible_block_placement_candidate(
+            block,
+            available_windows,
+        )
+        return [candidate] if candidate is not None else []
+
+    candidates: list[dict[str, Any]] = []
+    for preferred_date in preferred_dates:
+        date_windows = [
+            window
+            for window in available_windows
+            if str(window.get("date") or "") == preferred_date.isoformat()
+        ]
+        candidate = _schedule_flexible_block_placement_candidate(
+            block,
+            date_windows,
+            allow_fallback=False,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    return candidates
 
 
 def _schedule_flexible_block_placement_candidate(
     block: dict[str, Any],
     available_windows: list[dict[str, Any]],
+    allow_fallback: bool = True,
 ) -> dict[str, Any] | None:
     duration = int(block.get("duration_minutes") or 0)
     if duration <= 0:
@@ -1096,6 +1499,9 @@ def _schedule_flexible_block_placement_candidate(
             reason=reason,
             preference_matched=True,
         )
+
+    if not allow_fallback:
+        return None
 
     fallback_slot = _find_schedule_slot(
         preferred_windows,
@@ -1186,7 +1592,11 @@ def _find_matching_fixed_schedule_block(
     return None
 
 
-def place_flexible_schedule_block(record_id: int) -> dict[str, Any] | None:
+def place_flexible_schedule_block(
+    record_id: int,
+    target_date: str | None = None,
+    target_start_time: str | None = None,
+) -> dict[str, Any] | None:
     source_block = get_record("schedule_blocks", record_id)
     if source_block is None:
         return None
@@ -1212,6 +1622,11 @@ def place_flexible_schedule_block(record_id: int) -> dict[str, Any] | None:
             placement
             for placement in intelligence.get("placement_candidates") or []
             if int(placement.get("flexible_block_id") or 0) == record_id
+            and (target_date is None or str(placement.get("date") or "") == target_date)
+            and (
+                target_start_time is None
+                or str(placement.get("start_time") or "") == target_start_time
+            )
         ),
         None,
     )

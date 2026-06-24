@@ -1,6 +1,6 @@
 # Helix Project Overview
 
-Last refreshed: June 4, 2026
+Last refreshed: June 19, 2026
 
 Helix is Jadin's local-first assistant and operating layer. It combines a chat assistant, Orbit life operating system, agent framework, trading assistant, schedule platform, voice/TTS surface, and local messaging workflows into one system.
 
@@ -15,11 +15,40 @@ Helix today is:
 * **AI Assistant**: a FastAPI-backed chat assistant with local Ollama model fallback, tool execution, image/chart analysis, history, and Command Center UI.
 * **Orbit Life Operating System**: a structured SQLite-backed system for major events, milestones, goals, tasks, reviews, readiness, schedule blocks, progress history, recommendations, trade-session records, Trade Journal records, and agent run records.
 * **Agent Framework**: a read-only/recommendation-first agent layer with manual runs, scheduled runs, prioritization, stored outputs, and Morning Check-In workflow.
-* **Trading Assistant**: a TradingView/CSV-based scanner and analysis stack for MES/MNQ/NQ/ES context, liquidity, behavior classification, alert eligibility, CSV freshness, gated notifications, and Trade Journal data capture.
-* **Scheduling Platform**: Orbit Schedule Blocks v1, Schedule Board v1, and Schedule Intelligence v1 for read-only day density, free-time windows, overloaded-day detection, and placement recommendations.
+* **Trading Assistant**: a TradingView scanner and analysis stack for MES/MNQ/NQ/ES context. It uses HTF CSV as the structural map, LTF vision screenshots as live chart context, model-aware Ollama vision extraction, conservative confidence caps, scanner system-health state, market/chart alert state, gated notifications, and Trade Journal data capture.
+* **Scheduling Platform**: Orbit Schedule Blocks, Calendar, Blocks grouped view, and Schedule Intelligence for recurring/fixed/flexible schedule rules, day-level calendar placements, grouped schedule patterns, finite recurrence, multi-day edits, day density, free-time windows, overloaded-day detection, and placement recommendations.
 * **Voice-enabled Assistant**: macOS `say` TTS, configurable voice profiles, TTS routing, speech formatting, manual Voice Trigger prototype, Wake Phrase Listener v1, Morning Briefing condenser, and iMessage-backed morning fallback delivery.
 
 Helix remains the central intelligence layer. Orbit stores durable planning data. Agents perform specialized read-only analysis. Scanner logic remains separate from Orbit and does not write planning state.
+
+---
+
+# Current Status
+
+## Completed Recently
+
+* Scanner HTF CSV + LTF vision refactor
+* Qwen3-VL vision evaluation and JSON repair
+* Scanner system health separation from market/chart alert state
+* TradingView profile lock for scanner/CSV browser automation
+* Screenshot capture fallback/recovered issue tracking
+* Response-quality guardrails for incomplete local-model fragments
+* Orbit Schedule block/rule cleanup
+* Fixed schedule multi-day edit/apply behavior
+* Flexible multi-day scheduling
+* Finite recurrence controls
+* Blocks grouped by schedule pattern
+* Calendar day-level placements from schedule rules
+
+## Known Limitations / Next Work
+
+* Scanner vision quality is improving but still needs repeated live validation.
+* Qwen3-VL can still require JSON repair.
+* Scanner is usable for review/watch/alert context, not autonomous trade decisions.
+* Scanner should not generate trade signals or entries.
+* Strategy teaching overhaul is under consideration.
+* Calendar scheduling logic should continue to be tested with real weekly planning.
+* Full backend test discovery can be blocked by optional local dependencies or unrelated local test drift; run targeted Orbit/scanner tests when discovery is blocked.
 
 ---
 
@@ -42,11 +71,17 @@ Future systems should not create separate assistants. Instead:
 
 CSV data is responsible for:
 
-* Historical structure
+* Higher-timeframe structural context
 * FVG reaction-zone mapping
 * Liquidity mapping
 * Market structure analysis
-* Historical context
+* Historical context and backup price-action context
+
+Default HTF CSV timeframes:
+
+* `1D`
+* `4H`
+* `1H`
 
 Vision analysis is responsible for:
 
@@ -57,10 +92,19 @@ Vision analysis is responsible for:
 * Session context
 * Visual confirmation
 
+Default live vision timeframes:
+
+* `15M`
+* `5M`
+
+`1M` is conditional execution context only and should not run by default.
+
 Freshness rules:
 
 * Fresh CSVs may be used for structure and price context.
 * Stale CSVs may only be used for structure and FVG reaction-zone mapping.
+* Stale CSV is degraded structural context, not automatically a failed scanner state.
+* CSV parse/load failure is failed.
 * When CSV is stale, vision becomes the primary live-context source.
 * Helix must never present stale CSV prices as confirmed live market prices.
 * Stale CSV Guardrail v1 separates HTF structural context from live execution state: CSV can keep old FVGs on the map, but live vision decides whether price is inside, above, below, reclaiming, or invalidating those zones.
@@ -110,6 +154,7 @@ Primary modules:
 * `backend/chat_intents.py`: deterministic Command Center intent routing before LLM fallback.
 * `backend/presence.py`: local Presence Modes v1 storage and mode definitions for home, trading, away, and focus.
 * `backend/tools.py`: Helix tool layer for Orbit, trading, web/search helpers, reminders, file tools, and TradingView workflows.
+* `backend/response_quality.py`: incomplete-response detection, retry-once repair prompt construction, and fallback text for bad local-model fragments.
 * `backend/orbit/database.py`: Orbit schema, initial agent definitions, Trade Journal tables, and migrations-on-init style schema maintenance.
 * `backend/orbit/service.py`: Orbit data access, calculated progress, recommendations, priority scoring, morning briefing, daily closeout, schedule blocks, Schedule Intelligence v1, Trade Journal CRUD, import-save behavior, and readiness logic.
 * `backend/orbit/routes.py`: Orbit API surface, including schedule intelligence and Trade Journal endpoints.
@@ -121,8 +166,9 @@ Primary modules:
 * `backend/agent_routes.py`: agent API surface.
 * `backend/scheduled_agents.py`: scheduled Morning Review, Evening Review, daily prioritization snapshot, and morning fallback check loop.
 * `backend/morning_checkin.py`: Morning Check-In acknowledgement, Morning Review run reuse/creation, fallback state, iMessage fallback delivery, and speech condensation.
-* `backend/scheduled_scan.py`: configured-symbol scanner, chart capture, deterministic analysis, state comparison, Scanner Refinement v1 signal tiers, narrative state, alert eligibility, repeat suppression, and gated scan notifications.
+* `backend/scheduled_scan.py`: configured-symbol scanner, HTF CSV + LTF vision orchestration, screenshot capture recovery, deterministic analysis, state comparison, Scanner Refinement v1 signal tiers, narrative state, market alert state, system health state, alert eligibility, repeat suppression, confidence caps, and gated scan notifications.
 * `backend/csv_refresh.py`: scheduled and forced TradingView CSV refresh with verification before active file replacement.
+* `backend/tradingview_profile_lock.py`: browser/profile lock used to keep TradingView automation from colliding across scanner and CSV refresh processes.
 * `backend/tts.py`: speech formatter, macOS voice discovery/config, and TTS dispatch.
 * `backend/imessage_bridge.py`: local iMessage polling bridge and command router into backend endpoints.
 * `backend/voice_trigger.py`: manual push-to-talk / typed Morning Check-In trigger prototype.
@@ -138,6 +184,8 @@ Storage:
 * `backend/csv_refresh_status.json`: CSV refresh status.
 * `backend/.scheduled_agents_status.json`: scheduled-agent and prioritization snapshot status.
 * `backend/.morning_checkin_status.json`: daily morning acknowledgement/fallback state.
+* `backend/csv_data/`: active TradingView CSV files.
+* `backend/pictures/tradingview_screenshots/`: scanner and vision-evaluation screenshot artifacts.
 
 ## Frontend
 
@@ -149,17 +197,17 @@ Technology:
 Primary surfaces:
 
 * `/`: Helix Core home surface with navigation and current Orbit morning status.
-* `/command-center`: Helix Command Center chat, tool mode selection, image/chart upload, scanner status, latest scan, force scan, history reset, and history display.
-* `/orbit`: Orbit Operating Board with Major Events, calculated progress, milestones, Inbox tasks, recommendations, readiness, Schedule Board, Morning Check-In, Scheduled Agent status, agent prioritization, and manual agent runs.
+* `/command-center`: Helix Command Center chat, tool mode selection, image/chart upload, scanner status, scanner system health, latest scan, force scan, CSV refresh controls/status, history reset, history display, and frontend incomplete-fragment safety net.
+* `/orbit`: Orbit Operating Board with dashboard tabs for overview/workflows, Major Events, calculated progress, milestones, Inbox tasks, recommendations, strategic gaps, readiness, Schedule/Calendar/Blocks, Morning Check-In, Scheduled Agent status, agent prioritization, and manual agent runs.
 * `/trade-journal`: Trade Journal data-capture surface with manual entry, PDF import preview, import draft review, list/detail/edit/delete workflows, and attachment path capture.
 * `/orbit/trade-journal`: Orbit-linked trade journal route.
 * `/ascend`: future-facing Ascend/training/readiness concept surface.
 
 Current frontend capabilities:
 
-* Command Center calls `/chat`, scanner endpoints, image analysis, reset, and history.
+* Command Center calls `/chat`, scanner endpoints, CSV refresh endpoints, image analysis, reset, and history.
 * Orbit page preloads major events, milestones, reviews, readiness, morning briefing, daily closeout, recommendations, inbox tasks, progress advisory/history, agents, agent prioritization, scheduled-agent status, Morning Check-In status, schedule blocks, and schedule intelligence.
-* Schedule Board v1 supports fixed and flexible schedule blocks, week navigation, date-aware placement, recurring day-of-week display, specific-date blocks, active/archive state, editing, deletion, category/priority metadata, subtle current-day column highlighting, and compact Schedule Intelligence display.
+* Schedule Board supports fixed and flexible schedule blocks, week navigation, Calendar day placements, Blocks grouped by unique schedule pattern, date-aware placement, recurring day-of-week display, specific-date blocks, active/archive state, editing, deletion, multi-day fixed edits, flexible preferred days, finite recurrence, category/priority metadata, subtle current-day column highlighting, and compact Schedule Intelligence display.
 * Trade Journal supports manual create/edit/delete/detail, import preview, step-by-step imported draft review, and save-from-import confirmation.
 * Agent views expose Morning Check-In, scheduled-agent checks, prioritization, manual agent runs, Web Search Agent output, Readiness Advisory suggestions, and recent run summaries.
 * Mobile UI Pass v1 improves phone testing usability with tighter page shells, scrollable navigation, stacked mobile layouts, larger tap targets, and preserved desktop layouts across Core, Command Center, Orbit, Schedule rooms, and Trade Journal rooms.
@@ -222,6 +270,11 @@ The following major feature milestones are complete as of this overview:
 * Schedule Blocks v1
 * Schedule Board v1
 * Schedule Intelligence v1
+* Orbit Schedule rule/pattern cleanup
+* Fixed schedule multi-day edit/apply behavior
+* Flexible multi-day scheduling
+* Finite schedule recurrence
+* Blocks grouped by schedule pattern
 * Trade Journal v1
 * Trade Journal PDF Import v1
 * Trading Coach v2 / Journal Review Intelligence v1
@@ -290,12 +343,17 @@ Orbit supports:
 * Tasks
 * Inbox tasks
 * Task completion
+* Task editing
 * Task priority scoring
 * Task-milestone links
+* Strategic gap review
+* Task creation from strategic gaps and recommendations
 * Recommendation task drafts
 * Explicit user-approved creation from recommendations
 
 Tasks can stay in the Inbox while being linked to milestones, so milestone context does not forcibly move a task out of Inbox.
+
+Strategic gaps are read from Orbit evidence and can feed user-approved task creation. Recommendations remain advisory until the user explicitly creates or edits a task.
 
 ## Reviews
 
@@ -315,21 +373,44 @@ Readiness Advisory Agent can suggest score changes from Orbit evidence, but it n
 
 ## Schedule Blocks
 
-Schedule Blocks v1 supports:
+Schedule blocks are rules/patterns, not raw day duplicates. The backend stores schedule rows with recurrence and timing metadata, while the frontend renders those rows either as day-level Calendar placements or grouped Blocks patterns.
 
-* Fixed blocks
-* Flexible blocks
-* Category
-* Day of week
-* Specific date
-* Start/end time
-* Duration
-* Recurrence
-* Priority
-* Notes
-* Active/archive state
+Fixed blocks support:
 
-Fixed blocks require a day-of-week or specific date plus start/end time. Flexible blocks require duration.
+* Selected days
+* Same time across selected days
+* Per-day different times
+* Edit/update without duplicate creation
+* Applying edits to multiple selected days
+* Existing grouped-pattern editing and expansion to more days
+* Replacement of conflicting old patterns for the same block/category/title/day selection
+* Duplicate-pattern merge behavior through grouped display and schedule update cleanup
+
+When Same time is checked, all selected days use the global `start_time` and `end_time`, stale per-day fields are ignored, and existing per-day variations for selected days are overwritten. When Same time is unchecked, selected days use per-day times and the global time controls are disabled/ignored.
+
+Flexible blocks support:
+
+* Multiple preferred days
+* Whenever-free mode
+* Suggested placements
+* Candidate placement controls
+* Finite recurrence
+* Duration-based scheduling
+
+Recurrence supports:
+
+* Once
+* Daily
+* Weekly
+* Every other week
+* End controls: never, end date, occurrences, or weeks
+
+Time inputs support clear/reset behavior. Global time inputs are disabled/ignored when using per-day times.
+
+Examples:
+
+* Work Mon-Thu with the same time is one grouped schedule pattern.
+* Boxing Mon/Wed with the same time plus Tue/Thu with different times is displayed as multiple unique patterns.
 
 ## Schedule Board
 
@@ -338,12 +419,19 @@ The Orbit frontend includes a Schedule Board with:
 * Week navigation
 * Current week heading
 * Seven-day display
+* Calendar tab with day-level placements
+* Blocks tab grouped by unique schedule pattern
 * Date-aware scheduling through `specific_date`
 * Day-of-week recurring block display
 * Unscheduled/flexible block list
 * Create/edit/delete/archive controls
+* Fixed-block multi-day selection
+* Flexible-block preferred-day selection
+* Candidate placement for flexible blocks
 
 The Today button returns the visible week to the current week. When the visible week includes today, the current day is indicated by a subtle turquoise column highlight rather than a separate day-header badge.
+
+Calendar view answers "what appears on this day?" Blocks view answers "what schedule patterns exist?" The two should agree after edits: for example, a Work Mon-Thu same-time block should show one grouped child row in Blocks and four day-level placements in Calendar.
 
 ## Schedule Intelligence v1
 
@@ -647,6 +735,28 @@ Operational note: backend restart is required after Command Router changes becau
 
 ---
 
+# Response Quality Guardrails
+
+Response-quality protection is implemented in `backend/response_quality.py`, `backend/main.py`, and the Command Center frontend.
+
+Backend behavior:
+
+* Detects incomplete local-model fragments such as `Based`, `Based on`, `Sure`, `The`, and other tiny/dangling responses.
+* Allows legitimate short answers such as yes/no/done/ok when appropriate.
+* Retries once with a repair prompt that includes the user message and the rejected incomplete response.
+* Uses a fixed fallback message if repair also fails or Ollama is unavailable.
+* Saves only the repaired or fallback assistant message to history.
+* Does not save the original bad fragment as an assistant response.
+* Streaming chat performs the same final-response validation and appends the repaired/fallback response when needed.
+
+Frontend behavior:
+
+* Command Center applies a safety net for obvious assistant fragments loaded from history or returned by chat.
+* Obvious fragments are shown as system/error-style fallback content rather than polished assistant answers.
+* Tool/system responses are not treated as ordinary assistant fragments.
+
+---
+
 # Current Endpoints
 
 ## Core
@@ -655,6 +765,7 @@ Operational note: backend restart is required after Command Router changes becau
 * `POST /chat`: primary chat, deterministic intent routing, and tool-routing endpoint.
 * `POST /chat/stream`: streaming chat endpoint.
 * `POST /analyze-image`: uploaded chart/image analysis.
+* `POST /vision/evaluate-chart`: evaluate one saved chart screenshot across `VISION_MODEL` / `VISION_MODEL_CANDIDATES`; supports debug response fields.
 * `GET /presence`: current Presence Mode config, `updated_at`, and available modes.
 * `POST /presence`: set manual Presence Mode with `{ "mode": "home|trading|away|focus" }`.
 * `POST /reset`: clear chat memory.
@@ -663,11 +774,16 @@ Operational note: backend restart is required after Command Router changes becau
 
 ## Scanner and CSV
 
+* `GET /scanner/settings`
+* `POST /scanner/settings`
 * `POST /scan/force`
+* `POST /scan/force?symbol=MES`
 * `GET /scan/latest`
+* `GET /scan/latest?symbol=MES`
 * `GET /scan/status`
 * `GET /csv-refresh/status`
 * `POST /csv-refresh/force`
+* `POST /csv-refresh/force?symbol=MES`
 
 ## TTS and Notifications
 
@@ -694,6 +810,7 @@ Operational note: backend restart is required after Command Router changes becau
 * `GET /orbit/schedule-blocks`
 * `POST /orbit/schedule-blocks`
 * `PATCH/DELETE /orbit/schedule-blocks/{schedule_block_id}`
+* `PATCH /orbit/schedule-blocks/{schedule_block_id}/apply-days`
 * `GET /orbit/schedule/intelligence`
 * `GET /orbit/milestones`
 * `POST /orbit/milestones`
@@ -765,6 +882,8 @@ Operational note: backend restart is required after Command Router changes becau
 * Service: local model runtime used by Helix chat and vision/text workflows.
 * Default text model: `qwen3.5:9b`, configurable through `OLLAMA_MODEL`.
 * Default vision model: `qwen2.5vl:7b`, configurable through `VISION_MODEL`.
+* Vision bakeoff/evaluation candidates are configurable through comma-separated `VISION_MODEL_CANDIDATES`.
+* Qwen3-VL models are supported through model-aware `/api/chat` transport with `/api/generate` fallback attempts; older vision models generally try `/api/generate` first.
 * Limitation: model-backed chat fails if Ollama is unavailable or configured models are missing.
 
 ### Scheduled Agents
@@ -803,9 +922,10 @@ Operational note: backend restart is required after Command Router changes becau
 * Start script: `scripts/start_scanner.sh`
 * LaunchAgent: `scripts/launchagents/com.helix.scanner.plist`
 * Classification: optional always-on, install when automatic chart scanning is desired.
-* Default symbol/timeframes: `scanner_settings.json` default symbol, scheduled 4H/1H/15M/5M with 15M primary.
+* Default symbol/timeframes: `scanner_settings.json` default symbol, HTF CSV `1D`/`4H`/`1H`, live vision `15M`/`5M`, and conditional-only `1M`.
 * Interval: 5 minutes during active market sessions.
 * Logs: `backend/logs/scanner.out.log`, `backend/logs/scanner.err.log`
+* TradingView automation uses profile locking so scanner and CSV refresh do not fight over the same browser profile.
 
 ### CSV Refresh
 
@@ -822,9 +942,10 @@ CSV refresh reminder:
 
 * CSV refresh follows the selected/default scanner symbol when no explicit symbol is provided.
 * CSV refresh can be forced for an explicit supported symbol such as `MNQ`, `MES`, `NQ`, or `ES`.
-* CSV remains the source of truth for historical structure, FVG mapping, liquidity mapping, and backup price-action context.
+* CSV remains the source of truth for HTF historical structure, FVG mapping, liquidity mapping, and backup price-action context.
 * Vision remains responsible for live visible chart context and user markings.
 * Stale CSVs must not be treated as confirmed live price.
+* Stale CSV is degraded structural context; CSV parse/load failure is failed.
 * Watchlist refresh and refresh-all behavior are not implemented.
 
 ### Wake Listener
@@ -854,10 +975,18 @@ Current scanner capabilities:
 * Scheduled scanner loop with runtime status and scan history
 * Forced scan endpoint
 * Default Scanner Symbol v1 for choosing MES, MNQ, ES, or NQ as the single default scan symbol
-* Multi-timeframe scanner capture for 4H, 1H, 15M, and 5M context
+* HTF CSV structural map from `1D`, `4H`, and `1H`
+* LTF live vision chart context from `15M` and `5M`
+* Conditional `1M` execution context only, not default scanner capture
 * CSV freshness checks
+* CSV stale/degraded versus CSV parse/load failure distinction
 * Deterministic CSV-backed chart analysis
 * Vision/context merge for visible chart markings and labels
+* Qwen3-VL and qwen2.5vl-compatible chart extraction
+* JSON repair fallback for chart-vision output
+* Vision quality scoring and confidence caps
+* Screenshot capture fallback and recovered issue tracking
+* Separate scanner system health and market/chart alert state
 * Liquidity Draw Engine
 * Behavior Classification
 * Continuation compression and expansion detection
@@ -872,21 +1001,34 @@ Current scanner capabilities:
 Core flow:
 
 1. Determine whether the current time is inside an active scan window.
-2. Capture the primary TradingView chart context.
-3. Optionally collect scheduled multi-timeframe captures.
-4. Run vision and deterministic CSV-backed chart analysis.
-5. Attach data freshness and source-of-truth context.
-6. Compare current state against recent scan history.
-7. Attach liquidity draw output.
-8. Attach behavior classification output.
-9. Attach Narrative-Based Scanner state.
-10. Attach scanner signal tier output.
-11. Attach alert eligibility.
-12. Attach Presence Mode notification eligibility.
-13. Deliver scan notifications only when notification infrastructure is enabled, alert eligibility allows it, and Presence Mode permits it.
-14. Persist scan history and runtime status.
+2. Read HTF CSV structure from `1D`, `4H`, and `1H`.
+3. Capture live LTF TradingView screenshots for `15M` and `5M`.
+4. Recover from capture metadata gaps when a saved screenshot exists and track recovered issues separately.
+5. Run vision and deterministic CSV-backed chart analysis.
+6. Attach data freshness and source-of-truth context.
+7. Compare current state against recent scan history.
+8. Attach liquidity draw output.
+9. Attach behavior classification output.
+10. Attach Narrative-Based Scanner state.
+11. Attach scanner signal tier output.
+12. Cap scanner confidence when vision quality is degraded, CSV is stale, or only partial live timeframe evidence exists.
+13. Attach market/chart alert state.
+14. Attach scanner system health state.
+15. Attach Presence Mode notification eligibility.
+16. Deliver scan notifications only when notification infrastructure is enabled, alert eligibility allows it, and Presence Mode permits it.
+17. Persist scan history and runtime status.
 
 Notifications remain intentionally gated. Smart scan notifications default disabled and only deliver when scanner logic has already determined notification eligibility. Manual notification test endpoints exist so TTS and iMessage delivery can be verified without fabricating a real trading alert.
+
+Scanner output is review/watch/alert context only. It must not generate autonomous trade signals, entries, or execution instructions.
+
+Scanner system health can be:
+
+* `healthy`
+* `degraded`
+* `failed`
+
+Market/chart alert state is separate from system health. A degraded scanner can still preserve useful structural review context, and a clean system-health state does not itself imply a chart alert. Recovered screenshot issues are tracked separately and should not count as active failures when recovery succeeded.
 
 ## Default Scanner Symbol v1
 
@@ -976,6 +1118,44 @@ Guardrail rules:
 * HTF structural bias, intraday behavior, and execution readiness are separated in scanner output.
 
 This guardrail does not change scanner interval, notifications, CSV refresh cadence, Presence Modes, or scanner service behavior.
+
+## Vision Model Evaluation
+
+Vision extraction is implemented in `backend/tools.py` and exposed through `POST /vision/evaluate-chart`.
+
+Model configuration:
+
+* `VISION_MODEL`: primary chart-vision model.
+* `VISION_MODEL_CANDIDATES`: optional comma-separated bakeoff/evaluation list. If set, `VISION_MODEL` is inserted first when missing.
+* Qwen3-VL is supported.
+* qwen2.5vl-compatible fallback remains supported.
+
+Transport behavior:
+
+* Qwen3-VL models try Ollama `/api/chat` first.
+* Older vision models generally try `/api/generate` first.
+* The transport can fall back between `/api/chat` and `/api/generate` when the first attempt fails or returns no usable text.
+
+Extraction behavior:
+
+* The chart extraction prompt asks for JSON-only visible chart facts: timeframe, current price marker, visible labels, levels, drawn boxes/FVG zones, PDH/PDL, session context, behavior evidence, and uncertainty flags.
+* If the model returns malformed or truncated JSON, Helix attempts JSON repair with the text model.
+* Debug mode on `/vision/evaluate-chart` includes endpoint attempts, parse strategy, response keys, raw preview, JSON parse error, and repair preview when relevant.
+* Vision quality is scored as `usable`, `degraded`, or `unreliable`.
+* Low-quality vision caps scanner confidence; unreliable vision is not trusted for behavior interpretation.
+
+Example:
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/vision/evaluate-chart" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_path": "/Users/jadinrobinson/ai-assistant/backend/pictures/tradingview_screenshots/MES_15M_YYYY-MM-DD_HHMMSS.png",
+    "symbol": "MES",
+    "timeframe": "15M",
+    "debug": true
+  }' | jq
+```
 
 ## Narrative-Based Scanner v1
 
@@ -1161,6 +1341,7 @@ Current boundaries:
 
 * Schedule Intelligence v1 is implemented as read-only recommendation logic only.
 * Schedule Board displays stored blocks and Schedule Intelligence v1 output, but it does not automatically place, move, or rebalance blocks.
+* Calendar scheduling logic should continue to be tested against real weekly planning, especially grouped-pattern edits, finite recurrence, and flexible preferred-day placement.
 * Mobile UI Pass v1 is a real-world testing pass, not final app-quality mobile polish; remaining mobile refinements should be collected during actual phone usage.
 * Conflict detection is not implemented.
 * Protected time, recovery buffers, and workload balancing are not implemented.
@@ -1171,6 +1352,9 @@ Current boundaries:
 * Scanner still uses interval-based logic.
 * Scanner uses one configured default symbol at a time.
 * Watchlist rotation is not implemented.
+* Scanner vision quality is improving but still needs repeated live validation.
+* Qwen3-VL can require JSON repair.
+* Scanner system health is separate from market alert state; degraded health may still leave usable review context.
 * Trading Model Refinement v1 is implemented as a framework/profile refinement.
 * Scanner Refinement v1 is implemented for signal tiers, FVG reaction-zone alert quality, and repeat suppression.
 * Stale CSV Guardrail v1 is implemented so stale CSV zones remain structural context while live vision controls current price/zone validity and execution readiness. Command Center CSV analysis shares this guardrail and labels stale CSV close values as reference closes.
@@ -1186,6 +1370,8 @@ Current boundaries:
 * User still provides strategy context and narrative manually after import.
 * Trade Journal strategy mode classification is available as backend logic, and Trading Coach counts saved strategy modes without changing them.
 * Scanner alerts are chart-review notifications, not trade entries.
+* Scanner is usable for review/watch/alert context, not autonomous trade decisions.
+* Strategy teaching overhaul is under consideration.
 
 ## Agents
 
@@ -1212,8 +1398,9 @@ Completed roadmap items removed from active priority lists include Agent Foundat
 
 Priority order:
 
-1. Advanced scanner refinements
-2. Schedule Intelligence v2 later
+1. Trading Strategy Teaching Overhaul design pass
+2. Advanced scanner refinements and live validation
+3. Schedule Intelligence v2 later
 
 ## Schedule Intelligence v2 (Future)
 
@@ -1255,24 +1442,30 @@ Completed:
 
 Next:
 
-1. Advanced scanner refinements
-2. Schedule Intelligence v2 later
+1. Trading Strategy Teaching Overhaul design pass
+2. Advanced scanner refinements and live validation
+3. Schedule Intelligence v2 later
 
-## Presence Modes (Future)
+## Upcoming: Trading Strategy Teaching Overhaul
 
-Examples:
+Jadin is considering redesigning how Helix learns the trading strategy.
 
-* Home Mode
-* Trading Mode
-* Focus Mode
-* Away Mode
+Current scanner logic uses rules, CSV, vision, and narrative classification. It has improved from generic chart commentary into Liquidity Narrative Continuation review context, but the next step may be a clearer teaching/evaluation workflow rather than more ad hoc scanner rules.
 
-Goals:
+Future direction may include:
 
-* Reduce scanner noise
-* Modify notification behavior
-* Adjust scan frequency
-* Adjust assistant behavior based on availability
+* Clearer strategy ontology
+* Annotated examples
+* Golden setups
+* Bad setup examples
+* Session-based playbooks
+* Explicit entry models
+* Scenario-based rules
+* Feedback loop from user corrections
+* Trade Journal integration
+* Model evaluation against labeled screenshots
+
+Do not implement this overhaul during documentation refreshes. Treat it as an upcoming design topic.
 
 ---
 
@@ -1340,10 +1533,59 @@ These remain part of the Helix vision but are intentionally deferred until Orbit
 * Cited Web Research execution
 * Advanced Trading Coach
 * Auto schedule placement
-* Pattern Discovery
 * Full conversational voice loop
 * Automatic readiness updates from evidence
 * Proactive autonomous task creation
+
+---
+
+# June 2026 Audit Report
+
+Files audited for this refresh:
+
+* `PROJECT_OVERVIEW.md`
+* `frontend/README.md`
+* `docs/MAC_SERVICES.md`
+* `backend/main.py`
+* `backend/tools.py`
+* `backend/scheduled_scan.py`
+* `backend/csv_refresh.py`
+* `backend/tradingview_profile_lock.py`
+* `backend/response_quality.py`
+* `backend/orbit/models.py`
+* `backend/orbit/service.py`
+* `backend/orbit/routes.py`
+* `frontend/app/command-center/page.tsx`
+* `frontend/app/orbit/OrbitBoard.tsx`
+* `frontend/app/orbit/page.tsx`
+* Relevant `backend/tests` discovered by search
+
+Docs updated:
+
+* `PROJECT_OVERVIEW.md`
+
+Important mismatches corrected:
+
+* Scanner docs still described broad multi-timeframe screenshot capture instead of HTF CSV plus LTF vision.
+* Vision docs did not mention Qwen3-VL, `VISION_MODEL_CANDIDATES`, model-aware Ollama transport, debug evaluation, or JSON repair.
+* Schedule docs still described simple Schedule Blocks v1 instead of rule/pattern grouping, Calendar day placements, finite recurrence, flexible preferred days, and multi-day edit behavior.
+* Response-quality guardrails were not documented.
+* Roadmap text still treated some completed capabilities as future/deferred.
+
+Current source-of-truth assumptions:
+
+* `backend/main.py` is the FastAPI route source of truth.
+* `backend/tools.py` is the source of truth for local model, vision extraction, JSON repair, CSV analysis, and TradingView helper behavior.
+* `backend/scheduled_scan.py` is the source of truth for scanner timing, HTF/LTF roles, health state, alert state, confidence caps, screenshots, and scan-history records.
+* `backend/orbit/service.py`, `backend/orbit/models.py`, and `frontend/app/orbit/OrbitBoard.tsx` are the source of truth for Orbit Schedule behavior.
+* `docs/MAC_SERVICES.md` and `scripts/launchagents/*.plist` are the source of truth for LaunchAgent service naming and startup expectations.
+
+Still needs manual validation:
+
+* Live scanner runs with the current TradingView layout and current Qwen3-VL/qwen2.5vl model availability.
+* Repeated screenshot capture/recovery behavior during real market sessions.
+* Orbit weekly planning with real recurring work, boxing, flexible blocks, and finite recurrence examples.
+* Full backend test discovery when optional local dependencies and unrelated local test drift are resolved.
 
 ---
 
