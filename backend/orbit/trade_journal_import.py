@@ -13,13 +13,14 @@ from typing import Any
 from .models import (
     TradeJournalCreate,
     TradeJournalDailySummary,
+    TradeJournalCalendarImportSaveResponse,
     TradeJournalImportDraft,
     TradeJournalImportPreview,
     TradeJournalImportSaveRequest,
     TradeJournalImportSaveResponse,
     TradeJournalOrderImport,
 )
-from .service import create_trade_journal_entry
+from .service import create_trade_journal_entry, list_trade_journal_entries
 
 
 MONEY_RE = r"[-+]?(?:\$?\(?|\(\$?)-?\d[\d,]*(?:\.\d+)?\)?"
@@ -139,6 +140,95 @@ def save_trade_journal_import(
         created_entries=created_entries,
         warnings=warnings,
     ).model_dump()
+
+
+def save_trade_journal_calendar_import(
+    payload: TradeJournalImportSaveRequest,
+) -> dict[str, Any]:
+    created_entries: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    skipped_duplicates = 0
+    existing_keys = {
+        str(entry.get("source_import_key"))
+        for entry in list_trade_journal_entries(include_calendar_only=True)
+        if entry.get("source_import_key")
+    }
+
+    for draft in payload.trade_drafts:
+        if not draft.selected:
+            continue
+        if not draft.symbol:
+            warnings.append(f"Draft {draft.draft_id} skipped because symbol is missing.")
+            continue
+        if draft.pnl is None:
+            warnings.append(f"Draft {draft.draft_id} skipped because PnL is missing.")
+            continue
+
+        source_key = _calendar_import_key(draft, payload.source_files)
+        if source_key in existing_keys:
+            skipped_duplicates += 1
+            continue
+
+        entry = create_trade_journal_entry(
+            TradeJournalCreate(
+                trade_date=draft.trade_date or date.today(),
+                symbol=draft.symbol,
+                direction=draft.direction,
+                entry_price=draft.entry_price,
+                exit_price=draft.exit_price,
+                result_dollars=draft.pnl,
+                contracts=draft.contracts or draft.quantity,
+                session=draft.session,
+                strategy_profile="Calendar PnL Only",
+                strategy_mode="Hybrid / Review",
+                why_taken="Calendar-only performance import.",
+                entry_type="calendar_only",
+                include_in_journal=False,
+                include_in_strategy_review=False,
+                include_in_scanner_match=False,
+                include_in_patterns=False,
+                include_in_performance_calendar=True,
+                source_import_key=source_key,
+            )
+        )
+        created_entries.append(entry)
+        existing_keys.add(source_key)
+
+    if not created_entries and skipped_duplicates == 0:
+        warnings.append("No selected calendar trades were saved.")
+
+    return TradeJournalCalendarImportSaveResponse(
+        created_entries=created_entries,
+        imported=len(created_entries),
+        skipped_duplicates=skipped_duplicates,
+        updated=0,
+        warnings=warnings,
+    ).model_dump()
+
+
+def _calendar_import_key(
+    draft: TradeJournalImportDraft,
+    source_files: dict[str, str | None],
+) -> str:
+    source_fingerprint = "|".join(
+        f"{key}:{value or ''}" for key, value in sorted(source_files.items())
+    )
+    parts = [
+        source_fingerprint,
+        draft.draft_id,
+        str(draft.trade_date or ""),
+        draft.symbol.strip().upper(),
+        draft.direction,
+        str(draft.quantity or ""),
+        str(draft.contracts or ""),
+        str(draft.entry_price or ""),
+        str(draft.exit_price or ""),
+        str(draft.pnl or ""),
+    ]
+    return "calendar-only:" + zlib.crc32("|".join(parts).encode("utf-8")).to_bytes(
+        4,
+        "big",
+    ).hex()
 
 
 def _extract_pdf_text(pdf_bytes: bytes, filename: str) -> tuple[str, list[str]]:

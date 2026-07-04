@@ -111,6 +111,13 @@ TABLE_COLUMNS = {
         "lesson_learned",
         "screenshot_path",
         "csv_path",
+        "entry_type",
+        "include_in_journal",
+        "include_in_strategy_review",
+        "include_in_scanner_match",
+        "include_in_patterns",
+        "include_in_performance_calendar",
+        "source_import_key",
     ],
     "schedule_blocks": [
         "title",
@@ -2906,6 +2913,14 @@ TRADE_JOURNAL_JSON_COLUMNS = {
     "execution_tags",
 }
 
+TRADE_JOURNAL_BOOL_COLUMNS = {
+    "include_in_journal",
+    "include_in_strategy_review",
+    "include_in_scanner_match",
+    "include_in_patterns",
+    "include_in_performance_calendar",
+}
+
 
 def _normalize_trade_journal_data(data: dict[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
@@ -2920,6 +2935,8 @@ def _normalize_trade_journal_data(data: dict[str, Any]) -> dict[str, Any]:
                 value.strip() if isinstance(value, str) and value.strip()
                 else "Liquidity Narrative Continuation"
             )
+        elif key in TRADE_JOURNAL_BOOL_COLUMNS:
+            normalized[key] = 1 if value else 0
         elif key in TRADE_JOURNAL_JSON_COLUMNS:
             normalized[key] = json.dumps(value or [])
         else:
@@ -2948,6 +2965,9 @@ def _decode_trade_journal_record(record: dict[str, Any] | None) -> dict[str, Any
             value = []
         decoded[key] = value if isinstance(value, list) else []
 
+    for key in TRADE_JOURNAL_BOOL_COLUMNS:
+        decoded[key] = bool(decoded.get(key))
+
     return decoded
 
 
@@ -2962,13 +2982,28 @@ def create_trade_journal_entry(payload: TradeJournalCreate) -> dict[str, Any]:
     return decoded
 
 
-def list_trade_journal_entries() -> list[dict[str, Any]]:
+def list_trade_journal_entries(
+    include_calendar_only: bool = False,
+    purpose: str = "journal",
+) -> list[dict[str, Any]]:
     records = _list_records_ordered("trade_journal", "trade_date DESC, id DESC")
-    return [
+    decoded_records = [
         decoded
         for record in records
         if (decoded := _decode_trade_journal_record(record)) is not None
     ]
+    if include_calendar_only:
+        return decoded_records
+
+    flag_by_purpose = {
+        "journal": "include_in_journal",
+        "strategy_review": "include_in_strategy_review",
+        "scanner_match": "include_in_scanner_match",
+        "patterns": "include_in_patterns",
+        "performance_calendar": "include_in_performance_calendar",
+    }
+    flag = flag_by_purpose.get(purpose, "include_in_journal")
+    return [record for record in decoded_records if bool(record.get(flag))]
 
 
 def get_trade_journal_entry(record_id: int) -> dict[str, Any] | None:
@@ -2989,6 +3024,207 @@ def update_trade_journal_entry(
 
 def delete_trade_journal_entry(record_id: int) -> bool:
     return delete_record("trade_journal", record_id)
+
+
+def _month_bounds(month: str) -> tuple[date, date]:
+    try:
+        month_start = datetime.strptime(month, "%Y-%m").date().replace(day=1)
+    except ValueError as error:
+        raise ValueError("month must use YYYY-MM format.") from error
+
+    if month_start.month == 12:
+        next_month = month_start.replace(year=month_start.year + 1, month=1)
+    else:
+        next_month = month_start.replace(month=month_start.month + 1)
+
+    return month_start, next_month
+
+
+def _net_result(total_pnl: float, trade_count: int) -> str:
+    if trade_count == 0:
+        return "no_trades"
+    if total_pnl > 0:
+        return "win"
+    if total_pnl < 0:
+        return "loss"
+    return "flat"
+
+
+def _aggregate_trade_journal_days(
+    entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    days: dict[date, dict[str, Any]] = {}
+
+    for entry in entries:
+        if entry.get("result_dollars") is None:
+            continue
+
+        trade_date = _parse_date(str(entry.get("trade_date") or ""))
+        if trade_date is None:
+            continue
+
+        pnl = float(entry.get("result_dollars") or 0)
+        day = days.setdefault(
+            trade_date,
+            {
+                "date": trade_date,
+                "total_pnl": 0.0,
+                "trade_count": 0,
+                "win_count": 0,
+                "loss_count": 0,
+                "largest_win": None,
+                "largest_loss": None,
+                "symbols": set(),
+                "sources": {
+                    "journal": {"pnl": 0.0, "trade_count": 0},
+                    "calendar_only": {"pnl": 0.0, "trade_count": 0},
+                },
+            },
+        )
+        day["total_pnl"] += pnl
+        day["trade_count"] += 1
+        entry_type = (
+            "calendar_only"
+            if str(entry.get("entry_type") or "journal") == "calendar_only"
+            else "journal"
+        )
+        day["sources"][entry_type]["pnl"] += pnl
+        day["sources"][entry_type]["trade_count"] += 1
+        if pnl > 0:
+            day["win_count"] += 1
+            day["largest_win"] = (
+                pnl
+                if day["largest_win"] is None
+                else max(float(day["largest_win"]), pnl)
+            )
+        elif pnl < 0:
+            day["loss_count"] += 1
+            day["largest_loss"] = (
+                pnl
+                if day["largest_loss"] is None
+                else min(float(day["largest_loss"]), pnl)
+            )
+
+        symbol = str(entry.get("symbol") or "").strip().upper()
+        if symbol:
+            day["symbols"].add(symbol)
+
+    aggregated: list[dict[str, Any]] = []
+    for day in sorted(days.values(), key=lambda item: item["date"]):
+        total_pnl = round(float(day["total_pnl"]), 2)
+        trade_count = int(day["trade_count"])
+        aggregated.append(
+            {
+                "date": day["date"],
+                "total_pnl": total_pnl,
+                "trade_count": trade_count,
+                "win_count": int(day["win_count"]),
+                "loss_count": int(day["loss_count"]),
+                "net_result": _net_result(total_pnl, trade_count),
+                "largest_win": day["largest_win"],
+                "largest_loss": day["largest_loss"],
+                "symbols": sorted(day["symbols"]),
+                "sources": {
+                    source: {
+                        "pnl": round(float(values["pnl"]), 2),
+                        "trade_count": int(values["trade_count"]),
+                    }
+                    for source, values in day["sources"].items()
+                },
+            }
+        )
+
+    return aggregated
+
+
+def get_trade_journal_performance_calendar(
+    month: str,
+    source: str = "all",
+) -> dict[str, Any]:
+    if source not in {"all", "journal", "calendar_only"}:
+        raise ValueError("source must be all, journal, or calendar_only.")
+
+    month_start, next_month = _month_bounds(month)
+    entries = [
+        entry
+        for entry in list_trade_journal_entries(include_calendar_only=True)
+        if (trade_date := _parse_date(str(entry.get("trade_date") or ""))) is not None
+        and month_start <= trade_date < next_month
+        and bool(entry.get("include_in_performance_calendar"))
+        and (
+            source == "all"
+            or str(entry.get("entry_type") or "journal") == source
+            or (source == "journal" and str(entry.get("entry_type") or "journal") != "calendar_only")
+        )
+    ]
+    days = _aggregate_trade_journal_days(entries)
+    winning_days = [day for day in days if day["net_result"] == "win"]
+    losing_days = [day for day in days if day["net_result"] == "loss"]
+    flat_days = [day for day in days if day["net_result"] == "flat"]
+    best_day = max(days, key=lambda day: day["total_pnl"], default=None)
+    worst_day = min(days, key=lambda day: day["total_pnl"], default=None)
+
+    return {
+        "month": month,
+        "summary": {
+            "total_pnl": round(sum(float(day["total_pnl"]) for day in days), 2),
+            "trade_count": sum(int(day["trade_count"]) for day in days),
+            "winning_days": len(winning_days),
+            "losing_days": len(losing_days),
+            "flat_days": len(flat_days),
+            "best_day": (
+                {"date": best_day["date"], "pnl": best_day["total_pnl"]}
+                if best_day is not None
+                else None
+            ),
+            "worst_day": (
+                {"date": worst_day["date"], "pnl": worst_day["total_pnl"]}
+                if worst_day is not None
+                else None
+            ),
+        },
+        "days": days,
+    }
+
+
+def get_trade_journal_performance_summary(days_back: int = 30) -> dict[str, Any]:
+    today = datetime.now(ORBIT_LOCAL_TIMEZONE).date()
+    start_date = today - timedelta(days=max(days_back - 1, 0))
+    entries = [
+        entry
+        for entry in list_trade_journal_entries(include_calendar_only=True)
+        if (trade_date := _parse_date(str(entry.get("trade_date") or ""))) is not None
+        and start_date <= trade_date <= today
+        and bool(entry.get("include_in_performance_calendar"))
+    ]
+    days = _aggregate_trade_journal_days(entries)
+    trading_days = [day for day in days if int(day["trade_count"]) > 0]
+    total_pnl = round(sum(float(day["total_pnl"]) for day in trading_days), 2)
+    best_day = max(trading_days, key=lambda day: day["total_pnl"], default=None)
+    worst_day = min(trading_days, key=lambda day: day["total_pnl"], default=None)
+    dated_entries = [
+        entry
+        for entry in entries
+        if _parse_date(str(entry.get("trade_date") or "")) is not None
+    ]
+    latest_trade_date = max(
+        (_parse_date(str(entry.get("trade_date") or "")) for entry in dated_entries),
+        default=None,
+    )
+
+    return {
+        "trading_total_pnl_30d": total_pnl,
+        "trading_days_30d": len(trading_days),
+        "winning_days_30d": sum(1 for day in trading_days if day["net_result"] == "win"),
+        "losing_days_30d": sum(1 for day in trading_days if day["net_result"] == "loss"),
+        "avg_daily_pnl_30d": (
+            round(total_pnl / len(trading_days), 2) if trading_days else 0.0
+        ),
+        "best_day_30d": best_day["total_pnl"] if best_day is not None else None,
+        "worst_day_30d": worst_day["total_pnl"] if worst_day is not None else None,
+        "trade_count_30d": sum(int(day["trade_count"]) for day in trading_days),
+        "latest_trade_date": latest_trade_date.isoformat() if latest_trade_date else None,
+    }
 
 
 def _parse_date(value: str | None) -> date | None:
@@ -3099,6 +3335,7 @@ def _format_briefing_text(
     current_blockers: list[str],
     suggested_next_action: str,
     recommendations: list[dict[str, Any]],
+    trading_performance: dict[str, Any],
 ) -> str:
     event_line = "No active major event found."
     if major_event:
@@ -3137,11 +3374,22 @@ def _format_briefing_text(
         f"{index}. {recommendation.get('recommendation')}"
         for index, recommendation in enumerate(recommendations[:3], start=1)
     ] or ["No recommendations yet"]
+    latest_trade_date = trading_performance.get("latest_trade_date") or "no saved trades"
+    trading_line = (
+        f"30d PnL {trading_performance.get('trading_total_pnl_30d')}, "
+        f"{trading_performance.get('trade_count_30d')} trades, "
+        f"{trading_performance.get('winning_days_30d')} winning day(s), "
+        f"{trading_performance.get('losing_days_30d')} losing day(s). "
+        f"Latest trade: {latest_trade_date}."
+    )
 
     return (
         "Morning Briefing\n\n"
         f"{event_line}\n"
         f"Readiness: {readiness.get('overall')}% overall.\n\n"
+        "Trading Performance:\n"
+        + trading_line
+        + "\n\n"
         "Top Priority Task:\n"
         + top_task_line
         + "\n\nSecondary Tasks:\n"
@@ -3169,6 +3417,7 @@ def generate_morning_briefing() -> dict[str, Any]:
     reviews = list_records("reviews")
     readiness_categories = get_readiness_categories()
     trade_sessions = list_trade_sessions()
+    trading_performance = get_trade_journal_performance_summary(days_back=30)
 
     active_events = [
         event
@@ -3340,6 +3589,13 @@ def generate_morning_briefing() -> dict[str, Any]:
         names = ", ".join(str(category.get("category_name")) for category in low_readiness[:3])
         current_blockers.append(f"Low readiness categories: {names}.")
 
+    if int(trading_performance.get("trade_count_30d") or 0) == 0:
+        current_blockers.append("No realized Trade Journal entries in the last 30 days.")
+    elif float(trading_performance.get("trading_total_pnl_30d") or 0) < 0:
+        current_blockers.append(
+            "Trading performance is negative over the last 30 days; capital checkpoints should stay conservative."
+        )
+
     latest_review_date = _parse_date(recent_reviews[0].get("created_at")) if recent_reviews else None
     if latest_review_date is None or (today - latest_review_date).days > 2:
         current_blockers.append("No recent Orbit review within the last 2 days.")
@@ -3371,6 +3627,7 @@ def generate_morning_briefing() -> dict[str, Any]:
         current_blockers=current_blockers,
         suggested_next_action=suggested_next_action,
         recommendations=recommendations,
+        trading_performance=trading_performance,
     )
 
     return {
@@ -3387,6 +3644,7 @@ def generate_morning_briefing() -> dict[str, Any]:
         "recommendation_rationale": recommendations_output.get("rationale") or [],
         "recent_reviews": recent_reviews,
         "recent_trade_sessions": recent_trade_sessions,
+        "trading_performance": trading_performance,
         "briefing_text": briefing_text,
     }
 

@@ -13,8 +13,10 @@ import {
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 const JOURNAL_URL = `${API_BASE}/orbit/trade-journal`;
+const PERFORMANCE_CALENDAR_URL = `${JOURNAL_URL}/performance-calendar`;
 const IMPORT_URL = `${JOURNAL_URL}/import-pdf`;
 const IMPORT_SAVE_URL = `${IMPORT_URL}/save`;
+const IMPORT_CALENDAR_SAVE_URL = `${IMPORT_URL}/save-calendar`;
 const TRADING_COACH_REVIEW_URL = `${API_BASE}/orbit/trading-coach/review`;
 const TRADING_CORRELATION_REVIEW_URL = `${API_BASE}/orbit/trading-correlation/review`;
 const PATTERN_DISCOVERY_REVIEW_URL = `${API_BASE}/orbit/pattern-discovery/review`;
@@ -67,6 +69,7 @@ type TradeJournalSection =
   | "import"
   | "manual"
   | "entries"
+  | "calendar"
   | "coach"
   | "scanner"
   | "patterns";
@@ -76,6 +79,7 @@ const sectionNavItems: { id: TradeJournalSection; label: string }[] = [
   { id: "import", label: "Import" },
   { id: "manual", label: "Manual" },
   { id: "entries", label: "Entries" },
+  { id: "calendar", label: "Calendar" },
   { id: "coach", label: "Coach" },
   { id: "scanner", label: "Scanner Match" },
   { id: "patterns", label: "Patterns" },
@@ -196,6 +200,51 @@ type ImportPreview = {
 type ImportSaveResponse = {
   created_entries: TradeJournalEntry[];
   warnings: string[];
+};
+
+type CalendarImportSaveResponse = {
+  created_entries: TradeJournalEntry[];
+  imported: number;
+  skipped_duplicates: number;
+  updated: number;
+  warnings: string[];
+};
+
+type CalendarNetResult = "win" | "loss" | "flat" | "no_trades";
+type CalendarSourceFilter = "all" | "journal" | "calendar_only";
+
+type PerformanceCalendarDay = {
+  date: string;
+  total_pnl: number;
+  trade_count: number;
+  win_count: number;
+  loss_count: number;
+  net_result: CalendarNetResult;
+  largest_win: number | null;
+  largest_loss: number | null;
+  symbols: string[];
+  sources: Record<string, { pnl: number; trade_count: number }>;
+};
+
+type PerformanceCalendar = {
+  month: string;
+  summary: {
+    total_pnl: number;
+    trade_count: number;
+    winning_days: number;
+    losing_days: number;
+    flat_days: number;
+    best_day: { date: string; pnl: number } | null;
+    worst_day: { date: string; pnl: number } | null;
+  };
+  days: PerformanceCalendarDay[];
+};
+
+type CalendarCell = {
+  date: string | null;
+  dayNumber: number | null;
+  isToday: boolean;
+  performance: PerformanceCalendarDay | null;
 };
 
 type TradingCoachReview = {
@@ -438,6 +487,88 @@ function resultClass(value: number | null) {
   return "text-neutral-200";
 }
 
+function toMonthKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function toDateKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+function parseMonthKey(month: string) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  return new Date(year, (monthNumber || 1) - 1, 1);
+}
+
+function shiftMonth(month: string, offset: number) {
+  const date = parseMonthKey(month);
+  date.setMonth(date.getMonth() + offset);
+  return toMonthKey(date);
+}
+
+function formatMonthLabel(month: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "long",
+    year: "numeric",
+  }).format(parseMonthKey(month));
+}
+
+function buildCalendarCells(
+  month: string,
+  calendar: PerformanceCalendar | null,
+): CalendarCell[] {
+  const monthStart = parseMonthKey(month);
+  const performanceByDate = new Map(
+    (calendar?.days ?? []).map((day) => [day.date, day]),
+  );
+  const todayKey = toDateKey(new Date());
+  const daysInMonth = new Date(
+    monthStart.getFullYear(),
+    monthStart.getMonth() + 1,
+    0,
+  ).getDate();
+  const leadingPlaceholders = Array.from(
+    { length: monthStart.getDay() },
+    () => ({
+      date: null,
+      dayNumber: null,
+      isToday: false,
+      performance: null,
+    }),
+  );
+  const monthCells = Array.from({ length: daysInMonth }, (_, index) => {
+    const cellDate = new Date(monthStart);
+    cellDate.setDate(index + 1);
+    const dateKey = toDateKey(cellDate);
+
+    return {
+      date: dateKey,
+      dayNumber: cellDate.getDate(),
+      isToday: dateKey === todayKey,
+      performance: performanceByDate.get(dateKey) ?? null,
+    };
+  });
+
+  return [...leadingPlaceholders, ...monthCells];
+}
+
+function calendarCellClass(cell: CalendarCell) {
+  const netResult = cell.performance?.net_result ?? "no_trades";
+  const tone =
+    netResult === "win"
+      ? "border-emerald-300/30 bg-emerald-400/10"
+      : netResult === "loss"
+        ? "border-red-300/30 bg-red-400/10"
+        : netResult === "flat"
+          ? "border-amber-300/25 bg-amber-300/10"
+          : "border-white/10 bg-neutral-950";
+  const today = cell.isToday ? "ring-1 ring-cyan-300/70" : "";
+
+  return `${tone} ${today}`;
+}
+
 function toggleValue(values: string[], value: string) {
   return values.includes(value)
     ? values.filter((item) => item !== value)
@@ -617,6 +748,8 @@ function PdfFilePicker({
 export default function TradeJournalPage() {
   const performanceInputRef = useRef<HTMLInputElement | null>(null);
   const ordersInputRef = useRef<HTMLInputElement | null>(null);
+  const calendarPerformanceInputRef = useRef<HTMLInputElement | null>(null);
+  const calendarOrdersInputRef = useRef<HTMLInputElement | null>(null);
   const [activeSection, setActiveSection] =
     useState<TradeJournalSection>("home");
   const [entries, setEntries] = useState<TradeJournalEntry[]>([]);
@@ -655,6 +788,28 @@ export default function TradeJournalPage() {
     useState<PatternDiscoveryReview | null>(null);
   const [patternLoading, setPatternLoading] = useState(false);
   const [patternError, setPatternError] = useState<string | null>(null);
+  const [calendarMonth, setCalendarMonth] = useState(() =>
+    toMonthKey(new Date()),
+  );
+  const [performanceCalendar, setPerformanceCalendar] =
+    useState<PerformanceCalendar | null>(null);
+  const [calendarSource, setCalendarSource] =
+    useState<CalendarSourceFilter>("all");
+  const [calendarLoading, setCalendarLoading] = useState(false);
+  const [calendarError, setCalendarError] = useState<string | null>(null);
+  const [calendarRefreshKey, setCalendarRefreshKey] = useState(0);
+  const [calendarImportPreview, setCalendarImportPreview] =
+    useState<ImportPreview | null>(null);
+  const [calendarPerformancePdf, setCalendarPerformancePdf] =
+    useState<File | null>(null);
+  const [calendarOrdersPdf, setCalendarOrdersPdf] = useState<File | null>(null);
+  const [calendarImportLoading, setCalendarImportLoading] = useState(false);
+  const [calendarImportSaving, setCalendarImportSaving] = useState(false);
+  const [calendarImportError, setCalendarImportError] = useState<string | null>(
+    null,
+  );
+  const [calendarImportResult, setCalendarImportResult] =
+    useState<CalendarImportSaveResponse | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   const selectedEntry = useMemo(
@@ -673,6 +828,10 @@ export default function TradeJournalPage() {
   const skippedDraftCount = importDrafts.filter(
     (draft) => draftStatus(draft) === "skipped",
   ).length;
+  const calendarCells = useMemo(
+    () => buildCalendarCells(calendarMonth, performanceCalendar),
+    [calendarMonth, performanceCalendar],
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -714,6 +873,52 @@ export default function TradeJournalPage() {
       mounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (activeSection !== "calendar") {
+      return;
+    }
+
+    let mounted = true;
+
+    async function loadCalendar() {
+      setCalendarLoading(true);
+      setCalendarError(null);
+
+      try {
+        const response = await fetch(
+          `${PERFORMANCE_CALENDAR_URL}?month=${calendarMonth}&source=${calendarSource}`,
+          { cache: "no-store" },
+        );
+        if (!response.ok) {
+          throw new Error(`Performance calendar API returned ${response.status}.`);
+        }
+        const data = (await response.json()) as PerformanceCalendar;
+
+        if (mounted) {
+          setPerformanceCalendar(data);
+        }
+      } catch (loadError) {
+        if (mounted) {
+          setCalendarError(
+            loadError instanceof Error
+              ? loadError.message
+              : "Performance calendar could not be loaded.",
+          );
+        }
+      } finally {
+        if (mounted) {
+          setCalendarLoading(false);
+        }
+      }
+    }
+
+    void loadCalendar();
+
+    return () => {
+      mounted = false;
+    };
+  }, [activeSection, calendarMonth, calendarSource, calendarRefreshKey]);
 
   function updateForm<K extends keyof JournalForm>(
     key: K,
@@ -905,6 +1110,7 @@ export default function TradeJournalPage() {
       setEditingId(null);
       setForm(emptyForm());
       setToast("Journal entry saved.");
+      setCalendarRefreshKey((current) => current + 1);
       setActiveSection("entries");
     } catch (saveError) {
       setError(
@@ -973,6 +1179,100 @@ export default function TradeJournalPage() {
     }
   }
 
+  async function handleCalendarImportPreview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!calendarPerformancePdf && !calendarOrdersPdf) {
+      setCalendarImportError("Add a Performance PDF, an Orders PDF, or both.");
+      return;
+    }
+
+    setCalendarImportLoading(true);
+    setCalendarImportError(null);
+    setCalendarImportResult(null);
+
+    try {
+      const body = new FormData();
+      if (calendarPerformancePdf) {
+        body.append("performance_pdf", calendarPerformancePdf);
+      }
+      if (calendarOrdersPdf) {
+        body.append("orders_pdf", calendarOrdersPdf);
+      }
+
+      const response = await fetch(IMPORT_URL, {
+        method: "POST",
+        body,
+      });
+
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || `Calendar import preview failed with ${response.status}.`);
+      }
+
+      const preview = (await response.json()) as ImportPreview;
+      setCalendarImportPreview(preview);
+      setToast("Calendar import preview ready.");
+    } catch (previewError) {
+      setCalendarImportError(
+        previewError instanceof Error
+          ? previewError.message
+          : "Calendar import preview failed.",
+      );
+    } finally {
+      setCalendarImportLoading(false);
+    }
+  }
+
+  async function saveCalendarImport() {
+    if (!calendarImportPreview) {
+      setCalendarImportError("Preview calendar trades before importing.");
+      return;
+    }
+
+    setCalendarImportSaving(true);
+    setCalendarImportError(null);
+
+    try {
+      const response = await fetch(IMPORT_CALENDAR_SAVE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          trade_drafts: calendarImportPreview.trade_drafts.map((draft) => ({
+            ...draft,
+            selected: true,
+          })),
+          source_files: calendarImportPreview.source_files,
+        }),
+      });
+
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || `Calendar import save failed with ${response.status}.`);
+      }
+
+      const result = (await response.json()) as CalendarImportSaveResponse;
+      setCalendarImportResult(result);
+      setCalendarRefreshKey((current) => current + 1);
+      setToast(
+        `Calendar import saved: ${result.imported} imported, ${result.skipped_duplicates} duplicate${
+          result.skipped_duplicates === 1 ? "" : "s"
+        } skipped.`,
+      );
+      if (result.warnings.length > 0) {
+        setCalendarImportError(result.warnings.join(" "));
+      }
+    } catch (saveError) {
+      setCalendarImportError(
+        saveError instanceof Error
+          ? saveError.message
+          : "Calendar trades could not be saved.",
+      );
+    } finally {
+      setCalendarImportSaving(false);
+    }
+  }
+
   async function saveImportDraft(draft: ImportDraft, index: number) {
     setImportError(null);
     setSavingImportDraftId(draft.draft_id);
@@ -1001,6 +1301,7 @@ export default function TradeJournalPage() {
       setSelectedId(result.created_entries[0]?.id ?? selectedId);
       setDraftStatuses(nextStatuses);
       setToast("Imported 1 journal entry.");
+      setCalendarRefreshKey((current) => current + 1);
       moveToNextPendingDraft(index, nextStatuses);
       if (result.warnings.length > 0) {
         setImportError(result.warnings.join(" "));
@@ -1048,6 +1349,7 @@ export default function TradeJournalPage() {
         beginCreate();
       }
       setToast("Journal entry deleted.");
+      setCalendarRefreshKey((current) => current + 1);
     } catch (deleteError) {
       setError(
         deleteError instanceof Error
@@ -1241,7 +1543,7 @@ export default function TradeJournalPage() {
             </div>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <button
               type="button"
               onClick={() => {
@@ -1285,6 +1587,19 @@ export default function TradeJournalPage() {
               </h3>
               <p className="mt-2 text-sm leading-6 text-neutral-400">
                 {entries.length} saved trade{entries.length === 1 ? "" : "s"}.
+              </p>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveSection("calendar")}
+              className="rounded-lg border border-white/10 bg-neutral-900/80 p-4 text-left transition hover:border-cyan-300/40 hover:bg-cyan-300/10"
+            >
+              <p className="text-xs text-neutral-500">Performance</p>
+              <h3 className="mt-1 text-base font-semibold text-white">
+                Profit Calendar
+              </h3>
+              <p className="mt-2 text-sm leading-6 text-neutral-400">
+                Review daily PnL, trade count, and win/loss days by month.
               </p>
             </button>
           </div>
@@ -1340,6 +1655,306 @@ export default function TradeJournalPage() {
             </section>
           </div>
         </section>
+        ) : null}
+
+        {activeSection === "calendar" ? (
+          <section className="rounded-lg border border-white/10 bg-neutral-900/80 p-3 sm:p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-xs text-neutral-500">Profit Calendar</p>
+                <h2 className="mt-1 text-lg font-semibold text-white">
+                  {formatMonthLabel(calendarMonth)}
+                </h2>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  ["all", "All"],
+                  ["journal", "Journal Entries"],
+                  ["calendar_only", "Calendar Only"],
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setCalendarSource(value as CalendarSourceFilter)}
+                    className={`rounded-lg border px-3 py-2 text-xs font-semibold transition ${
+                      calendarSource === value
+                        ? "border-cyan-300/60 bg-cyan-300 text-slate-950"
+                        : "border-white/10 text-neutral-100 hover:bg-white/10"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setCalendarMonth(shiftMonth(calendarMonth, -1))}
+                  className="rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-neutral-100 transition hover:bg-white/10"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCalendarMonth(toMonthKey(new Date()))}
+                  className="rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-3 py-2 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-300/20"
+                >
+                  Today
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCalendarMonth(shiftMonth(calendarMonth, 1))}
+                  className="rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-neutral-100 transition hover:bg-white/10"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+
+            {calendarError ? (
+              <div className="mt-3 rounded-lg border border-red-500/30 bg-red-950/20 px-3 py-2 text-sm text-red-100">
+                {calendarError}
+              </div>
+            ) : null}
+
+            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+              <DetailRow
+                label="Month PnL"
+                value={
+                  <span
+                    className={resultClass(
+                      performanceCalendar?.summary.total_pnl ?? null,
+                    )}
+                  >
+                    {formatCurrency(performanceCalendar?.summary.total_pnl ?? null)}
+                  </span>
+                }
+              />
+              <DetailRow
+                label="Total Trades"
+                value={performanceCalendar?.summary.trade_count ?? "--"}
+              />
+              <DetailRow
+                label="Winning Days"
+                value={performanceCalendar?.summary.winning_days ?? "--"}
+              />
+              <DetailRow
+                label="Losing Days"
+                value={performanceCalendar?.summary.losing_days ?? "--"}
+              />
+              <DetailRow
+                label="Best Day"
+                value={
+                  performanceCalendar?.summary.best_day
+                    ? `${performanceCalendar.summary.best_day.date} ${formatCurrency(
+                        performanceCalendar.summary.best_day.pnl,
+                      )}`
+                    : "--"
+                }
+              />
+              <DetailRow
+                label="Worst Day"
+                value={
+                  performanceCalendar?.summary.worst_day
+                    ? `${performanceCalendar.summary.worst_day.date} ${formatCurrency(
+                        performanceCalendar.summary.worst_day.pnl,
+                      )}`
+                    : "--"
+                }
+              />
+            </div>
+
+            <section className="mt-4 rounded-lg border border-cyan-300/20 bg-cyan-300/5 p-3">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <p className="text-xs text-cyan-100/80">Calendar PnL Only</p>
+                  <h3 className="mt-1 text-base font-semibold text-white">
+                    Import Calendar Trades
+                  </h3>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-neutral-300">
+                    Calendar PnL imports are for performance tracking only. They
+                    will not be used for strategy coaching unless promoted later.
+                  </p>
+                </div>
+                {calendarImportResult ? (
+                  <div className="rounded-lg border border-white/10 bg-neutral-950 px-3 py-2 text-sm text-neutral-300">
+                    {calendarImportResult.imported} imported •{" "}
+                    {calendarImportResult.skipped_duplicates} duplicate
+                    {calendarImportResult.skipped_duplicates === 1 ? "" : "s"}{" "}
+                    skipped
+                  </div>
+                ) : null}
+              </div>
+
+              <form
+                onSubmit={(event) => void handleCalendarImportPreview(event)}
+                className="mt-3 grid gap-3 lg:grid-cols-[1fr_1fr_auto]"
+              >
+                <PdfFilePicker
+                  label="Performance PDF"
+                  file={calendarPerformancePdf}
+                  inputRef={calendarPerformanceInputRef}
+                  onChange={(file) => {
+                    setCalendarPerformancePdf(file);
+                    setCalendarImportPreview(null);
+                    setCalendarImportResult(null);
+                    setCalendarImportError(null);
+                  }}
+                  onClear={() => {
+                    setCalendarPerformancePdf(null);
+                    setCalendarImportPreview(null);
+                    setCalendarImportResult(null);
+                    setCalendarImportError(null);
+                    if (calendarPerformanceInputRef.current) {
+                      calendarPerformanceInputRef.current.value = "";
+                    }
+                  }}
+                />
+                <PdfFilePicker
+                  label="Orders PDF"
+                  file={calendarOrdersPdf}
+                  inputRef={calendarOrdersInputRef}
+                  onChange={(file) => {
+                    setCalendarOrdersPdf(file);
+                    setCalendarImportPreview(null);
+                    setCalendarImportResult(null);
+                    setCalendarImportError(null);
+                  }}
+                  onClear={() => {
+                    setCalendarOrdersPdf(null);
+                    setCalendarImportPreview(null);
+                    setCalendarImportResult(null);
+                    setCalendarImportError(null);
+                    if (calendarOrdersInputRef.current) {
+                      calendarOrdersInputRef.current.value = "";
+                    }
+                  }}
+                />
+                <button
+                  type="submit"
+                  disabled={calendarImportLoading}
+                  className="self-end rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-4 py-3 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-300/20 disabled:cursor-not-allowed disabled:opacity-50 lg:py-2"
+                >
+                  {calendarImportLoading ? "Previewing..." : "Preview"}
+                </button>
+              </form>
+
+              {calendarImportError ? (
+                <div className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
+                  {calendarImportError}
+                </div>
+              ) : null}
+
+              {calendarImportPreview ? (
+                <div className="mt-3 rounded-lg border border-white/10 bg-neutral-950 p-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-xs text-neutral-500">
+                        {calendarImportPreview.trade_drafts.length} calendar trade
+                        {calendarImportPreview.trade_drafts.length === 1
+                          ? ""
+                          : "s"}{" "}
+                        ready
+                      </p>
+                      <p className="mt-1 text-sm font-semibold text-neutral-100">
+                        Preview PnL{" "}
+                        {formatCurrency(
+                          calendarImportPreview.trade_drafts.reduce(
+                            (total, draft) => total + (draft.pnl ?? 0),
+                            0,
+                          ),
+                        )}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void saveCalendarImport()}
+                      disabled={
+                        calendarImportSaving ||
+                        calendarImportPreview.trade_drafts.length === 0
+                      }
+                      className="rounded-lg bg-cyan-300 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-50 sm:py-2"
+                    >
+                      {calendarImportSaving ? "Importing..." : "Import Calendar PnL"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </section>
+
+            <div className="mt-4 overflow-auto rounded-lg border border-white/10 bg-neutral-950 p-2">
+              <div className="grid min-w-[720px] grid-cols-7 gap-2">
+                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+                  <div
+                    key={day}
+                    className="px-2 py-1 text-xs font-semibold uppercase text-neutral-500"
+                  >
+                    {day}
+                  </div>
+                ))}
+
+                {calendarLoading ? (
+                  <div className="col-span-7 rounded-lg border border-white/10 bg-white/[0.03] p-6 text-center text-sm text-neutral-400">
+                    Loading calendar...
+                  </div>
+                ) : (
+                  calendarCells.map((cell, index) => {
+                    const performance = cell.performance;
+                    if (cell.date === null) {
+                      return (
+                        <div
+                          key={`placeholder-${index}`}
+                          className="min-h-28"
+                          aria-hidden="true"
+                        />
+                      );
+                    }
+                    return (
+                      <div
+                        key={cell.date}
+                        className={`min-h-28 rounded-lg border p-2 ${calendarCellClass(
+                          cell,
+                        )}`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="text-sm font-semibold text-neutral-100">
+                            {cell.dayNumber}
+                          </span>
+                          {performance?.symbols.length ? (
+                            <span className="truncate text-[11px] font-semibold text-neutral-500">
+                              {performance.symbols.join(", ")}
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="mt-4">
+                          {performance ? (
+                            <>
+                              <p
+                                className={`text-sm font-semibold ${resultClass(
+                                  performance.total_pnl,
+                                )}`}
+                              >
+                                {formatCurrency(performance.total_pnl)}
+                              </p>
+                              <p className="mt-1 text-xs text-neutral-400">
+                                {performance.trade_count}{" "}
+                                {performance.trade_count === 1
+                                  ? "Trade"
+                                  : "Trades"}
+                              </p>
+                              <p className="mt-2 text-[11px] text-neutral-500">
+                                {performance.win_count}W / {performance.loss_count}L
+                              </p>
+                            </>
+                          ) : (
+                            <p className="text-xs text-neutral-600">No trades</p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </section>
         ) : null}
 
         {activeSection === "coach" ? (

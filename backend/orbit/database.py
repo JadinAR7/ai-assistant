@@ -222,12 +222,25 @@ def init_orbit_db() -> None:
             lesson_learned TEXT,
             screenshot_path TEXT,
             csv_path TEXT,
+            entry_type TEXT NOT NULL DEFAULT 'journal',
+            include_in_journal INTEGER NOT NULL DEFAULT 1,
+            include_in_strategy_review INTEGER NOT NULL DEFAULT 1,
+            include_in_scanner_match INTEGER NOT NULL DEFAULT 1,
+            include_in_patterns INTEGER NOT NULL DEFAULT 1,
+            include_in_performance_calendar INTEGER NOT NULL DEFAULT 1,
+            source_import_key TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             CHECK (direction IN ('Long', 'Short')),
             CHECK (contracts IS NULL OR contracts >= 0),
             CHECK (session IS NULL OR session IN ('Asia', 'London', 'New York', 'After Hours')),
             CHECK (htf_bias IS NULL OR htf_bias IN ('Bullish', 'Bearish', 'Neutral')),
+            CHECK (entry_type IN ('journal', 'calendar_only')),
+            CHECK (include_in_journal IN (0, 1)),
+            CHECK (include_in_strategy_review IN (0, 1)),
+            CHECK (include_in_scanner_match IN (0, 1)),
+            CHECK (include_in_patterns IN (0, 1)),
+            CHECK (include_in_performance_calendar IN (0, 1)),
             CHECK (strategy_mode IN ('Scalp', 'Day Trade', 'Hybrid / Review'))
         )
     """)
@@ -244,6 +257,32 @@ def init_orbit_db() -> None:
             "ALTER TABLE trade_journal "
             "ADD COLUMN strategy_mode TEXT NOT NULL DEFAULT 'Hybrid / Review'"
         )
+    if "entry_type" not in trade_journal_columns:
+        cursor.execute(
+            "ALTER TABLE trade_journal ADD COLUMN entry_type TEXT NOT NULL DEFAULT 'journal'"
+        )
+    if "include_in_journal" not in trade_journal_columns:
+        cursor.execute(
+            "ALTER TABLE trade_journal ADD COLUMN include_in_journal INTEGER NOT NULL DEFAULT 1"
+        )
+    if "include_in_strategy_review" not in trade_journal_columns:
+        cursor.execute(
+            "ALTER TABLE trade_journal ADD COLUMN include_in_strategy_review INTEGER NOT NULL DEFAULT 1"
+        )
+    if "include_in_scanner_match" not in trade_journal_columns:
+        cursor.execute(
+            "ALTER TABLE trade_journal ADD COLUMN include_in_scanner_match INTEGER NOT NULL DEFAULT 1"
+        )
+    if "include_in_patterns" not in trade_journal_columns:
+        cursor.execute(
+            "ALTER TABLE trade_journal ADD COLUMN include_in_patterns INTEGER NOT NULL DEFAULT 1"
+        )
+    if "include_in_performance_calendar" not in trade_journal_columns:
+        cursor.execute(
+            "ALTER TABLE trade_journal ADD COLUMN include_in_performance_calendar INTEGER NOT NULL DEFAULT 1"
+        )
+    if "source_import_key" not in trade_journal_columns:
+        cursor.execute("ALTER TABLE trade_journal ADD COLUMN source_import_key TEXT")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS schedule_blocks (

@@ -38,7 +38,9 @@ def generate_pattern_discovery_review(
 ) -> dict[str, Any]:
     profile = strategy_profile or trading_strategy.get_strategy_profile()
     filtered_entries = _filtered_entries(
-        entries if entries is not None else orbit_service.list_trade_journal_entries(),
+        entries
+        if entries is not None
+        else orbit_service.list_trade_journal_entries(purpose="patterns"),
         limit=max(1, min(int(limit or 50), 200)),
         symbol=symbol,
         session=session,

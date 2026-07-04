@@ -35,6 +35,7 @@ TradeDirection = Literal["Long", "Short"]
 TradeSessionName = Literal["Asia", "London", "New York", "After Hours"]
 TradeHtfBias = Literal["Bullish", "Bearish", "Neutral"]
 TradeStrategyMode = Literal["Scalp", "Day Trade", "Hybrid / Review"]
+TradeJournalEntryType = Literal["journal", "calendar_only"]
 
 
 class ScheduleBlockBase(BaseModel):
@@ -484,6 +485,13 @@ class TradeJournalBase(BaseModel):
     lesson_learned: Optional[str] = None
     screenshot_path: Optional[str] = None
     csv_path: Optional[str] = None
+    entry_type: TradeJournalEntryType = "journal"
+    include_in_journal: bool = True
+    include_in_strategy_review: bool = True
+    include_in_scanner_match: bool = True
+    include_in_patterns: bool = True
+    include_in_performance_calendar: bool = True
+    source_import_key: Optional[str] = None
 
 
 class TradeJournalCreate(TradeJournalBase):
@@ -517,12 +525,53 @@ class TradeJournalUpdate(BaseModel):
     lesson_learned: Optional[str] = None
     screenshot_path: Optional[str] = None
     csv_path: Optional[str] = None
+    entry_type: Optional[TradeJournalEntryType] = None
+    include_in_journal: Optional[bool] = None
+    include_in_strategy_review: Optional[bool] = None
+    include_in_scanner_match: Optional[bool] = None
+    include_in_patterns: Optional[bool] = None
+    include_in_performance_calendar: Optional[bool] = None
+    source_import_key: Optional[str] = None
 
 
 class TradeJournalRead(TradeJournalBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+
+class TradeJournalPerformanceDay(BaseModel):
+    date: date
+    total_pnl: float
+    trade_count: int
+    win_count: int
+    loss_count: int
+    net_result: Literal["win", "loss", "flat", "no_trades"]
+    largest_win: Optional[float] = None
+    largest_loss: Optional[float] = None
+    symbols: list[str] = Field(default_factory=list)
+    sources: dict[str, dict[str, float | int]] = Field(default_factory=dict)
+
+
+class TradeJournalPerformanceBestWorstDay(BaseModel):
+    date: date
+    pnl: float
+
+
+class TradeJournalPerformanceCalendarSummary(BaseModel):
+    total_pnl: float
+    trade_count: int
+    winning_days: int
+    losing_days: int
+    flat_days: int
+    best_day: Optional[TradeJournalPerformanceBestWorstDay] = None
+    worst_day: Optional[TradeJournalPerformanceBestWorstDay] = None
+
+
+class TradeJournalPerformanceCalendar(BaseModel):
+    month: str
+    summary: TradeJournalPerformanceCalendarSummary
+    days: list[TradeJournalPerformanceDay] = Field(default_factory=list)
 
 
 class TradeJournalDailySummary(BaseModel):
@@ -603,10 +652,19 @@ class TradeJournalImportPreview(BaseModel):
 
 class TradeJournalImportSaveRequest(BaseModel):
     trade_drafts: list[TradeJournalImportDraft] = Field(default_factory=list)
+    source_files: dict[str, Optional[str]] = Field(default_factory=dict)
 
 
 class TradeJournalImportSaveResponse(BaseModel):
     created_entries: list[TradeJournalRead] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class TradeJournalCalendarImportSaveResponse(BaseModel):
+    created_entries: list[TradeJournalRead] = Field(default_factory=list)
+    imported: int = 0
+    skipped_duplicates: int = 0
+    updated: int = 0
     warnings: list[str] = Field(default_factory=list)
 
 

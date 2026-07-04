@@ -24,7 +24,9 @@ def generate_trading_correlation_review(
     scan_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     journal_entries = _filtered_entries(
-        entries if entries is not None else orbit_service.list_trade_journal_entries(),
+        entries
+        if entries is not None
+        else orbit_service.list_trade_journal_entries(purpose="scanner_match"),
         limit=max(1, min(int(limit or 20), 100)),
         symbol=symbol,
         session=session,
