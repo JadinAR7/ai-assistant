@@ -38,6 +38,8 @@ from .models import (
     TaskPriority,
     TaskUpdate,
     TradeJournalCreate,
+    TradeJournalCalendarImportSaveResponse,
+    TradeJournalPerformanceCalendar,
     TradeJournalImportPreview,
     TradeJournalImportSaveRequest,
     TradeJournalImportSaveResponse,
@@ -479,6 +481,14 @@ def list_trade_journal_entries():
     return service.list_trade_journal_entries()
 
 
+@router.get("/trade-journal/performance-calendar", response_model=TradeJournalPerformanceCalendar)
+def get_trade_journal_performance_calendar(month: str, source: str = "all"):
+    try:
+        return service.get_trade_journal_performance_calendar(month, source=source)
+    except ValueError as error:
+        raise _validation_error(str(error)) from error
+
+
 @router.get("/trading-coach/review")
 def get_trading_coach_review(
     limit: int = 20,
@@ -557,6 +567,15 @@ async def preview_trade_journal_pdf_import(
 )
 def save_trade_journal_pdf_import(payload: TradeJournalImportSaveRequest):
     return trade_journal_import.save_trade_journal_import(payload)
+
+
+@router.post(
+    "/trade-journal/import-pdf/save-calendar",
+    response_model=TradeJournalCalendarImportSaveResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def save_trade_journal_calendar_pdf_import(payload: TradeJournalImportSaveRequest):
+    return trade_journal_import.save_trade_journal_calendar_import(payload)
 
 
 @router.get("/trade-journal/{entry_id}", response_model=TradeJournalRead)

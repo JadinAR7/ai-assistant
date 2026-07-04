@@ -36,7 +36,9 @@ def generate_trading_coach_review(
     """Review saved journal entries without changing scanner or strategy state."""
     profile = strategy_profile or trading_strategy.get_strategy_profile()
     filtered_entries = _filtered_entries(
-        entries if entries is not None else orbit_service.list_trade_journal_entries(),
+        entries
+        if entries is not None
+        else orbit_service.list_trade_journal_entries(purpose="strategy_review"),
         limit=max(1, min(int(limit or 20), 100)),
         symbol=symbol,
         session=session,
