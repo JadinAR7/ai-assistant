@@ -64,6 +64,8 @@ export default function MobileNotifications({
   onDismissReminder,
   onAckNotification,
   onCompleteNotification,
+  onRetry,
+  loadFailed,
 }: Readonly<{
   center: MobileNotificationCenter | null;
   actionLoading: string | null;
@@ -71,6 +73,8 @@ export default function MobileNotifications({
   onDismissReminder: (id: number) => void;
   onAckNotification: (id: number) => void;
   onCompleteNotification: (id: number) => void;
+  onRetry: () => void;
+  loadFailed?: boolean;
 }>) {
   const [showAll, setShowAll] = useState(false);
   const reminders = center?.reminders ?? [];
@@ -129,6 +133,20 @@ export default function MobileNotifications({
           </p>
         </div>
       </div>
+
+      {loadFailed ? (
+        <div className="mt-3 rounded-xl border border-amber-300/20 bg-amber-300/10 p-3">
+          <p className="text-sm font-semibold text-amber-100">
+            Couldn&apos;t load reminders.
+          </p>
+          <p className="mt-1 text-xs leading-5 text-amber-100/75">
+            Try again when the Mac mini is reachable.
+          </p>
+          <div className="mt-3">
+            <MobileSecondaryButton onClick={onRetry}>Retry</MobileSecondaryButton>
+          </div>
+        </div>
+      ) : null}
 
       {visibleItems.length ? (
         <div className="mt-3 grid gap-2">

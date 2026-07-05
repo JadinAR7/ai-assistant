@@ -20,6 +20,10 @@ export const metadata: Metadata = {
   description: "Helix local-first assistant.",
   applicationName: "Helix",
   manifest: "/manifest.json",
+  icons: {
+    icon: "/helix-icon.svg",
+    apple: "/helix-icon.svg",
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",

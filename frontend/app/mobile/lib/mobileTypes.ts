@@ -159,6 +159,16 @@ export type MobileData = {
   journalEntries: JournalEntry[];
   notificationCenter: MobileNotificationCenter | null;
   backendReachable: boolean;
+  loadErrors: {
+    briefing?: boolean;
+    presence?: boolean;
+    schedule?: boolean;
+    scannerStatus?: boolean;
+    latestScan?: boolean;
+    performanceCalendar?: boolean;
+    journalEntries?: boolean;
+    notifications?: boolean;
+  };
 };
 
 export type ChatMessage = {

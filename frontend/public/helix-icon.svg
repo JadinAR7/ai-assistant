@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Helix">
+  <rect width="512" height="512" rx="112" fill="#05070b"/>
+  <circle cx="256" cy="256" r="178" fill="#0f172a"/>
+  <path
+    d="M163 319c42 45 144 45 186 0M163 193c42-45 144-45 186 0"
+    fill="none"
+    stroke="#67e8f9"
+    stroke-width="34"
+    stroke-linecap="round"
+  />
+  <path
+    d="M174 192c30 23 55 51 82 64 27 13 53 41 82 64M338 192c-30 23-55 51-82 64-27 13-53 41-82 64"
+    fill="none"
+    stroke="#f8fafc"
+    stroke-width="22"
+    stroke-linecap="round"
+    opacity=".92"
+  />
+</svg>

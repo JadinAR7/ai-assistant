@@ -24,7 +24,7 @@ export default function MobileChat({
       <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
         Ask Helix
       </p>
-      <div className="mt-3 grid max-h-[52dvh] gap-3 overflow-y-auto pr-1">
+      <div className="mt-3 grid max-h-[50dvh] gap-3 overflow-y-auto pr-1">
         {messages.map((message, index) => (
           <div
             key={`${message.role}-${index}-${message.content.slice(0, 8)}`}
@@ -49,12 +49,12 @@ export default function MobileChat({
         <textarea
           value={input}
           onChange={(event) => onInputChange(event.target.value)}
-          rows={3}
+          rows={4}
           placeholder="Ask, add a task, or schedule something..."
-          className="min-h-24 w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-base text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
+          className="min-h-28 w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-4 text-base leading-6 text-white outline-none placeholder:text-neutral-600 focus:border-cyan-300/50"
         />
         <MobilePrimaryButton type="submit" disabled={loading}>
-          {loading ? "Sending" : "Send"}
+          {loading ? "Sending..." : "Send"}
         </MobilePrimaryButton>
       </form>
     </MobileCard>

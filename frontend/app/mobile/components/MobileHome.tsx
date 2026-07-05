@@ -23,6 +23,30 @@ import {
 
 type QuickCommand = (command: string, title?: string) => void;
 
+function MobileStatusNote({
+  title,
+  message,
+  actionLabel,
+  onAction,
+}: Readonly<{
+  title: string;
+  message: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}>) {
+  return (
+    <MobileCard className="border-amber-300/25 bg-amber-300/10">
+      <p className="text-sm font-semibold text-amber-100">{title}</p>
+      <p className="mt-1 text-xs leading-5 text-amber-100/75">{message}</p>
+      {actionLabel && onAction ? (
+        <div className="mt-3">
+          <MobileSecondaryButton onClick={onAction}>{actionLabel}</MobileSecondaryButton>
+        </div>
+      ) : null}
+    </MobileCard>
+  );
+}
+
 export default function MobileHome({
   data,
   nextBlock,
@@ -102,6 +126,24 @@ export default function MobileHome({
           </button>
         </div>
       </MobileCard>
+
+      {!loading && !data.backendReachable ? (
+        <MobileStatusNote
+          title="Helix backend is offline."
+          message="Try again when the Mac mini is reachable."
+          actionLabel="Retry"
+          onAction={onRefresh}
+        />
+      ) : null}
+
+      {!loading && data.backendReachable && data.loadErrors.briefing ? (
+        <MobileStatusNote
+          title={"Couldn't load briefing."}
+          message="Your daily cards are still usable, but Orbit briefing data did not come through."
+          actionLabel="Retry"
+          onAction={onRefresh}
+        />
+      ) : null}
 
       <MobileCard>
         <div className="flex items-start justify-between gap-3">
@@ -288,6 +330,11 @@ export default function MobileHome({
         <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
           Trading Snapshot
         </p>
+        {data.loadErrors.scannerStatus ? (
+          <p className="mt-2 rounded-xl border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-xs leading-5 text-amber-100">
+            Couldn&apos;t load scanner status. Try again when the Mac mini is reachable.
+          </p>
+        ) : null}
         <div className="mt-3 grid grid-cols-2 gap-2">
           <MobileMetric
             label="30D PnL"
@@ -317,11 +364,20 @@ export default function MobileHome({
           <MobilePrimaryButton onClick={() => onTabChange("chat")}>
             Ask Helix
           </MobilePrimaryButton>
-          <MobileSecondaryButton onClick={() => onStartPrompt("Add a task: ")}>
+          <MobileSecondaryButton
+            onClick={() => onQuickCommand("Add a task:", "Add task")}
+            disabled={Boolean(quickCommandLoading)}
+          >
             Add Task
           </MobileSecondaryButton>
           <MobileSecondaryButton
-            onClick={() => onStartPrompt("Add 30 minutes of ")}
+            onClick={() =>
+              onQuickCommand(
+                "Can you add 30 minutes of reading to my schedule?",
+                "Add schedule block",
+              )
+            }
+            disabled={Boolean(quickCommandLoading)}
           >
             Add Schedule Block
           </MobileSecondaryButton>
@@ -361,7 +417,10 @@ export default function MobileHome({
           >
             Plan My Day
           </MobileSecondaryButton>
-          <MobileSecondaryButton onClick={() => onTabChange("journal")}>
+          <MobileSecondaryButton
+            onClick={() => onQuickCommand("Log a trade note:", "Log trade note")}
+            disabled={Boolean(quickCommandLoading)}
+          >
             Log Trade Note
           </MobileSecondaryButton>
           <MobileSecondaryButton onClick={onRunScanner} disabled={scanLoading}>
@@ -394,6 +453,8 @@ export default function MobileHome({
         onDismissReminder={onDismissReminder}
         onAckNotification={onAckNotification}
         onCompleteNotification={onCompleteNotification}
+        loadFailed={data.loadErrors.notifications}
+        onRetry={onRefresh}
       />
     </>
   );

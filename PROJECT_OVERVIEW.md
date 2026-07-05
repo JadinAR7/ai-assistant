@@ -99,20 +99,20 @@ Journal should include:
 
 Current frontend readiness:
 
-* `frontend/app/layout.tsx` still has default Create Next App metadata.
+* `frontend/app/layout.tsx` has Helix metadata, manifest linkage, viewport-fit cover, theme color, and Apple mobile web app metadata.
 * `frontend/next.config.ts` only configures `allowedDevOrigins`.
-* Global CSS includes useful mobile safety basics: `overflow-x: hidden`, `box-sizing: border-box`, `min-width: 0`, and `touch-action: manipulation`.
-* There is no dedicated mobile shell route yet.
+* Global CSS includes useful mobile safety basics: `overflow-x: hidden`, `box-sizing: border-box`, `min-width: 0`, `touch-action: manipulation`, safe-area helper classes, and mobile overscroll restraint.
+* `/mobile` has a dedicated mobile shell route with bottom navigation and a dismissible iOS Safari Home Screen install hint.
+* `frontend/public/manifest.json` starts at `/mobile`, uses standalone display, portrait orientation, Helix theme/background colors, and a simple placeholder SVG icon.
+* Installed iPhone Home Screen validation path: open `/mobile` in iPhone Safari, confirm the install hint appears, use Share -> Add to Home Screen, launch Helix from Home Screen, confirm it starts at `/mobile`, and verify the bottom nav is not clipped in standalone mode.
 
 Missing for iPhone Home Screen/PWA readiness:
 
-* Web app manifest.
-* App icons and Apple touch icon.
-* Apple mobile web app metadata.
-* Theme color and viewport/safe-area polish.
+* Final Helix app icon set and proper Apple touch PNG assets.
 * Service worker/offline strategy.
 * Web push foundation.
 * Authentication/security model for mobile access.
+* Native iOS/TestFlight option later, after PWA workflow validation.
 
 ### Backend Mobile API Plan
 

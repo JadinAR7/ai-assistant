@@ -1,6 +1,7 @@
 import { type ReactNode } from "react";
 
 import MobileBottomNav from "./MobileBottomNav";
+import MobileInstallHint from "./MobileInstallHint";
 import { type MobileTabId } from "../lib/mobileTypes";
 import { getTimeGreeting } from "../lib/mobileUtils";
 
@@ -24,7 +25,7 @@ export default function MobileShell({
   return (
     <main className="min-h-dvh bg-[#05070b] text-white">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.16),transparent_35%),linear-gradient(160deg,#07111f_0%,#05070b_45%,#101114_100%)]" />
-      <div className="relative mx-auto flex min-h-dvh w-full max-w-md flex-col px-4 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-[calc(1rem+env(safe-area-inset-top))]">
+      <div className="relative mx-auto flex min-h-dvh w-full max-w-md flex-col px-4 pb-[calc(7rem+env(safe-area-inset-bottom))] pt-[calc(0.75rem+env(safe-area-inset-top))]">
         <header className="sticky top-0 z-10 -mx-4 border-b border-white/10 bg-[#05070b]/85 px-4 pb-3 pt-[calc(0.75rem+env(safe-area-inset-top))] backdrop-blur">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -48,9 +49,10 @@ export default function MobileShell({
               {loading ? "Checking" : backendReachable ? "Online" : "Offline"}
             </span>
           </div>
+          <MobileInstallHint />
         </header>
 
-        <div className="grid gap-4 py-4">{children}</div>
+        <div className="grid gap-4 pb-8 pt-4">{children}</div>
       </div>
 
       <MobileBottomNav activeTab={activeTab} onTabChange={onTabChange} />

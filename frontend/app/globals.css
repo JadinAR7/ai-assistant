@@ -22,6 +22,9 @@
 html,
 body {
   overflow-x: hidden;
+  min-height: 100%;
+  background: #05070b;
+  overscroll-behavior-y: none;
 }
 
 body {

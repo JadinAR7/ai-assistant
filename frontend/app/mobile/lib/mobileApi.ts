@@ -25,15 +25,21 @@ export const emptyMobileData: MobileData = {
   journalEntries: [],
   notificationCenter: null,
   backendReachable: false,
+  loadErrors: {},
 };
 
-async function fetchJson<T>(path: string): Promise<T | null> {
+type FetchResult<T> = {
+  data: T | null;
+  error: boolean;
+};
+
+async function fetchJson<T>(path: string): Promise<FetchResult<T>> {
   try {
     const response = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
-    if (!response.ok) return null;
-    return (await response.json()) as T;
+    if (!response.ok) return { data: null, error: true };
+    return { data: (await response.json()) as T, error: false };
   } catch {
-    return null;
+    return { data: null, error: true };
   }
 }
 
@@ -43,15 +49,15 @@ function monthKey(date = new Date()) {
 
 export async function fetchMobileData(): Promise<MobileData> {
   const [
-    health,
-    briefing,
-    presenceResponse,
-    scheduleBlocks,
-    scanStatus,
-    latestScanResponse,
-    performanceCalendar,
-    journalEntries,
-    notificationCenter,
+    healthResult,
+    briefingResult,
+    presenceResult,
+    scheduleResult,
+    scanStatusResult,
+    latestScanResult,
+    performanceResult,
+    journalResult,
+    notificationResult,
   ] = await Promise.all([
     fetchJson<{ status?: string }>("/"),
     fetchJson<MorningBriefing>("/orbit/morning-briefing"),
@@ -68,6 +74,15 @@ export async function fetchMobileData(): Promise<MobileData> {
     fetchJson<JournalEntry[]>("/orbit/trade-journal"),
     fetchJson<MobileNotificationCenter>("/mobile/notifications"),
   ]);
+  const health = healthResult.data;
+  const briefing = briefingResult.data;
+  const presenceResponse = presenceResult.data;
+  const scheduleBlocks = scheduleResult.data;
+  const scanStatus = scanStatusResult.data;
+  const latestScanResponse = latestScanResult.data;
+  const performanceCalendar = performanceResult.data;
+  const journalEntries = journalResult.data;
+  const notificationCenter = notificationResult.data;
 
   return {
     briefing,
@@ -82,6 +97,16 @@ export async function fetchMobileData(): Promise<MobileData> {
     journalEntries: Array.isArray(journalEntries) ? journalEntries.slice(0, 5) : [],
     notificationCenter,
     backendReachable: Boolean(health),
+    loadErrors: {
+      briefing: briefingResult.error,
+      presence: presenceResult.error,
+      schedule: scheduleResult.error,
+      scannerStatus: scanStatusResult.error,
+      latestScan: latestScanResult.error,
+      performanceCalendar: performanceResult.error,
+      journalEntries: journalResult.error,
+      notifications: notificationResult.error,
+    },
   };
 }
 

@@ -86,31 +86,34 @@ export default function MobileHelixPage() {
     setActiveTab("chat");
   }
 
-  async function sendQuickCommand(command: string, title = "Helix action") {
-    if (quickCommandLoading || chatLoading) return;
+  async function sendMobileChatCommand(command: string, title = "Helix action") {
+    const message = command.trim();
+    if (!message || chatLoading) return;
 
+    setActiveTab("chat");
     setActionResult(null);
     setQuickCommandLoading(title);
-    setChatMessages((current) => [...current, { role: "user", content: command }]);
+    setChatLoading(true);
+    setChatMessages((current) => [...current, { role: "user", content: message }]);
 
     try {
-      const result = await sendMobileChat(command);
+      const result = await sendMobileChat(message);
       const responseText = result.message || "Done.";
       setChatMessages((current) => [
         ...current,
         { role: "assistant", content: responseText },
       ]);
-      setActionResult({ title, message: responseText });
       await loadMobileData();
     } catch {
-      const errorMessage = "I could not reach Helix to run that command.";
+      const errorMessage =
+        "Helix backend is offline. Try again when the Mac mini is reachable.";
       setChatMessages((current) => [
         ...current,
         { role: "assistant", content: errorMessage, error: true },
       ]);
-      setActionResult({ title, message: errorMessage, error: true });
     } finally {
       setQuickCommandLoading(null);
+      setChatLoading(false);
     }
   }
 
@@ -122,6 +125,7 @@ export default function MobileHelixPage() {
     setChatMessages((current) => [...current, { role: "user", content: message }]);
     setChatInput("");
     setChatLoading(true);
+    setActionResult(null);
 
     try {
       const result = await sendMobileChat(message);
@@ -138,7 +142,8 @@ export default function MobileHelixPage() {
         ...current,
         {
           role: "assistant",
-          content: "I could not reach the Helix backend from this device.",
+          content:
+            "Helix backend is offline. Try again when the Mac mini is reachable.",
           error: true,
         },
       ]);
@@ -149,9 +154,20 @@ export default function MobileHelixPage() {
 
   async function runScanner() {
     setScanLoading(true);
+    setActionResult(null);
     try {
       await runMobileScanner(scannerSymbol);
       await loadMobileData();
+      setActionResult({
+        title: "Scanner",
+        message: "Scanner request sent.",
+      });
+    } catch {
+      setActionResult({
+        title: "Scanner",
+        message: "Couldn't load scanner status. Try again when the Mac mini is reachable.",
+        error: true,
+      });
     } finally {
       setScanLoading(false);
     }
@@ -173,7 +189,7 @@ export default function MobileHelixPage() {
     } catch {
       setActionResult({
         title,
-        message: "I could not update the mobile queue.",
+        message: "Helix backend is offline. Try again when the Mac mini is reachable.",
         error: true,
       });
     } finally {
@@ -203,7 +219,7 @@ export default function MobileHelixPage() {
           mobileQueueLoading={mobileQueueLoading}
           onRefresh={loadMobileData}
           onRunScanner={runScanner}
-          onQuickCommand={sendQuickCommand}
+          onQuickCommand={sendMobileChatCommand}
           onCompleteReminder={(id) =>
             runMobileQueueAction(`reminder-complete-${id}`, "Reminder done", () =>
               completeMobileReminder(id),
