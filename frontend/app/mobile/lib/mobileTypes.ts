@@ -1,0 +1,120 @@
+export type MobileTabId = "home" | "chat" | "schedule" | "trading" | "journal";
+
+export type MorningBriefing = {
+  success?: boolean;
+  generated_at?: string;
+  major_event?: {
+    title?: string;
+    days_remaining?: number | null;
+    progress_percent?: number | null;
+  } | null;
+  readiness?: {
+    overall?: number | null;
+  };
+  top_tasks?: Array<{
+    id: number;
+    title: string;
+    status?: string;
+    due_date?: string | null;
+    priority_score?: number | null;
+    milestone_title?: string | null;
+  }>;
+  current_blockers?: string[];
+  suggested_next_action?: string;
+  trading_performance?: {
+    trading_total_pnl_30d?: number | null;
+    trade_count_30d?: number | null;
+    winning_days_30d?: number | null;
+    losing_days_30d?: number | null;
+    latest_trade_date?: string | null;
+  };
+};
+
+export type ScheduleBlock = {
+  id: number;
+  title?: string | null;
+  block_type: "fixed" | "flexible";
+  category: string;
+  day_of_week?: string | null;
+  specific_date?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  duration_minutes?: number | null;
+  active?: boolean;
+  priority?: string;
+};
+
+export type ScanStatus = {
+  scanner_enabled?: boolean;
+  process_running?: boolean;
+  running_scan?: boolean;
+  latest_scan_success?: boolean | null;
+  last_scan_timestamp?: string | null;
+  heartbeat_timestamp?: string | null;
+  csv_automation_paused?: boolean;
+  csv_automation_status?: string;
+  csv_automation_message?: string;
+  default_symbol?: string;
+  symbol?: string;
+};
+
+export type ScanRecord = {
+  timestamp?: string;
+  symbol?: string;
+  signal_level?: string;
+  narrative_state?: string;
+  narrative_phase?: string;
+  system_health?: {
+    status?: string;
+    severity?: string;
+  };
+  narrative?: {
+    narrative_phase?: string;
+    execution_readiness?: string;
+    behavior_inside_zone?: string;
+  };
+};
+
+export type PerformanceCalendarDay = {
+  date: string;
+  total_pnl: number;
+  trade_count: number;
+  win_count?: number;
+  loss_count?: number;
+  net_result?: string;
+};
+
+export type PerformanceCalendar = {
+  summary?: {
+    total_pnl?: number | null;
+    trade_count?: number | null;
+    winning_days?: number | null;
+    losing_days?: number | null;
+  };
+  days?: PerformanceCalendarDay[];
+};
+
+export type JournalEntry = {
+  id: number;
+  trade_date?: string;
+  symbol?: string;
+  direction?: string;
+  result_dollars?: number | null;
+  strategy_mode?: string | null;
+};
+
+export type MobileData = {
+  briefing: MorningBriefing | null;
+  scheduleBlocks: ScheduleBlock[];
+  scanStatus: ScanStatus | null;
+  latestScan: ScanRecord | null;
+  performanceCalendar: PerformanceCalendar | null;
+  journalEntries: JournalEntry[];
+  backendReachable: boolean;
+};
+
+export type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+  error?: boolean;
+};

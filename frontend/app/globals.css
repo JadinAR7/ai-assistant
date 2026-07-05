@@ -42,3 +42,11 @@ select,
 textarea {
   touch-action: manipulation;
 }
+
+.mobile-safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.mobile-safe-top {
+  padding-top: env(safe-area-inset-top);
+}

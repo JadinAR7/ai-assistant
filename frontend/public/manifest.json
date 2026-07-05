@@ -1,0 +1,11 @@
+{
+  "name": "Helix",
+  "short_name": "Helix",
+  "description": "Helix local-first assistant.",
+  "start_url": "/mobile",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#05070b",
+  "theme_color": "#05070b",
+  "orientation": "portrait-primary"
+}

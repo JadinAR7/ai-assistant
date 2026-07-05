@@ -16,6 +16,8 @@ Mac mini remains the local backend and automation host. iPhone becomes the prima
 
 Strategy Teaching Overhaul is paused for now. The current product priority is validating a phone-first assistant experience through the existing Next.js/FastAPI stack before deciding whether a private native iOS app is worth building.
 
+Desktop and mobile are separate frontend experiences sharing one backend platform. Desktop is the admin/deep-work portal. Mobile is the daily assistant app. Mobile should use mobile-only components and should not reuse large desktop page components such as OrbitBoard, Command Center panels, desktop Trade Journal grids, scanner/admin dashboards, or desktop Schedule editors.
+
 ### Desktop vs Mobile Responsibilities
 
 Desktop/admin portal:
