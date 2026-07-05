@@ -2,20 +2,25 @@ import { type ReactNode } from "react";
 
 import MobileBottomNav from "./MobileBottomNav";
 import { type MobileTabId } from "../lib/mobileTypes";
+import { getTimeGreeting } from "../lib/mobileUtils";
 
 export default function MobileShell({
   activeTab,
   backendReachable,
+  presenceLabel,
   loading,
   children,
   onTabChange,
 }: Readonly<{
   activeTab: MobileTabId;
   backendReachable: boolean;
+  presenceLabel?: string | null;
   loading: boolean;
   children: ReactNode;
   onTabChange: (tab: MobileTabId) => void;
 }>) {
+  const greeting = getTimeGreeting();
+
   return (
     <main className="min-h-dvh bg-[#05070b] text-white">
       <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.16),transparent_35%),linear-gradient(160deg,#07111f_0%,#05070b_45%,#101114_100%)]" />
@@ -27,8 +32,11 @@ export default function MobileShell({
                 Helix
               </p>
               <h1 className="mt-1 text-xl font-semibold tracking-tight">
-                Mobile Home
+                {greeting}
               </h1>
+              <p className="mt-1 text-xs text-neutral-500">
+                {presenceLabel ? `${presenceLabel} mode` : "Presence loading"}
+              </p>
             </div>
             <span
               className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${

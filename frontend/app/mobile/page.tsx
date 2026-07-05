@@ -14,8 +14,17 @@ import {
   runMobileScanner,
   sendMobileChat,
 } from "./lib/mobileApi";
-import { type ChatMessage, type MobileData, type MobileTabId } from "./lib/mobileTypes";
-import { getNextScheduleBlock, getTodayBlocks } from "./lib/mobileUtils";
+import {
+  type ChatMessage,
+  type MobileActionResult,
+  type MobileData,
+  type MobileTabId,
+} from "./lib/mobileTypes";
+import {
+  getNextFlexibleBlock,
+  getNextScheduleBlock,
+  getTodayBlocks,
+} from "./lib/mobileUtils";
 
 export default function MobileHelixPage() {
   const [activeTab, setActiveTab] = useState<MobileTabId>("home");
@@ -24,6 +33,8 @@ export default function MobileHelixPage() {
   const [scanLoading, setScanLoading] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  const [quickCommandLoading, setQuickCommandLoading] = useState<string | null>(null);
+  const [actionResult, setActionResult] = useState<MobileActionResult | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
@@ -37,6 +48,10 @@ export default function MobileHelixPage() {
   );
   const todayBlocks = useMemo(
     () => getTodayBlocks(data.scheduleBlocks),
+    [data.scheduleBlocks],
+  );
+  const nextFlexibleBlock = useMemo(
+    () => getNextFlexibleBlock(data.scheduleBlocks),
     [data.scheduleBlocks],
   );
   const scannerSymbol =
@@ -64,6 +79,34 @@ export default function MobileHelixPage() {
   function startPrompt(prompt: string) {
     setChatInput(prompt);
     setActiveTab("chat");
+  }
+
+  async function sendQuickCommand(command: string, title = "Helix action") {
+    if (quickCommandLoading || chatLoading) return;
+
+    setActionResult(null);
+    setQuickCommandLoading(title);
+    setChatMessages((current) => [...current, { role: "user", content: command }]);
+
+    try {
+      const result = await sendMobileChat(command);
+      const responseText = result.message || "Done.";
+      setChatMessages((current) => [
+        ...current,
+        { role: "assistant", content: responseText },
+      ]);
+      setActionResult({ title, message: responseText });
+      await loadMobileData();
+    } catch {
+      const errorMessage = "I could not reach Helix to run that command.";
+      setChatMessages((current) => [
+        ...current,
+        { role: "assistant", content: errorMessage, error: true },
+      ]);
+      setActionResult({ title, message: errorMessage, error: true });
+    } finally {
+      setQuickCommandLoading(null);
+    }
   }
 
   async function sendChat(event?: FormEvent<HTMLFormElement>) {
@@ -113,6 +156,7 @@ export default function MobileHelixPage() {
     <MobileShell
       activeTab={activeTab}
       backendReachable={data.backendReachable}
+      presenceLabel={data.presence?.label || data.presence?.mode}
       loading={loading}
       onTabChange={setActiveTab}
     >
@@ -120,13 +164,16 @@ export default function MobileHelixPage() {
         <MobileHome
           data={data}
           nextBlock={nextBlock}
-          scannerSymbol={scannerSymbol}
+          nextFlexibleBlock={nextFlexibleBlock}
           calendarSummary={calendarSummary}
           tradePerformance={tradePerformance}
           loading={loading}
           scanLoading={scanLoading}
+          quickCommandLoading={quickCommandLoading}
+          actionResult={actionResult}
           onRefresh={loadMobileData}
           onRunScanner={runScanner}
+          onQuickCommand={sendQuickCommand}
           onStartPrompt={startPrompt}
           onTabChange={setActiveTab}
         />

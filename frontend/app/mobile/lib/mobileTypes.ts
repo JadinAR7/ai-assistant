@@ -1,5 +1,14 @@
 export type MobileTabId = "home" | "chat" | "schedule" | "trading" | "journal";
 
+export type PresenceMode = {
+  mode?: string;
+  label?: string;
+  description?: string;
+  notifications_allowed?: boolean;
+  tts_allowed?: boolean;
+  imessage_allowed?: boolean;
+};
+
 export type MorningBriefing = {
   success?: boolean;
   generated_at?: string;
@@ -105,6 +114,7 @@ export type JournalEntry = {
 
 export type MobileData = {
   briefing: MorningBriefing | null;
+  presence: PresenceMode | null;
   scheduleBlocks: ScheduleBlock[];
   scanStatus: ScanStatus | null;
   latestScan: ScanRecord | null;
@@ -116,5 +126,11 @@ export type MobileData = {
 export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
+  error?: boolean;
+};
+
+export type MobileActionResult = {
+  title: string;
+  message: string;
   error?: boolean;
 };

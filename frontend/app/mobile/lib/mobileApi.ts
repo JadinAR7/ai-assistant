@@ -3,6 +3,7 @@ import {
   type MobileData,
   type MorningBriefing,
   type PerformanceCalendar,
+  type PresenceMode,
   type ScanRecord,
   type ScanStatus,
   type ScheduleBlock,
@@ -13,6 +14,7 @@ export const API_BASE =
 
 export const emptyMobileData: MobileData = {
   briefing: null,
+  presence: null,
   scheduleBlocks: [],
   scanStatus: null,
   latestScan: null,
@@ -39,6 +41,7 @@ export async function fetchMobileData(): Promise<MobileData> {
   const [
     health,
     briefing,
+    presenceResponse,
     scheduleBlocks,
     scanStatus,
     latestScanResponse,
@@ -47,6 +50,7 @@ export async function fetchMobileData(): Promise<MobileData> {
   ] = await Promise.all([
     fetchJson<{ status?: string }>("/"),
     fetchJson<MorningBriefing>("/orbit/morning-briefing"),
+    fetchJson<{ current?: PresenceMode | null }>("/presence"),
     fetchJson<ScheduleBlock[]>("/orbit/schedule-blocks"),
     fetchJson<ScanStatus>("/scan/status"),
     fetchJson<{
@@ -61,6 +65,7 @@ export async function fetchMobileData(): Promise<MobileData> {
 
   return {
     briefing,
+    presence: presenceResponse?.current ?? null,
     scheduleBlocks: Array.isArray(scheduleBlocks) ? scheduleBlocks : [],
     scanStatus,
     latestScan:

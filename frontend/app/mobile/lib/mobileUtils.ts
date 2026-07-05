@@ -66,6 +66,13 @@ export function formatRelativeAge(timestamp?: string | null) {
   return `${days}d ago`;
 }
 
+export function getTimeGreeting(date = new Date()) {
+  const hour = date.getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  return "Good evening";
+}
+
 function toDateKey(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
     date.getDate(),
@@ -109,6 +116,14 @@ export function getNextScheduleBlock(blocks: ScheduleBlock[]) {
 
   if (fixedToday[0]) return fixedToday[0].block;
 
+  return (
+    blocks.find(
+      (block) => block.active !== false && block.block_type === "flexible",
+    ) ?? null
+  );
+}
+
+export function getNextFlexibleBlock(blocks: ScheduleBlock[]) {
   return (
     blocks.find(
       (block) => block.active !== false && block.block_type === "flexible",
