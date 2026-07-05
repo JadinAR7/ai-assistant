@@ -28,6 +28,24 @@ export const emptyMobileData: MobileData = {
   loadErrors: {},
 };
 
+export type MobileChatErrorReason = "offline" | "timeout" | "parse" | "unknown";
+
+export class MobileChatError extends Error {
+  reason: MobileChatErrorReason;
+
+  constructor(reason: MobileChatErrorReason, message: string) {
+    super(message);
+    this.name = "MobileChatError";
+    this.reason = reason;
+  }
+}
+
+type ChatResponse = {
+  message?: string;
+  detail?: string;
+  error?: string;
+};
+
 type FetchResult<T> = {
   data: T | null;
   error: boolean;
@@ -111,17 +129,46 @@ export async function fetchMobileData(): Promise<MobileData> {
 }
 
 export async function sendMobileChat(message: string) {
-  const response = await fetch(`${API_BASE}/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, tool_mode: "auto" }),
-  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 120000);
 
-  if (!response.ok) {
-    throw new Error(`Chat failed with ${response.status}`);
+  try {
+    const response = await fetch(`${API_BASE}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, tool_mode: "auto" }),
+      signal: controller.signal,
+    });
+
+    let data: ChatResponse;
+    try {
+      data = (await response.json()) as ChatResponse;
+    } catch {
+      throw new MobileChatError(
+        "parse",
+        "Helix responded, but Mobile Chat could not read the response.",
+      );
+    }
+
+    if (!response.ok) {
+      throw new MobileChatError(
+        "unknown",
+        data.detail || data.error || `Chat failed with ${response.status}`,
+      );
+    }
+
+    return data as { message?: string };
+  } catch (error) {
+    if (error instanceof MobileChatError) {
+      throw error;
+    }
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new MobileChatError("timeout", "Chat request timed out");
+    }
+    throw new MobileChatError("offline", "Chat backend is unreachable");
+  } finally {
+    window.clearTimeout(timeout);
   }
-
-  return (await response.json()) as { message?: string };
 }
 
 export async function runMobileScanner(symbol: string) {
@@ -135,7 +182,15 @@ export async function runMobileScanner(symbol: string) {
 async function postMobileAction<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, { method: "POST" });
   if (!response.ok) {
-    throw new Error(`Mobile action failed with ${response.status}`);
+    try {
+      const data = (await response.json()) as { detail?: string; error?: string };
+      throw new Error(
+        data.detail || data.error || `Mobile action failed with ${response.status}`,
+      );
+    } catch (error) {
+      if (error instanceof Error) throw error;
+      throw new Error(`Mobile action failed with ${response.status}`);
+    }
   }
   return (await response.json()) as T;
 }
@@ -161,5 +216,21 @@ export function dismissMobileNotification(id: number) {
 export function completeMobileNotification(id: number) {
   return postMobileAction<MobileNotification>(
     `/mobile/notifications/${id}/complete`,
+  );
+}
+
+export function completeMobileScheduleBlock(id: number) {
+  return postMobileAction<ScheduleBlock>(`/mobile/schedule-blocks/${id}/done`);
+}
+
+export function rollMobileScheduleBlockLater(id: number) {
+  return postMobileAction<ScheduleBlock>(
+    `/mobile/schedule-blocks/${id}/roll-later`,
+  );
+}
+
+export function rollMobileScheduleBlockTomorrow(id: number) {
+  return postMobileAction<ScheduleBlock>(
+    `/mobile/schedule-blocks/${id}/roll-tomorrow`,
   );
 }

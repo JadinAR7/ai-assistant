@@ -95,6 +95,48 @@ export function getBlockTime(block?: ScheduleBlock | null) {
   return start && end ? `${start}-${end}` : "Time not set";
 }
 
+export function getBlockStartMinutes(block?: ScheduleBlock | null) {
+  if (!block?.start_time) return null;
+  const [hourValue, minuteValue] = block.start_time.split(":");
+  const hour = Number(hourValue);
+  const minute = Number(minuteValue || "0");
+  if (Number.isNaN(hour) || Number.isNaN(minute)) return null;
+  return hour * 60 + minute;
+}
+
+function schedulePriorityRank(block: ScheduleBlock) {
+  if (block.priority === "high") return 0;
+  if (block.priority === "medium") return 1;
+  return 2;
+}
+
+export function sortScheduleBlocksByTime(blocks: ScheduleBlock[]) {
+  return [...blocks].sort((left, right) => {
+    const leftStart = getBlockStartMinutes(left);
+    const rightStart = getBlockStartMinutes(right);
+
+    if (leftStart !== null && rightStart !== null && leftStart !== rightStart) {
+      return leftStart - rightStart;
+    }
+    if (leftStart !== null && rightStart === null) return -1;
+    if (leftStart === null && rightStart !== null) return 1;
+
+    const priorityDifference =
+      schedulePriorityRank(left) - schedulePriorityRank(right);
+    if (priorityDifference !== 0) return priorityDifference;
+
+    return getBlockTitle(left).localeCompare(getBlockTitle(right));
+  });
+}
+
+export function splitPlacedAndWaitingBlocks(blocks: ScheduleBlock[]) {
+  const sorted = sortScheduleBlocksByTime(blocks);
+  return {
+    placed: sorted.filter((block) => getBlockStartMinutes(block) !== null),
+    waiting: sorted.filter((block) => getBlockStartMinutes(block) === null),
+  };
+}
+
 export function getNextScheduleBlock(blocks: ScheduleBlock[]) {
   const now = new Date();
   const todayKey = toDateKey(now);
@@ -125,7 +167,7 @@ export function getNextScheduleBlock(blocks: ScheduleBlock[]) {
 
 export function getNextFlexibleBlock(blocks: ScheduleBlock[]) {
   return (
-    blocks.find(
+    sortScheduleBlocksByTime(blocks).find(
       (block) => block.active !== false && block.block_type === "flexible",
     ) ?? null
   );
@@ -135,11 +177,12 @@ export function getTodayBlocks(blocks: ScheduleBlock[]) {
   const todayKey = toDateKey(new Date());
   const todayName = dayNames[new Date().getDay()];
 
-  return blocks
+  return sortScheduleBlocksByTime(
+    blocks
     .filter((block) => {
       if (block.active === false) return false;
       if (block.block_type === "flexible") return true;
       return block.specific_date === todayKey || block.day_of_week === todayName;
-    })
-    .slice(0, 5);
+    }),
+  );
 }

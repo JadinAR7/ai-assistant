@@ -36,6 +36,7 @@ backend/csv_refresh_status.json
 backend/presence_status.json
 backend/.scheduled_agents_status.json
 backend/.morning_checkin_status.json
+backend/.day_plan_session.json
 backend/*_status.json
 backend/.scanner_runtime*.json
 backend/logs/

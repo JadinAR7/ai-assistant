@@ -33,6 +33,7 @@ from orbit.models import (
     MobileNotificationCreate,
     MobileReminder,
     MobileReminderCreate,
+    ScheduleBlock,
 )
 from orbit.routes import router as orbit_router
 
@@ -881,6 +882,30 @@ def dismiss_mobile_reminder(reminder_id: int):
     return reminder
 
 
+@app.post("/mobile/schedule-blocks/{schedule_block_id}/done", response_model=ScheduleBlock)
+def complete_mobile_schedule_block(schedule_block_id: int):
+    block = orbit_service.complete_schedule_block_for_mobile(schedule_block_id)
+    if block is None:
+        raise HTTPException(status_code=404, detail=f"Schedule block {schedule_block_id} not found.")
+    return block
+
+
+@app.post("/mobile/schedule-blocks/{schedule_block_id}/roll-later", response_model=ScheduleBlock)
+def roll_mobile_schedule_block_later(schedule_block_id: int):
+    try:
+        return orbit_service.roll_schedule_block_later_for_mobile(schedule_block_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/mobile/schedule-blocks/{schedule_block_id}/roll-tomorrow", response_model=ScheduleBlock)
+def roll_mobile_schedule_block_tomorrow(schedule_block_id: int):
+    try:
+        return orbit_service.roll_schedule_block_tomorrow_for_mobile(schedule_block_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 # -------------------------
 # Chat endpoint
 # -------------------------
@@ -984,6 +1009,9 @@ def chat(request: ChatRequest):
                 "success": True,
                 "model": intent_response["model"],
                 "message": assistant_message,
+                "data": intent_response.get("data", {}),
+                "route": intent_response.get("data", {}).get("route", "deterministic_intent"),
+                "used_model": False,
                 "history_length": len(messages),
             }
 

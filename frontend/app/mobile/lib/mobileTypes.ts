@@ -172,8 +172,11 @@ export type MobileData = {
 };
 
 export type ChatMessage = {
-  role: "user" | "assistant";
+  id: string;
+  role: "user" | "assistant" | "system";
   content: string;
+  status?: "sending" | "sent" | "failed";
+  retryOfMessageId?: string;
   error?: boolean;
 };
 

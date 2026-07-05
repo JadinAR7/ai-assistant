@@ -981,8 +981,12 @@ def create_schedule_block(payload: ScheduleBlockCreate) -> dict[str, Any]:
     _validate_schedule_block_data(data)
     existing = _find_duplicate_schedule_block(data)
     if existing is not None:
-        return _update_record("schedule_blocks", int(existing["id"]), data) or existing
-    return _create_record("schedule_blocks", data)
+        record = _update_record("schedule_blocks", int(existing["id"]), data) or existing
+        ensure_schedule_block_reminder(record)
+        return record
+    record = _create_record("schedule_blocks", data)
+    ensure_schedule_block_reminder(record)
+    return record
 
 
 def update_schedule_block(
@@ -996,7 +1000,111 @@ def update_schedule_block(
     data = _normalize_schedule_block_data(_model_data(payload, exclude_unset=True))
     merged = {**existing, **data}
     _validate_schedule_block_data(merged)
-    return _update_record("schedule_blocks", record_id, data)
+    record = _update_record("schedule_blocks", record_id, data)
+    ensure_schedule_block_reminder(record)
+    return record
+
+
+def ensure_schedule_block_reminder(block: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not _schedule_block_should_have_mobile_reminder(block):
+        return None
+
+    block_id = int(block.get("id") or 0)
+    due_at = _schedule_block_start_datetime(block)
+    if block_id <= 0 or due_at is None:
+        return None
+
+    body = (
+        f"{_schedule_block_title(block)} is scheduled for "
+        f"{_schedule_display_time(block.get('start_time'))}-"
+        f"{_schedule_display_time(block.get('end_time'))}."
+    )
+    title = f"Start {_schedule_block_title(block)}"
+    existing = _find_schedule_block_reminder(block_id, due_at)
+    if existing is not None:
+        return existing
+    return create_mobile_reminder(
+        MobileReminderCreate(
+            title=title,
+            body=f"{body} schedule_block:{block_id}",
+            due_at=due_at,
+            source="schedule",
+        )
+    )
+
+
+def complete_schedule_block_for_mobile(record_id: int) -> dict[str, Any] | None:
+    record = update_schedule_block(record_id, ScheduleBlockUpdate(active=False))
+    _complete_schedule_block_reminders(record_id)
+    return record
+
+
+def roll_schedule_block_later_for_mobile(record_id: int) -> dict[str, Any]:
+    block = get_record("schedule_blocks", record_id)
+    if block is None:
+        raise ValueError(f"Schedule block {record_id} not found.")
+    if str(block.get("block_type") or "") != "fixed":
+        raise ValueError("Only placed schedule blocks can be rolled later.")
+
+    target_date = _parse_date(str(block.get("specific_date") or "")) or datetime.now(
+        ORBIT_LOCAL_TIMEZONE
+    ).date()
+    duration = int(block.get("duration_minutes") or 0)
+    if duration <= 0:
+        start = _schedule_time_to_minutes(block.get("start_time")) or 0
+        end = _schedule_time_to_minutes(block.get("end_time")) or start
+        duration = max(1, end - start)
+
+    current_start = _schedule_time_to_minutes(block.get("start_time")) or 0
+    current_end = _schedule_time_to_minutes(block.get("end_time")) or current_start
+    next_start = _next_mobile_roll_start(
+        block_id=record_id,
+        target_date=target_date,
+        earliest_minute=current_end + 10,
+        duration_minutes=duration,
+    )
+    if next_start is None:
+        raise ValueError("No good slot left today. Roll this to tomorrow?")
+
+    _complete_schedule_block_reminders(record_id)
+    return update_schedule_block(
+        record_id,
+        ScheduleBlockUpdate(
+            start_time=_schedule_minutes_to_time(next_start),
+            end_time=_schedule_minutes_to_time(next_start + duration),
+            duration_minutes=duration,
+        ),
+    ) or block
+
+
+def roll_schedule_block_tomorrow_for_mobile(record_id: int) -> dict[str, Any]:
+    block = get_record("schedule_blocks", record_id)
+    if block is None:
+        raise ValueError(f"Schedule block {record_id} not found.")
+
+    tomorrow = datetime.now(ORBIT_LOCAL_TIMEZONE).date() + timedelta(days=1)
+    duration = int(block.get("duration_minutes") or 0)
+    if duration <= 0:
+        start = _schedule_time_to_minutes(block.get("start_time")) or 0
+        end = _schedule_time_to_minutes(block.get("end_time")) or start
+        duration = max(1, end - start)
+
+    _complete_schedule_block_reminders(record_id)
+    return update_schedule_block(
+        record_id,
+        ScheduleBlockUpdate(
+            block_type="flexible",
+            specific_date=tomorrow,
+            day_of_week=None,
+            start_time=None,
+            end_time=None,
+            duration_minutes=duration,
+            recurrence="once",
+            time_preference="anytime",
+            flexible_placement_mode="preferred_day",
+            active=True,
+        ),
+    ) or block
 
 
 def apply_schedule_block_to_days(
@@ -1153,6 +1261,101 @@ def _find_duplicate_schedule_block(
             continue
         if _schedule_block_signature(block) == signature:
             return block
+    return None
+
+
+def _schedule_block_should_have_mobile_reminder(block: dict[str, Any] | None) -> bool:
+    if not block or not _truthy(block.get("active")):
+        return False
+    if str(block.get("block_type") or "") != "fixed":
+        return False
+    if not block.get("start_time") or not block.get("end_time"):
+        return False
+    starts_at = _schedule_block_start_datetime(block)
+    if starts_at is None:
+        return False
+    return starts_at.date() == datetime.now(ORBIT_LOCAL_TIMEZONE).date()
+
+
+def _schedule_block_start_datetime(block: dict[str, Any]) -> datetime | None:
+    target_date = _parse_date(str(block.get("specific_date") or ""))
+    if target_date is None:
+        return None
+    start_minutes = _schedule_time_to_minutes(block.get("start_time"))
+    if start_minutes is None:
+        return None
+    return datetime.combine(
+        target_date,
+        datetime.min.time(),
+        tzinfo=ORBIT_LOCAL_TIMEZONE,
+    ) + timedelta(minutes=start_minutes)
+
+
+def _find_schedule_block_reminder(
+    block_id: int,
+    due_at: datetime,
+) -> dict[str, Any] | None:
+    marker = f"schedule_block:{block_id}"
+    for reminder in list_mobile_reminders(status="pending"):
+        if reminder.get("source") != "schedule":
+            continue
+        if marker not in str(reminder.get("body") or ""):
+            continue
+        if str(reminder.get("due_at") or "") == due_at.isoformat():
+            return reminder
+    return None
+
+
+def _complete_schedule_block_reminders(block_id: int) -> None:
+    marker = f"schedule_block:{block_id}"
+    for reminder in list_mobile_reminders(status="pending"):
+        if reminder.get("source") == "schedule" and marker in str(reminder.get("body") or ""):
+            complete_mobile_reminder(int(reminder.get("id") or 0))
+
+
+def _next_mobile_roll_start(
+    *,
+    block_id: int,
+    target_date: date,
+    earliest_minute: int,
+    duration_minutes: int,
+) -> int | None:
+    latest_end = 21 * 60
+    candidate = earliest_minute
+    fixed_blocks = [
+        block
+        for block in list_schedule_blocks()
+        if _truthy(block.get("active"))
+        and int(block.get("id") or 0) != block_id
+        and str(block.get("block_type") or "") == "fixed"
+        and str(block.get("specific_date") or "") == target_date.isoformat()
+    ]
+    next_blocks = [
+        block
+        for block in fixed_blocks
+        if (_schedule_time_to_minutes(block.get("start_time")) or 0) >= earliest_minute
+    ]
+    if next_blocks:
+        first_next = min(
+            next_blocks,
+            key=lambda block: _schedule_time_to_minutes(block.get("start_time")) or 24 * 60,
+        )
+        candidate = max(
+            candidate,
+            (_schedule_time_to_minutes(first_next.get("end_time")) or candidate) + 10,
+        )
+
+    while candidate + duration_minutes <= latest_end:
+        conflict_end = None
+        for block in fixed_blocks:
+            block_start = _schedule_time_to_minutes(block.get("start_time")) or 0
+            block_end = _schedule_time_to_minutes(block.get("end_time")) or block_start
+            if candidate < block_end and candidate + duration_minutes > block_start:
+                conflict_end = block_end + 10
+                break
+        if conflict_end is None:
+            return candidate
+        candidate = conflict_end
     return None
 
 

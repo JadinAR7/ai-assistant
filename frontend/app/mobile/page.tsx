@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import MobileChat from "./components/MobileChat";
 import MobileHome from "./components/MobileHome";
@@ -15,6 +15,10 @@ import {
   dismissMobileReminder,
   emptyMobileData,
   fetchMobileData,
+  MobileChatError,
+  completeMobileScheduleBlock,
+  rollMobileScheduleBlockLater,
+  rollMobileScheduleBlockTomorrow,
   runMobileScanner,
   sendMobileChat,
 } from "./lib/mobileApi";
@@ -37,13 +41,18 @@ export default function MobileHelixPage() {
   const [scanLoading, setScanLoading] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  const [retryingMessageId, setRetryingMessageId] = useState<string | null>(null);
   const [quickCommandLoading, setQuickCommandLoading] = useState<string | null>(null);
   const [mobileQueueLoading, setMobileQueueLoading] = useState<string | null>(null);
+  const [scheduleActionLoading, setScheduleActionLoading] = useState<string | null>(null);
   const [actionResult, setActionResult] = useState<MobileActionResult | null>(null);
+  const chatRequestInFlightRef = useRef(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
+      id: "welcome",
       role: "assistant",
       content: "Helix mobile is online. What do you want to move today?",
+      status: "sent",
     },
   ]);
 
@@ -86,70 +95,137 @@ export default function MobileHelixPage() {
     setActiveTab("chat");
   }
 
-  async function sendMobileChatCommand(command: string, title = "Helix action") {
-    const message = command.trim();
-    if (!message || chatLoading) return;
+  function createChatMessageId() {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+      return crypto.randomUUID();
+    }
+    return `mobile-chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function getChatErrorMessage(error: unknown) {
+    if (error instanceof MobileChatError) {
+      if (error.reason === "timeout") {
+        return "Helix took too long to respond. Try again.";
+      }
+      if (error.reason === "offline") {
+        return "Helix backend is offline. Try again when the Mac mini is reachable.";
+      }
+      if (error.reason === "parse") {
+        return error.message;
+      }
+      return error.message || "Helix could not send that message. Try again.";
+    }
+    return "Helix could not send that message. Try again.";
+  }
+
+  async function submitChatMessage(
+    message: string,
+    options: { userMessageId?: string; title?: string } = {},
+  ) {
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage || chatRequestInFlightRef.current) return;
+
+    chatRequestInFlightRef.current = true;
+    const userMessageId = options.userMessageId || createChatMessageId();
+    const isRetry = Boolean(options.userMessageId);
 
     setActiveTab("chat");
     setActionResult(null);
-    setQuickCommandLoading(title);
     setChatLoading(true);
-    setChatMessages((current) => [...current, { role: "user", content: message }]);
+
+    if (options.title) {
+      setQuickCommandLoading(options.title);
+    }
+
+    if (isRetry) {
+      setRetryingMessageId(userMessageId);
+      setChatMessages((current) =>
+        current
+          .filter((chatMessage) => chatMessage.retryOfMessageId !== userMessageId)
+          .map((chatMessage) =>
+            chatMessage.id === userMessageId
+              ? { ...chatMessage, status: "sending" as const }
+              : chatMessage,
+          ),
+      );
+    } else {
+      setChatMessages((current) => [
+        ...current,
+        {
+          id: userMessageId,
+          role: "user",
+          content: trimmedMessage,
+          status: "sending",
+        },
+      ]);
+    }
 
     try {
-      const result = await sendMobileChat(message);
+      const result = await sendMobileChat(trimmedMessage);
       const responseText = result.message || "Done.";
       setChatMessages((current) => [
-        ...current,
-        { role: "assistant", content: responseText },
+        ...current
+          .filter((chatMessage) => chatMessage.retryOfMessageId !== userMessageId)
+          .map((chatMessage) =>
+            chatMessage.id === userMessageId
+              ? { ...chatMessage, status: "sent" as const }
+              : chatMessage,
+          ),
+        {
+          id: createChatMessageId(),
+          role: "assistant",
+          content: responseText,
+          status: "sent",
+        },
       ]);
-      await loadMobileData();
-    } catch {
-      const errorMessage =
-        "Helix backend is offline. Try again when the Mac mini is reachable.";
+      void loadMobileData();
+    } catch (error) {
       setChatMessages((current) => [
-        ...current,
-        { role: "assistant", content: errorMessage, error: true },
+        ...current
+          .filter((chatMessage) => chatMessage.retryOfMessageId !== userMessageId)
+          .map((chatMessage) =>
+            chatMessage.id === userMessageId
+              ? { ...chatMessage, status: "failed" as const }
+              : chatMessage,
+          ),
+        {
+          id: createChatMessageId(),
+          role: "system",
+          content: getChatErrorMessage(error),
+          status: "failed",
+          retryOfMessageId: userMessageId,
+          error: true,
+        },
       ]);
     } finally {
       setQuickCommandLoading(null);
+      setRetryingMessageId(null);
       setChatLoading(false);
+      chatRequestInFlightRef.current = false;
     }
+  }
+
+  async function sendMobileChatCommand(command: string, title = "Helix action") {
+    const message = command.trim();
+    if (!message || chatRequestInFlightRef.current) return;
+    void submitChatMessage(message, { title });
   }
 
   async function sendChat(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const message = chatInput.trim();
-    if (!message || chatLoading) return;
-
-    setChatMessages((current) => [...current, { role: "user", content: message }]);
+    if (!message || chatRequestInFlightRef.current) return;
     setChatInput("");
-    setChatLoading(true);
-    setActionResult(null);
+    void submitChatMessage(message);
+  }
 
-    try {
-      const result = await sendMobileChat(message);
-      setChatMessages((current) => [
-        ...current,
-        {
-          role: "assistant",
-          content: result.message || "Done.",
-        },
-      ]);
-      void loadMobileData();
-    } catch {
-      setChatMessages((current) => [
-        ...current,
-        {
-          role: "assistant",
-          content:
-            "Helix backend is offline. Try again when the Mac mini is reachable.",
-          error: true,
-        },
-      ]);
-    } finally {
-      setChatLoading(false);
-    }
+  function retryChatMessage(messageId: string) {
+    if (chatRequestInFlightRef.current) return;
+    const failedMessage = chatMessages.find(
+      (message) => message.id === messageId && message.role === "user",
+    );
+    if (!failedMessage) return;
+    void submitChatMessage(failedMessage.content, { userMessageId: messageId });
   }
 
   async function runScanner() {
@@ -194,6 +270,31 @@ export default function MobileHelixPage() {
       });
     } finally {
       setMobileQueueLoading(null);
+    }
+  }
+
+  async function runScheduleAction(
+    key: string,
+    title: string,
+    successMessage: string,
+    action: () => Promise<unknown>,
+  ) {
+    if (scheduleActionLoading) return;
+
+    setScheduleActionLoading(key);
+    setActionResult(null);
+    try {
+      await action();
+      await loadMobileData();
+      setActionResult({ title, message: successMessage });
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Helix could not update that schedule block. Try again.";
+      setActionResult({ title, message, error: true });
+    } finally {
+      setScheduleActionLoading(null);
     }
   }
 
@@ -252,13 +353,44 @@ export default function MobileHelixPage() {
           messages={chatMessages}
           input={chatInput}
           loading={chatLoading}
+          retryingMessageId={retryingMessageId}
           onInputChange={setChatInput}
           onSubmit={sendChat}
+          onRetry={retryChatMessage}
         />
       ) : null}
 
       {activeTab === "schedule" ? (
-        <MobileSchedule blocks={todayBlocks} onStartPrompt={startPrompt} />
+        <MobileSchedule
+          blocks={todayBlocks}
+          actionLoading={scheduleActionLoading}
+          actionResult={actionResult}
+          onDone={(id) =>
+            runScheduleAction(
+              `schedule-done-${id}`,
+              "Schedule",
+              "Marked that block done.",
+              () => completeMobileScheduleBlock(id),
+            )
+          }
+          onRollLater={(id) =>
+            runScheduleAction(
+              `schedule-roll-later-${id}`,
+              "Schedule",
+              "Rolled that block later today.",
+              () => rollMobileScheduleBlockLater(id),
+            )
+          }
+          onRollTomorrow={(id) =>
+            runScheduleAction(
+              `schedule-roll-tomorrow-${id}`,
+              "Schedule",
+              "Rolled that block to tomorrow.",
+              () => rollMobileScheduleBlockTomorrow(id),
+            )
+          }
+          onStartPrompt={startPrompt}
+        />
       ) : null}
 
       {activeTab === "trading" ? (

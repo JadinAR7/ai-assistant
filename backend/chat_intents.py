@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable
 
 try:
@@ -12,7 +14,7 @@ try:
     import trading_coach
     import trading_correlation
     import trading_strategy
-    from orbit.models import InboxTaskCreate, MobileReminderCreate, ScheduleBlockCreate
+    from orbit.models import InboxTaskCreate, MobileReminderCreate, ScheduleBlockCreate, ScheduleBlockUpdate
     from orbit import service as orbit_service
 except ImportError:
     from . import agent_service
@@ -22,11 +24,13 @@ except ImportError:
     from . import trading_coach
     from . import trading_correlation
     from . import trading_strategy
-    from .orbit.models import InboxTaskCreate, MobileReminderCreate, ScheduleBlockCreate
+    from .orbit.models import InboxTaskCreate, MobileReminderCreate, ScheduleBlockCreate, ScheduleBlockUpdate
     from .orbit import service as orbit_service
 
 
 IntentHandler = Callable[[str], dict[str, Any]]
+DAY_PLAN_SESSION_PATH = Path(__file__).resolve().parent / ".day_plan_session.json"
+DAY_PLAN_BUFFER_MINUTES = 10
 
 
 def route_chat_intent(message: str) -> dict[str, Any] | None:
@@ -44,6 +48,10 @@ def route_chat_intent(message: str) -> dict[str, Any] | None:
     reminder_action = _parse_reminder_action(normalized)
     if reminder_action is not None:
         return _reminder_action_response(reminder_action)
+
+    day_plan_follow_up = _route_pending_day_plan_follow_up(normalized)
+    if day_plan_follow_up is not None:
+        return day_plan_follow_up
 
     day_plan = _parse_multi_task_day_plan(normalized)
     if day_plan is not None:
@@ -229,6 +237,38 @@ _DURATION_PHRASES = [
     re.compile(r"\bfor\s+(?P<amount>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+hours?\b"),
     re.compile(r"\bfor\s+(?P<amount>\d+)\s*(?:minutes?|mins?|min)\b"),
 ]
+_DAY_PLAN_DURATION_FOLLOW_UP_PATTERN = re.compile(
+    r"\b(?P<title>house|clean(?: the)? house|car|clean(?: my)? car|"
+    r"cleaning|errand|[a-z][a-z ]{1,40}?)\s+"
+    r"(?P<duration>an?\s+hour|\d+|one|two|three|four|five|six|seven|eight|nine|ten)"
+    r"(?:\s*(?P<unit>minutes?|mins?|min|hours?|hrs?|hr))?\b"
+)
+_DAY_PLAN_RELATIVE_START_PATTERN = re.compile(
+    r"\b(?:start\s+)?(?:in|after)\s+"
+    r"(?P<amount>\d+|one|two|three|four|five|six|seven|eight|nine|ten|an?)\s+"
+    r"(?P<unit>minutes?|mins?|min|hours?|hrs?|hr)\b|"
+    r"\b(?P<amount_from>\d+|one|two|three|four|five|six|seven|eight|nine|ten|an?)\s+"
+    r"(?P<unit_from>minutes?|mins?|min|hours?|hrs?|hr)\s+from\s+now\b"
+)
+_DAY_PLAN_NAP_PATTERN = re.compile(
+    r"\b(?:take\s+)?(?:an?\s+)?(?P<duration>\d+|one|two|three|four|five|six|seven|eight|nine|ten|an?)[-\s]+"
+    r"(?P<unit>minutes?|mins?|min|hours?|hrs?|hr)\s+nap\b"
+)
+_DAY_PLAN_EXACT_START_PATTERN = re.compile(
+    r"\b(?:start\s+)?at\s+(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*"
+    r"(?P<period>a\.?m\.?|p\.?m\.?|am|pm)?\b"
+)
+_DAY_PLAN_CONFIRMATIONS = {
+    "yes",
+    "yep",
+    "yeah",
+    "sure",
+    "do it",
+    "that works",
+    "sounds good",
+    "ok",
+    "okay",
+}
 
 
 def _parse_reminder_action(message: str) -> dict[str, Any] | None:
@@ -630,11 +670,15 @@ def _is_pattern_discovery_intent(message: str) -> bool:
 
 
 def _success_response(intent: str, message: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    response_data = data or {}
+    if intent.startswith("day_plan_") and intent != "day_plan_create":
+        response_data.setdefault("route", "day_plan_followup")
+        response_data.setdefault("used_model", False)
     return {
         "success": True,
         "model": f"intent:{intent}",
         "message": message,
-        "data": data or {},
+        "data": response_data,
     }
 
 
@@ -753,6 +797,15 @@ def _multi_task_day_plan_response(plan: dict[str, Any]) -> dict[str, Any]:
         )
 
     message = _format_day_plan_response(created_blocks, missing_duration_items)
+    _save_day_plan_session(
+        _build_day_plan_session(
+            today=today,
+            items=items,
+            created_tasks=created_tasks,
+            created_blocks=created_blocks,
+            missing_duration_items=missing_duration_items,
+        )
+    )
     return _success_response(
         "day_plan_create",
         message,
@@ -763,6 +816,586 @@ def _multi_task_day_plan_response(plan: dict[str, Any]) -> dict[str, Any]:
             "missing_duration_items": missing_duration_items,
         },
     )
+
+
+def _route_pending_day_plan_follow_up(message: str) -> dict[str, Any] | None:
+    session = _load_day_plan_session()
+    if session is None:
+        return None
+
+    if not _day_plan_session_is_active(session):
+        _clear_day_plan_session()
+        return None
+
+    if "after my nap" in message and not _parse_day_plan_start_time(message):
+        return _success_response(
+            "day_plan_clarify_nap",
+            "How long is the nap?",
+            {"pending_day_plan": session, "missing": "nap_duration"},
+        )
+
+    duration_updates = _parse_day_plan_duration_follow_up(message, session)
+    if duration_updates:
+        _apply_day_plan_duration_updates(session, duration_updates, estimated=False)
+        _save_day_plan_session(session)
+        return _success_response(
+            "day_plan_duration_update",
+            _format_day_plan_duration_update_response(duration_updates, estimated=False),
+            {"pending_day_plan": session, "duration_updates": duration_updates},
+        )
+
+    if _day_plan_estimate_request(message):
+        estimates = _estimate_missing_day_plan_durations(session)
+        if not estimates:
+            return _success_response(
+                "day_plan_clarify_duration",
+                "I still need durations for the remaining tasks.",
+                {"pending_day_plan": session},
+            )
+        _apply_day_plan_duration_updates(session, estimates, estimated=True)
+        _save_day_plan_session(session)
+        return _success_response(
+            "day_plan_duration_estimate",
+            _format_day_plan_duration_update_response(estimates, estimated=True),
+            {"pending_day_plan": session, "duration_updates": estimates},
+        )
+
+    start_time = _parse_day_plan_start_time(message)
+    if start_time is None and _day_plan_confirmation(message):
+        if _day_plan_has_missing_durations(session):
+            return _success_response(
+                "day_plan_clarify_duration",
+                _format_day_plan_missing_duration_prompt(session),
+                {"pending_day_plan": session},
+            )
+        start_time = _round_up_datetime(_day_plan_now(), 15)
+
+    if start_time is not None:
+        if _day_plan_has_missing_durations(session):
+            return _success_response(
+                "day_plan_clarify_duration",
+                _format_day_plan_missing_duration_prompt(session),
+                {"pending_day_plan": session},
+            )
+        try:
+            placement = _place_pending_day_plan(session, start_time)
+            _save_day_plan_session(session)
+        except Exception as exc:
+            return _success_response(
+                "day_plan_place_error",
+                f"Couldn't place that plan because {exc}.",
+                {"error": str(exc), "pending_day_plan": session},
+            )
+        return _success_response(
+            "day_plan_place",
+            _format_day_plan_placement_response(placement),
+            {"pending_day_plan": session, "placement": placement},
+        )
+
+    return None
+
+
+def _build_day_plan_session(
+    *,
+    today: date,
+    items: list[dict[str, Any]],
+    created_tasks: list[dict[str, Any]],
+    created_blocks: list[dict[str, Any]],
+    missing_duration_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    session_items: list[dict[str, Any]] = []
+    created_block_index = 0
+    for item in items:
+        title = str(item.get("title") or "").strip()
+        duration = item.get("duration_minutes")
+        item_blocks = _day_plan_schedule_blocks_for_item(item) if duration else []
+        block_ids: list[int] = []
+        for _block_title, _block_duration in item_blocks:
+            if created_block_index < len(created_blocks):
+                block_ids.append(int(created_blocks[created_block_index].get("id") or 0))
+            created_block_index += 1
+        session_items.append(
+            {
+                "title": title,
+                "duration_minutes": duration,
+                "priority": str(item.get("priority") or "normal"),
+                "status": "pending_duration" if not duration else "scheduled",
+                "split": item.get("split"),
+                "created_schedule_block_ids": [block_id for block_id in block_ids if block_id],
+            }
+        )
+
+    return {
+        "type": "day_plan",
+        "created_at": _day_plan_now().isoformat(),
+        "date": today.isoformat(),
+        "items": session_items,
+        "missing_duration_items": [
+            str(item.get("title") or "").strip()
+            for item in missing_duration_items
+            if str(item.get("title") or "").strip()
+        ],
+        "created_task_ids": [int(task.get("id") or 0) for task in created_tasks if task.get("id")],
+        "created_schedule_block_ids": [
+            int(block.get("id") or 0) for block in created_blocks if block.get("id")
+        ],
+        "placement_status": "flexible_created",
+    }
+
+
+def _load_day_plan_session() -> dict[str, Any] | None:
+    try:
+        data = json.loads(DAY_PLAN_SESSION_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("type") != "day_plan":
+        return None
+    return data
+
+
+def _save_day_plan_session(session: dict[str, Any]) -> None:
+    DAY_PLAN_SESSION_PATH.write_text(
+        json.dumps(session, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _clear_day_plan_session() -> None:
+    try:
+        DAY_PLAN_SESSION_PATH.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _day_plan_session_is_active(session: dict[str, Any]) -> bool:
+    if session.get("type") != "day_plan":
+        return False
+    try:
+        created_at = datetime.fromisoformat(str(session.get("created_at")))
+    except ValueError:
+        return False
+    now = _day_plan_now()
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=orbit_service.ORBIT_LOCAL_TIMEZONE)
+    return now - created_at <= timedelta(hours=8)
+
+
+def _day_plan_now() -> datetime:
+    return datetime.now(orbit_service.ORBIT_LOCAL_TIMEZONE)
+
+
+def _parse_day_plan_duration_follow_up(
+    message: str,
+    session: dict[str, Any],
+) -> list[dict[str, Any]]:
+    missing_items = session.get("missing_duration_items") or []
+    if not missing_items:
+        return []
+
+    updates: list[dict[str, Any]] = []
+    used_titles: set[str] = set()
+    for match in _DAY_PLAN_DURATION_FOLLOW_UP_PATTERN.finditer(message):
+        raw_title = str(match.group("title") or "").strip()
+        duration = _duration_match_to_minutes(match)
+        if duration is None:
+            continue
+        title = _match_pending_day_plan_title(raw_title, missing_items)
+        if title is None or title in used_titles:
+            continue
+        updates.append({"title": title, "duration_minutes": duration})
+        used_titles.add(title)
+    return updates
+
+
+def _duration_match_to_minutes(match: re.Match[str]) -> int | None:
+    amount_text = str(match.group("duration") or "").strip()
+    unit = str(match.group("unit") or "minutes").casefold()
+    if re.fullmatch(r"an?\s+hour", amount_text):
+        return 60
+    amount = _parse_small_number(amount_text)
+    if amount is None:
+        return None
+    return amount * 60 if unit.startswith(("h", "hr", "hour")) else amount
+
+
+def _match_pending_day_plan_title(raw_title: str, missing_items: list[str]) -> str | None:
+    normalized_raw = _normalize_day_plan_match_title(raw_title)
+    aliases = {
+        "house": "clean house",
+        "clean house": "clean house",
+        "clean the house": "clean house",
+        "car": "clean car",
+        "clean car": "clean car",
+        "clean my car": "clean car",
+    }
+    raw_key = aliases.get(normalized_raw, normalized_raw)
+    for title in missing_items:
+        normalized_title = _normalize_day_plan_match_title(title)
+        title_key = aliases.get(normalized_title, normalized_title)
+        if raw_key == title_key or raw_key in title_key or title_key in raw_key:
+            return title
+    return None
+
+
+def _normalize_day_plan_match_title(value: str) -> str:
+    return re.sub(r"\s+", " ", value.casefold().replace("the ", "").replace("my ", "")).strip()
+
+
+def _apply_day_plan_duration_updates(
+    session: dict[str, Any],
+    updates: list[dict[str, Any]],
+    *,
+    estimated: bool,
+) -> None:
+    update_map = {
+        str(update.get("title") or ""): int(update.get("duration_minutes") or 0)
+        for update in updates
+    }
+    for item in session.get("items") or []:
+        title = str(item.get("title") or "")
+        if title not in update_map:
+            continue
+        duration = update_map[title]
+        item["duration_minutes"] = duration
+        item["status"] = "pending_placement"
+        item["estimated_duration"] = estimated
+        if not item.get("created_schedule_block_ids"):
+            block = orbit_service.create_schedule_block(
+                ScheduleBlockCreate(
+                    title=title,
+                    block_type="flexible",
+                    category=_day_plan_schedule_category(title),
+                    specific_date=date.fromisoformat(str(session.get("date"))),
+                    duration_minutes=duration,
+                    recurrence="once",
+                    time_preference="anytime",
+                    flexible_placement_mode="preferred_day",
+                    priority="high" if item.get("priority") in {"high", "highest"} else "medium",
+                    notes="Created from mobile day planning follow-up.",
+                    active=True,
+                )
+            )
+            block_id = int(block.get("id") or 0)
+            item["created_schedule_block_ids"] = [block_id] if block_id else []
+            if block_id and block_id not in session.get("created_schedule_block_ids", []):
+                session.setdefault("created_schedule_block_ids", []).append(block_id)
+    session["missing_duration_items"] = [
+        title for title in session.get("missing_duration_items") or [] if title not in update_map
+    ]
+    if not session["missing_duration_items"]:
+        session["placement_status"] = "needs_start_time"
+
+
+def _day_plan_estimate_request(message: str) -> bool:
+    return bool(re.search(r"\bestimate(?: them| it| durations?)?\b", message))
+
+
+def _estimate_missing_day_plan_durations(session: dict[str, Any]) -> list[dict[str, Any]]:
+    estimates = []
+    for title in session.get("missing_duration_items") or []:
+        duration = _estimated_day_plan_duration(title)
+        if duration is not None:
+            estimates.append({"title": title, "duration_minutes": duration})
+    return estimates
+
+
+def _estimated_day_plan_duration(title: str) -> int | None:
+    normalized = _normalize_day_plan_match_title(title)
+    if "house" in normalized:
+        return 90
+    if "car" in normalized:
+        return 45
+    if "clean" in normalized:
+        return 60
+    if "errand" in normalized:
+        return 45
+    return None
+
+
+def _day_plan_has_missing_durations(session: dict[str, Any]) -> bool:
+    return bool(session.get("missing_duration_items"))
+
+
+def _parse_day_plan_start_time(message: str) -> datetime | None:
+    now = _day_plan_now()
+    nap_match = _DAY_PLAN_NAP_PATTERN.search(message)
+    if nap_match:
+        duration = _relative_time_match_to_minutes(nap_match.group("duration"), nap_match.group("unit"))
+        return _round_up_datetime(now + timedelta(minutes=duration), 1) if duration else None
+
+    relative_match = _DAY_PLAN_RELATIVE_START_PATTERN.search(message)
+    if relative_match:
+        amount = relative_match.group("amount") or relative_match.group("amount_from")
+        unit = relative_match.group("unit") or relative_match.group("unit_from")
+        duration = _relative_time_match_to_minutes(str(amount), str(unit))
+        return _round_up_datetime(now + timedelta(minutes=duration), 1) if duration else None
+
+    exact_match = _DAY_PLAN_EXACT_START_PATTERN.search(message)
+    if exact_match:
+        hour = int(exact_match.group("hour"))
+        minute = int(exact_match.group("minute") or "0")
+        period = (exact_match.group("period") or "").replace(".", "")
+        if period == "pm" and hour < 12:
+            hour += 12
+        elif period == "am" and hour == 12:
+            hour = 0
+        elif not period and 1 <= hour <= 11:
+            candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if candidate <= now:
+                hour += 12
+        if hour > 23 or minute > 59:
+            return None
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return candidate if candidate > now else None
+
+    return None
+
+
+def _relative_time_match_to_minutes(amount_text: str, unit: str) -> int | None:
+    amount_text = amount_text.casefold()
+    amount = 1 if amount_text in {"a", "an"} else _parse_small_number(amount_text)
+    if amount is None:
+        return None
+    return amount * 60 if unit.startswith(("h", "hr", "hour")) else amount
+
+
+def _round_up_datetime(value: datetime, interval_minutes: int) -> datetime:
+    interval = max(1, interval_minutes)
+    minute = ((value.minute + interval - 1) // interval) * interval
+    rounded = value.replace(second=0, microsecond=0)
+    if minute >= 60:
+        rounded = rounded.replace(minute=0) + timedelta(hours=1)
+    else:
+        rounded = rounded.replace(minute=minute)
+    return rounded
+
+
+def _day_plan_confirmation(message: str) -> bool:
+    return message in _DAY_PLAN_CONFIRMATIONS
+
+
+def _place_pending_day_plan(
+    session: dict[str, Any],
+    start_time: datetime,
+) -> list[dict[str, Any]]:
+    target_date = date.fromisoformat(str(session.get("date")))
+    current_minute = start_time.hour * 60 + start_time.minute
+    placed: list[dict[str, Any]] = []
+
+    for unit in _day_plan_units_for_placement(session):
+        title = unit["title"]
+        duration = unit["duration_minutes"]
+        block_ids = unit["block_ids"]
+        priority = unit["priority"]
+        existing_fixed = _existing_day_plan_fixed_block(title, target_date)
+        if existing_fixed is not None:
+            orbit_service.ensure_schedule_block_reminder(existing_fixed)
+            placed.append(existing_fixed)
+            current_minute = max(
+                current_minute,
+                _time_to_minutes(existing_fixed.get("end_time")) + DAY_PLAN_BUFFER_MINUTES,
+            )
+            continue
+
+        current_minute = _next_available_day_plan_start(current_minute, duration, target_date)
+        end_minute = current_minute + duration
+        block = orbit_service.create_schedule_block(
+            ScheduleBlockCreate(
+                title=title,
+                block_type="fixed",
+                category=_day_plan_schedule_category(title),
+                specific_date=target_date,
+                start_time=_minutes_to_time(current_minute),
+                end_time=_minutes_to_time(end_minute),
+                duration_minutes=duration,
+                recurrence="once",
+                time_preference="anytime",
+                flexible_placement_mode="preferred_day",
+                priority="high" if priority in {"high", "highest"} else "medium",
+                notes="Placed from mobile day planning follow-up.",
+                active=True,
+            )
+        )
+        placed.append(block)
+        _deactivate_source_day_plan_blocks(block_ids)
+        current_minute = end_minute + DAY_PLAN_BUFFER_MINUTES
+
+    session["placement_status"] = "placed"
+    session["placed_schedule_block_ids"] = [int(block.get("id") or 0) for block in placed if block.get("id")]
+    return placed
+
+
+def _day_plan_units_for_placement(session: dict[str, Any]) -> list[dict[str, Any]]:
+    items = [
+        item for item in session.get("items") or [] if int(item.get("duration_minutes") or 0) > 0
+    ]
+    highest_items = [item for item in items if item.get("priority") == "highest"]
+    high_items = [item for item in items if item.get("priority") == "high"]
+    normal_items = [item for item in items if item.get("priority") not in {"highest", "high"}]
+
+    first_split_units: list[dict[str, Any]] = []
+    later_split_units: list[dict[str, Any]] = []
+    normal_units: list[dict[str, Any]] = []
+    for item in normal_items:
+        item_units = _session_item_units_for_placement(item)
+        if len(item_units) > 1:
+            first_split_units.append(item_units[0])
+            later_split_units.extend(item_units[1:])
+        else:
+            normal_units.extend(item_units)
+
+    return [
+        *[
+            unit
+            for item in [*highest_items, *high_items]
+            for unit in _session_item_units_for_placement(item)
+        ],
+        *first_split_units,
+        *normal_units,
+        *later_split_units,
+    ]
+
+
+def _session_item_units_for_placement(
+    item: dict[str, Any],
+) -> list[dict[str, Any]]:
+    title = str(item.get("title") or "").strip()
+    block_ids = [int(block_id) for block_id in item.get("created_schedule_block_ids") or []]
+    priority = str(item.get("priority") or "normal")
+    split = item.get("split")
+    if isinstance(split, dict):
+        sessions = int(split.get("sessions") or 0)
+        duration = int(split.get("duration_minutes") or 0)
+        if sessions > 0 and duration > 0:
+            return [
+                {
+                    "title": f"{title} Session {index}",
+                    "duration_minutes": duration,
+                    "block_ids": block_ids[index - 1 : index],
+                    "priority": priority,
+                }
+                for index in range(1, sessions + 1)
+            ]
+    return [
+        {
+            "title": title,
+            "duration_minutes": int(item.get("duration_minutes") or 0),
+            "block_ids": block_ids,
+            "priority": priority,
+        }
+    ]
+
+
+def _existing_day_plan_fixed_block(title: str, target_date: date) -> dict[str, Any] | None:
+    for block in orbit_service.list_schedule_blocks():
+        if not block.get("active"):
+            continue
+        if str(block.get("block_type") or "") != "fixed":
+            continue
+        if str(block.get("specific_date") or "") != target_date.isoformat():
+            continue
+        if str(block.get("title") or "").strip().casefold() == title.casefold():
+            return block
+    return None
+
+
+def _next_available_day_plan_start(
+    start_minute: int,
+    duration: int,
+    target_date: date,
+) -> int:
+    candidate = start_minute
+    fixed_blocks = [
+        block
+        for block in orbit_service.list_schedule_blocks()
+        if block.get("active")
+        and str(block.get("block_type") or "") == "fixed"
+        and str(block.get("specific_date") or "") == target_date.isoformat()
+    ]
+    while True:
+        conflict = None
+        for block in fixed_blocks:
+            block_start = _time_to_minutes(block.get("start_time"))
+            block_end = _time_to_minutes(block.get("end_time"))
+            if candidate < block_end and candidate + duration > block_start:
+                conflict = block_end + DAY_PLAN_BUFFER_MINUTES
+                break
+        if conflict is None:
+            return candidate
+        candidate = conflict
+
+
+def _deactivate_source_day_plan_blocks(block_ids: list[int]) -> None:
+    for block_id in block_ids:
+        if block_id <= 0:
+            continue
+        orbit_service.update_schedule_block(block_id, ScheduleBlockUpdate(active=False))
+
+
+def _time_to_minutes(value: Any) -> int:
+    parts = str(value or "00:00").split(":")
+    try:
+        return int(parts[0]) * 60 + int(parts[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def _minutes_to_time(minutes: int) -> str:
+    minutes = max(0, minutes)
+    hour = (minutes // 60) % 24
+    minute = minutes % 60
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _format_day_plan_duration_update_response(
+    updates: list[dict[str, Any]],
+    *,
+    estimated: bool,
+) -> str:
+    verb = "estimated" if estimated else "updated"
+    lines = [f"I {verb}:"]
+    for update in updates:
+        lines.append(f"- {update['title']} - {update['duration_minutes']} min")
+    lines.append("")
+    lines.append('Reply "yes" to place them, or send a start time like "start in 30 minutes."')
+    return "\n".join(lines)
+
+
+def _format_day_plan_missing_duration_prompt(session: dict[str, Any]) -> str:
+    lines = ["I still need durations for:"]
+    for title in session.get("missing_duration_items") or []:
+        lines.append(f"- {title}")
+    lines.append("")
+    lines.append('Send durations like "house 90, car 45" or say "estimate them."')
+    return "\n".join(lines)
+
+
+def _format_day_plan_placement_response(placed: list[dict[str, Any]]) -> str:
+    if not placed:
+        return "I did not find any day-plan blocks to place."
+    first = placed[0]
+    message = [
+        f"Got it - I placed the plan starting at {_display_time(first.get('start_time'))}.",
+        "",
+        "Placed today:",
+    ]
+    for block in placed:
+        message.append(
+            f"- {_display_time(block.get('start_time'))}-{_display_time(block.get('end_time'))} "
+            f"{block.get('title')}"
+        )
+    message.append("")
+    message.append("I used short buffers and kept the highest-priority task first.")
+    return "\n".join(message)
+
+
+def _display_time(value: Any) -> str:
+    minutes = _time_to_minutes(value)
+    hour = minutes // 60
+    minute = minutes % 60
+    suffix = "AM" if hour < 12 else "PM"
+    display_hour = hour % 12 or 12
+    return f"{display_hour}:{minute:02d} {suffix}"
 
 
 def _day_plan_schedule_blocks_for_item(item: dict[str, Any]) -> list[tuple[str, int]]:
