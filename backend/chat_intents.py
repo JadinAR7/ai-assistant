@@ -12,7 +12,7 @@ try:
     import trading_coach
     import trading_correlation
     import trading_strategy
-    from orbit.models import MobileReminderCreate, ScheduleBlockCreate
+    from orbit.models import InboxTaskCreate, MobileReminderCreate, ScheduleBlockCreate
     from orbit import service as orbit_service
 except ImportError:
     from . import agent_service
@@ -22,7 +22,7 @@ except ImportError:
     from . import trading_coach
     from . import trading_correlation
     from . import trading_strategy
-    from .orbit.models import MobileReminderCreate, ScheduleBlockCreate
+    from .orbit.models import InboxTaskCreate, MobileReminderCreate, ScheduleBlockCreate
     from .orbit import service as orbit_service
 
 
@@ -44,6 +44,10 @@ def route_chat_intent(message: str) -> dict[str, Any] | None:
     reminder_action = _parse_reminder_action(normalized)
     if reminder_action is not None:
         return _reminder_action_response(reminder_action)
+
+    day_plan = _parse_multi_task_day_plan(normalized)
+    if day_plan is not None:
+        return _multi_task_day_plan_response(day_plan)
 
     schedule_action = _parse_schedule_action(normalized)
     if schedule_action is not None:
@@ -192,6 +196,39 @@ _REMINDER_DAYPART_HOURS = {
     "evening": 19,
     "tonight": 19,
 }
+_NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+_DAY_PLAN_TRIGGERS = [
+    "things done today",
+    "get these done today",
+    "schedule these today",
+    "need to do today",
+    "do today",
+    "done today",
+]
+_DAY_PLAN_ITEM_PATTERN = re.compile(
+    r"(?:^|\s)(?:[-*•]|\d+[\.\)])\s+"
+    r"(?P<item>.*?)(?=\s+(?:[-*•]|\d+[\.\)])\s+|$)"
+)
+_SPLIT_SESSION_PATTERN = re.compile(
+    r"\b(?P<sessions>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
+    r"(?P<duration>\d+)\s*[- ]?min(?:ute)?s?\s+sessions?\b"
+)
+_DURATION_PHRASES = [
+    re.compile(r"\bfor\s+an?\s+hour\b"),
+    re.compile(r"\bfor\s+(?P<amount>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+hours?\b"),
+    re.compile(r"\bfor\s+(?P<amount>\d+)\s*(?:minutes?|mins?|min)\b"),
+]
 
 
 def _parse_reminder_action(message: str) -> dict[str, Any] | None:
@@ -274,6 +311,106 @@ def _extract_reminder_title(message: str) -> str:
     )
     title = re.sub(r"\s+", " ", title).strip(" .,:;-")
     return title or "Reminder"
+
+
+def _parse_multi_task_day_plan(message: str) -> dict[str, Any] | None:
+    has_today_plan_trigger = _contains_any(message, _DAY_PLAN_TRIGGERS)
+    raw_items = [
+        match.group("item").strip(" ;,.")
+        for match in _DAY_PLAN_ITEM_PATTERN.finditer(message)
+    ]
+    items = [_parse_day_plan_item(item) for item in raw_items if item]
+    items = [item for item in items if item.get("title")]
+
+    if len(items) < 2:
+        return None
+
+    duration_count = sum(1 for item in items if item.get("duration_minutes"))
+    if not has_today_plan_trigger and duration_count < 2:
+        return None
+
+    return {
+        "items": items,
+        "today": "today" in message,
+        "raw_message": message,
+    }
+
+
+def _parse_day_plan_item(text: str) -> dict[str, Any]:
+    split = _parse_split_sessions(text)
+    duration_minutes = _parse_day_plan_duration(text)
+    priority = "highest" if "highest priority" in text else "normal"
+    if priority == "normal" and "high priority" in text:
+        priority = "high"
+
+    title = _clean_day_plan_title(text)
+    return {
+        "title": title,
+        "duration_minutes": duration_minutes,
+        "split": split,
+        "priority": priority,
+        "raw_text": text,
+    }
+
+
+def _parse_split_sessions(text: str) -> dict[str, int] | None:
+    match = _SPLIT_SESSION_PATTERN.search(text)
+    if not match:
+        return None
+
+    sessions = _parse_small_number(match.group("sessions"))
+    duration = int(match.group("duration"))
+    if sessions is None or sessions < 1 or duration < 1:
+        return None
+    return {"sessions": sessions, "duration_minutes": duration}
+
+
+def _parse_day_plan_duration(text: str) -> int | None:
+    split = _parse_split_sessions(text)
+    if split:
+        return split["sessions"] * split["duration_minutes"]
+
+    if re.search(r"\bfor\s+an?\s+hour\b", text):
+        return 60
+
+    hour_match = re.search(
+        r"\bfor\s+(?P<amount>\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+hours?\b",
+        text,
+    )
+    if hour_match:
+        amount = _parse_small_number(hour_match.group("amount"))
+        return amount * 60 if amount is not None else None
+
+    minute_match = re.search(r"\bfor\s+(?P<amount>\d+)\s*(?:minutes?|mins?|min)\b", text)
+    if minute_match:
+        return int(minute_match.group("amount"))
+
+    return None
+
+
+def _parse_small_number(value: str) -> int | None:
+    if value.isdigit():
+        return int(value)
+    return _NUMBER_WORDS.get(value)
+
+
+def _clean_day_plan_title(text: str) -> str:
+    title = text
+    for pattern in _DURATION_PHRASES:
+        title = pattern.sub("", title)
+    title = _SPLIT_SESSION_PATTERN.sub("", title)
+    title = re.sub(r"\b(?:highest|high)\s+priority\b", "", title)
+    title = re.sub(
+        r"\bmy\s+(?=japanese|trading strategy|trades?|schedule|tasks?)",
+        "",
+        title,
+    )
+    title = re.sub(r"\s+", " ", title)
+    title = title.strip(" ;,.-")
+    if not title:
+        return ""
+    title = title[0].upper() + title[1:]
+    return re.sub(r"\bjapanese\b", "Japanese", title, flags=re.IGNORECASE)
 
 
 def _parse_schedule_action(message: str) -> dict[str, Any] | None:
@@ -554,6 +691,146 @@ def _reminder_action_response(action: dict[str, Any]) -> dict[str, Any]:
         message,
         {"reminder": reminder},
     )
+
+
+def _multi_task_day_plan_response(plan: dict[str, Any]) -> dict[str, Any]:
+    items = plan.get("items") or []
+    today = datetime.now(orbit_service.ORBIT_LOCAL_TIMEZONE).date()
+    created_tasks = []
+    created_blocks = []
+    missing_duration_items = []
+
+    try:
+        for item in items:
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+
+            duration = item.get("duration_minutes")
+            priority = str(item.get("priority") or "normal")
+            description_parts = ["Captured from mobile day planning."]
+            if duration:
+                description_parts.append(f"Duration: {duration} minutes.")
+            if priority in {"high", "highest"}:
+                description_parts.append(f"Priority: {priority}.")
+
+            task = orbit_service.create_inbox_task(
+                InboxTaskCreate(
+                    title=title,
+                    description=" ".join(description_parts),
+                    status="queued",
+                    due_date=today,
+                )
+            )
+            created_tasks.append(task)
+
+            if not duration:
+                missing_duration_items.append(item)
+                continue
+
+            for block_title, block_duration in _day_plan_schedule_blocks_for_item(item):
+                block = orbit_service.create_schedule_block(
+                    ScheduleBlockCreate(
+                        title=block_title,
+                        block_type="flexible",
+                        category=_day_plan_schedule_category(title),
+                        specific_date=today,
+                        duration_minutes=block_duration,
+                        recurrence="once",
+                        time_preference="anytime",
+                        flexible_placement_mode="preferred_day",
+                        priority="high" if priority in {"high", "highest"} else "medium",
+                        notes="Created from mobile day planning chat intent.",
+                        active=True,
+                    )
+                )
+                created_blocks.append(block)
+    except Exception as exc:
+        return _success_response(
+            "day_plan_error",
+            f"Couldn't create that day plan because {exc}.",
+            {"error": str(exc), "day_plan": plan},
+        )
+
+    message = _format_day_plan_response(created_blocks, missing_duration_items)
+    return _success_response(
+        "day_plan_create",
+        message,
+        {
+            "items": items,
+            "created_tasks": created_tasks,
+            "created_schedule_blocks": created_blocks,
+            "missing_duration_items": missing_duration_items,
+        },
+    )
+
+
+def _day_plan_schedule_blocks_for_item(item: dict[str, Any]) -> list[tuple[str, int]]:
+    title = str(item.get("title") or "").strip()
+    split = item.get("split")
+    if isinstance(split, dict):
+        sessions = int(split.get("sessions") or 0)
+        duration = int(split.get("duration_minutes") or 0)
+        if sessions > 1 and duration > 0:
+            return [
+                (f"{title} Session {index}", duration)
+                for index in range(1, sessions + 1)
+            ]
+
+    duration_minutes = int(item.get("duration_minutes") or 0)
+    return [(title, duration_minutes)] if duration_minutes > 0 else []
+
+
+def _day_plan_schedule_category(title: str) -> str:
+    text = title.casefold()
+    if "family" in text:
+        return "family"
+    if "read" in text or "japanese" in text:
+        return "reading"
+    if "trade" in text or "backtest" in text:
+        return "trading"
+    if "workout" in text or "exercise" in text:
+        return "personal"
+    return "personal"
+
+
+def _format_day_plan_response(
+    created_blocks: list[dict[str, Any]],
+    missing_duration_items: list[dict[str, Any]],
+) -> str:
+    lines = []
+    if created_blocks:
+        lines.append("I created today schedule blocks for:")
+        lines.append("")
+        for block in created_blocks:
+            lines.append(
+                f"- {block.get('title')} - {block.get('duration_minutes')} min"
+            )
+        lines.append("")
+        lines.append(
+            "I added them as flexible blocks for today so you can place them around your day."
+        )
+    else:
+        lines.append("I found your list, but I need durations before I schedule it.")
+
+    if missing_duration_items:
+        lines.append("")
+        high_missing = [
+            item for item in missing_duration_items if item.get("priority") == "highest"
+        ]
+        if high_missing:
+            high_titles = ", ".join(str(item.get("title")) for item in high_missing)
+            lines.append(f"I marked {high_titles} as highest priority.")
+            lines.append("")
+        lines.append("I need durations for:")
+        for item in missing_duration_items:
+            lines.append(f"- {item.get('title')}")
+        lines.append("")
+        lines.append(
+            'Reply with durations like: "house 90, car 45" or say "estimate them."'
+        )
+
+    return "\n".join(lines).strip()
 
 
 def _schedule_action_response(action: dict[str, Any]) -> dict[str, Any]:
