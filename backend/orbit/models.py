@@ -26,7 +26,7 @@ DayOfWeek = Literal[
     "sunday",
 ]
 ScheduleBlockPriority = Literal["low", "medium", "high"]
-ScheduleBlockStatus = Literal["upcoming", "due_now", "active", "done", "rolled", "missed"]
+ScheduleBlockStatus = Literal["upcoming", "due_now", "active", "paused", "done", "rolled", "missed"]
 ScheduleTimePreference = Literal["anytime", "morning", "afternoon", "evening", "night"]
 FlexiblePlacementMode = Literal["whenever_free", "preferred_day"]
 ScheduleRecurrenceEndType = Literal["never", "date", "occurrences", "weeks"]
@@ -166,6 +166,7 @@ class ScheduleBlockUpdate(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     rolled_at: Optional[datetime] = None
+    paused_at: Optional[datetime] = None
 
 
 class ScheduleDayTime(BaseModel):
@@ -185,6 +186,7 @@ class ScheduleBlock(ScheduleBlockBase):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     rolled_at: Optional[datetime] = None
+    paused_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

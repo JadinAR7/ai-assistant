@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import {
   MobileCard,
   MobilePrimaryButton,
@@ -16,8 +18,12 @@ export default function MobileSchedule({
   actionResult,
   onStart,
   onDone,
+  onPause,
+  onResume,
+  onExtend,
   onRollLater,
   onRollTomorrow,
+  onSwap,
   onStartPrompt,
 }: Readonly<{
   blocks: ScheduleBlock[];
@@ -25,12 +31,17 @@ export default function MobileSchedule({
   actionResult: MobileActionResult | null;
   onStart: (id: number) => void;
   onDone: (id: number) => void;
+  onPause: (id: number) => void;
+  onResume: (id: number) => void;
+  onExtend: (id: number, minutes?: number) => void;
   onRollLater: (id: number) => void;
   onRollTomorrow: (id: number) => void;
+  onSwap: (id: number, withBlockId: number) => void;
   onStartPrompt: (prompt: string) => void;
 }>) {
   const { placed, waiting } = splitPlacedAndWaitingBlocks(blocks);
   const actionableBlock = placed[0] ?? null;
+  const [swapOpenForId, setSwapOpenForId] = useState<number | null>(null);
 
   return (
     <>
@@ -49,8 +60,19 @@ export default function MobileSchedule({
                 actionLoading={actionLoading}
                 onStart={onStart}
                 onDone={onDone}
+                onPause={onPause}
+                onResume={onResume}
+                onExtend={onExtend}
                 onRollLater={onRollLater}
                 onRollTomorrow={onRollTomorrow}
+                onSwap={onSwap}
+                swapCandidates={placed.filter((candidate) => candidate.id !== block.id)}
+                swapOpen={swapOpenForId === block.id}
+                onToggleSwap={() =>
+                  setSwapOpenForId((current) =>
+                    current === block.id ? null : block.id,
+                  )
+                }
               />
             ))
           ) : (
@@ -128,23 +150,42 @@ function ScheduleBlockRow({
   actionLoading,
   onStart,
   onDone,
+  onPause,
+  onResume,
+  onExtend,
   onRollLater,
   onRollTomorrow,
+  onSwap,
+  swapCandidates,
+  swapOpen,
+  onToggleSwap,
 }: Readonly<{
   block: ScheduleBlock;
   showActions: boolean;
   actionLoading: string | null;
   onStart: (id: number) => void;
   onDone: (id: number) => void;
+  onPause: (id: number) => void;
+  onResume: (id: number) => void;
+  onExtend: (id: number, minutes?: number) => void;
   onRollLater: (id: number) => void;
   onRollTomorrow: (id: number) => void;
+  onSwap: (id: number, withBlockId: number) => void;
+  swapCandidates: ScheduleBlock[];
+  swapOpen: boolean;
+  onToggleSwap: () => void;
 }>) {
   const doneKey = `schedule-done-${block.id}`;
   const startKey = `schedule-start-${block.id}`;
+  const pauseKey = `schedule-pause-${block.id}`;
+  const resumeKey = `schedule-resume-${block.id}`;
+  const extendKey = `schedule-extend-${block.id}`;
   const laterKey = `schedule-roll-later-${block.id}`;
   const tomorrowKey = `schedule-roll-tomorrow-${block.id}`;
+  const swapKey = `schedule-swap-${block.id}`;
   const lifecycle = block.lifecycle_status || block.status || "upcoming";
   const isActive = lifecycle === "active";
+  const isPaused = lifecycle === "paused";
   const isDone = lifecycle === "done";
   const isDue = lifecycle === "due_now";
 
@@ -168,6 +209,13 @@ function ScheduleBlockRow({
             >
               {actionLoading === doneKey ? "Saving..." : "Done"}
             </MobilePrimaryButton>
+          ) : isPaused ? (
+            <MobilePrimaryButton
+              onClick={() => onResume(block.id)}
+              disabled={Boolean(actionLoading)}
+            >
+              {actionLoading === resumeKey ? "Resuming..." : "Resume"}
+            </MobilePrimaryButton>
           ) : (
             <MobilePrimaryButton
               onClick={() => onStart(block.id)}
@@ -180,22 +228,77 @@ function ScheduleBlockRow({
                   : "Start early"}
             </MobilePrimaryButton>
           )}
-          <MobileSecondaryButton
-            onClick={() => onRollLater(block.id)}
-            disabled={Boolean(actionLoading)}
-          >
-            {actionLoading === laterKey || actionLoading === tomorrowKey
-              ? "Rolling..."
-              : "Roll"}
-          </MobileSecondaryButton>
-          <div className="col-span-2">
+          {isActive ? (
+            <MobileSecondaryButton
+              onClick={() => onPause(block.id)}
+              disabled={Boolean(actionLoading)}
+            >
+              {actionLoading === pauseKey ? "Pausing..." : "Pause"}
+            </MobileSecondaryButton>
+          ) : isPaused ? (
+            <MobileSecondaryButton
+              onClick={() => onDone(block.id)}
+              disabled={Boolean(actionLoading)}
+            >
+              {actionLoading === doneKey ? "Saving..." : "Done"}
+            </MobileSecondaryButton>
+          ) : (
+            <MobileSecondaryButton
+              onClick={() => onRollLater(block.id)}
+              disabled={Boolean(actionLoading)}
+            >
+              {actionLoading === laterKey || actionLoading === tomorrowKey
+                ? "Rolling..."
+                : "Roll"}
+            </MobileSecondaryButton>
+          )}
+          {isActive ? (
+            <MobileSecondaryButton
+              onClick={() => onExtend(block.id, 15)}
+              disabled={Boolean(actionLoading)}
+            >
+              {actionLoading === extendKey ? "Extending..." : "Extend +15"}
+            </MobileSecondaryButton>
+          ) : null}
+          {(isActive || isPaused) ? (
+            <MobileSecondaryButton
+              onClick={() => onRollLater(block.id)}
+              disabled={Boolean(actionLoading)}
+            >
+              {actionLoading === laterKey || actionLoading === tomorrowKey
+                ? "Rolling..."
+                : "Roll"}
+            </MobileSecondaryButton>
+          ) : null}
+          <div className="col-span-2 grid grid-cols-2 gap-2">
             <MobileSecondaryButton
               onClick={() => onRollTomorrow(block.id)}
               disabled={Boolean(actionLoading)}
             >
               {actionLoading === tomorrowKey ? "Moving..." : "Tomorrow"}
             </MobileSecondaryButton>
+            <MobileSecondaryButton
+              onClick={onToggleSwap}
+              disabled={Boolean(actionLoading) || swapCandidates.length === 0}
+            >
+              {actionLoading === swapKey ? "Swapping..." : "Swap"}
+            </MobileSecondaryButton>
           </div>
+          {swapOpen ? (
+            <div className="col-span-2 grid gap-2 rounded-xl border border-white/10 bg-white/[0.03] p-2">
+              {swapCandidates.map((candidate) => (
+                <button
+                  key={candidate.id}
+                  type="button"
+                  onClick={() => onSwap(block.id, candidate.id)}
+                  disabled={Boolean(actionLoading)}
+                  className="min-h-10 rounded-lg border border-white/10 bg-black/20 px-3 text-left text-xs font-semibold text-neutral-100 disabled:opacity-50"
+                >
+                  {getBlockTitle(candidate)} · {getBlockTime(candidate)}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : showActions && isDone ? (
         <p className="mt-3 rounded-xl border border-emerald-300/20 bg-emerald-300/10 px-3 py-2 text-xs font-semibold text-emerald-100">

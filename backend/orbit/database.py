@@ -310,6 +310,7 @@ def init_orbit_db() -> None:
             started_at TEXT,
             completed_at TEXT,
             rolled_at TEXT,
+            paused_at TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             CHECK (block_type IN ('fixed', 'flexible')),
@@ -388,6 +389,8 @@ def init_orbit_db() -> None:
         cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN completed_at TEXT")
     if "rolled_at" not in schedule_block_columns:
         cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN rolled_at TEXT")
+    if "paused_at" not in schedule_block_columns:
+        cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN paused_at TEXT")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS mobile_reminders (

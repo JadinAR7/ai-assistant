@@ -51,11 +51,12 @@ export type ScheduleBlock = {
   duration_minutes?: number | null;
   active?: boolean;
   priority?: string;
-  status?: "upcoming" | "due_now" | "active" | "done" | "rolled" | "missed";
-  lifecycle_status?: "upcoming" | "due_now" | "active" | "done" | "rolled" | "missed";
+  status?: "upcoming" | "due_now" | "active" | "paused" | "done" | "rolled" | "missed";
+  lifecycle_status?: "upcoming" | "due_now" | "active" | "paused" | "done" | "rolled" | "missed";
   started_at?: string | null;
   completed_at?: string | null;
   rolled_at?: string | null;
+  paused_at?: string | null;
 };
 
 export type ScanStatus = {

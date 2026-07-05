@@ -17,8 +17,12 @@ import {
   fetchMobileData,
   MobileChatError,
   completeMobileScheduleBlock,
+  extendMobileScheduleBlock,
+  pauseMobileScheduleBlock,
+  resumeMobileScheduleBlock,
   rollMobileScheduleBlockLater,
   rollMobileScheduleBlockTomorrow,
+  swapMobileScheduleBlock,
   startMobileScheduleBlock,
   runMobileScanner,
   sendMobileChat,
@@ -89,6 +93,21 @@ export default function MobileHelixPage() {
     }, 0);
 
     return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    function refreshIfVisible() {
+      if (document.hidden) return;
+      void loadMobileData();
+    }
+
+    const interval = window.setInterval(refreshIfVisible, 5000);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
   }, []);
 
   function startPrompt(prompt: string) {
@@ -317,6 +336,42 @@ export default function MobileHelixPage() {
     );
   }
 
+  function pauseScheduleBlock(id: number) {
+    runScheduleAction(
+      `schedule-pause-${id}`,
+      "Schedule",
+      "Paused that block.",
+      () => pauseMobileScheduleBlock(id),
+    );
+  }
+
+  function resumeScheduleBlock(id: number) {
+    runScheduleAction(
+      `schedule-resume-${id}`,
+      "Schedule",
+      "Resumed that block.",
+      () => resumeMobileScheduleBlock(id),
+    );
+  }
+
+  function extendScheduleBlock(id: number, minutes = 15) {
+    runScheduleAction(
+      `schedule-extend-${id}`,
+      "Schedule",
+      `Extended that block by ${minutes} minutes.`,
+      () => extendMobileScheduleBlock(id, minutes),
+    );
+  }
+
+  function swapScheduleBlocks(id: number, withBlockId: number) {
+    runScheduleAction(
+      `schedule-swap-${id}`,
+      "Schedule",
+      "Swapped those blocks.",
+      () => swapMobileScheduleBlock(id, withBlockId),
+    );
+  }
+
   function rollScheduleBlockLater(id: number) {
     runScheduleAction(
       `schedule-roll-later-${id}`,
@@ -369,6 +424,9 @@ export default function MobileHelixPage() {
             )
           }
           onStartScheduleBlock={startScheduleBlock}
+          onPauseScheduleBlock={pauseScheduleBlock}
+          onResumeScheduleBlock={resumeScheduleBlock}
+          onExtendScheduleBlock={extendScheduleBlock}
           onRollScheduleBlock={rollScheduleBlockLater}
           onAckNotification={(id) =>
             runMobileQueueAction(`notification-ack-${id}`, "Notification dismissed", () =>
@@ -406,8 +464,12 @@ export default function MobileHelixPage() {
           actionResult={actionResult}
           onStart={startScheduleBlock}
           onDone={completeScheduleBlock}
+          onPause={pauseScheduleBlock}
+          onResume={resumeScheduleBlock}
+          onExtend={extendScheduleBlock}
           onRollLater={rollScheduleBlockLater}
           onRollTomorrow={rollScheduleBlockTomorrow}
+          onSwap={swapScheduleBlocks}
           onStartPrompt={startPrompt}
         />
       ) : null}

@@ -645,6 +645,14 @@ class PresenceRequest(BaseModel):
     mode: str
 
 
+class MobileScheduleExtendRequest(BaseModel):
+    minutes: int = 15
+
+
+class MobileScheduleSwapRequest(BaseModel):
+    with_block_id: int
+
+
 class ScannerSettingsRequest(BaseModel):
     default_symbol: str | None = None
     scanner_enabled: bool | None = None
@@ -894,6 +902,60 @@ def complete_mobile_schedule_block(schedule_block_id: int):
 def start_mobile_schedule_block(schedule_block_id: int):
     try:
         return orbit_service.start_schedule_block_for_mobile(schedule_block_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/mobile/schedule-blocks/{schedule_block_id}/pause", response_model=ScheduleBlock)
+def pause_mobile_schedule_block(schedule_block_id: int):
+    try:
+        return orbit_service.pause_schedule_block_for_mobile(schedule_block_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/mobile/schedule-blocks/{schedule_block_id}/resume", response_model=ScheduleBlock)
+def resume_mobile_schedule_block(schedule_block_id: int):
+    try:
+        return orbit_service.resume_schedule_block_for_mobile(schedule_block_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/mobile/schedule-blocks/{schedule_block_id}/extend")
+def extend_mobile_schedule_block(
+    schedule_block_id: int,
+    request: MobileScheduleExtendRequest,
+):
+    try:
+        block = orbit_service.extend_schedule_block_for_mobile(
+            schedule_block_id,
+            minutes=request.minutes,
+        )
+        return {
+            "success": True,
+            "block": block,
+            "schedule_blocks": orbit_service.list_schedule_blocks(),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/mobile/schedule-blocks/{schedule_block_id}/swap")
+def swap_mobile_schedule_block(
+    schedule_block_id: int,
+    request: MobileScheduleSwapRequest,
+):
+    try:
+        result = orbit_service.swap_schedule_blocks_for_mobile(
+            schedule_block_id,
+            request.with_block_id,
+        )
+        return {
+            "success": True,
+            **result,
+            "schedule_blocks": orbit_service.list_schedule_blocks(),
+        }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -142,6 +142,7 @@ Open decisions:
 * Native iOS/TestFlight/private install can come later after mobile workflows are proven.
 * Push notifications, reminders, badges, and notification acknowledgement need a dedicated design.
 * Avoid exposing the local assistant publicly without auth, rate limits, and transport security.
+* If the Mac mini sleeps, backend services pause and mobile state may not update. Mobile polling refreshes the UI when the backend is reachable again; for reliable daily assistant behavior, configure the Mac mini to avoid sleep while Helix services are expected to run. Use `pmset -g` to inspect current macOS power settings before making manual changes.
 
 ## Current Status
 

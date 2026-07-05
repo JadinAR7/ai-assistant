@@ -145,6 +145,7 @@ TABLE_COLUMNS = {
         "started_at",
         "completed_at",
         "rolled_at",
+        "paused_at",
     ],
     "mobile_reminders": [
         "title",
@@ -185,7 +186,7 @@ SCHEDULE_TIME_PREFERENCES = {
     "anytime",
     *SCHEDULE_TIME_PREFERENCE_WINDOWS.keys(),
 }
-SCHEDULE_BLOCK_STATUSES = {"upcoming", "due_now", "active", "done", "rolled", "missed"}
+SCHEDULE_BLOCK_STATUSES = {"upcoming", "due_now", "active", "paused", "done", "rolled", "missed"}
 SCHEDULE_FLEXIBLE_PLACEMENT_MODES = {"whenever_free", "preferred_day"}
 SCHEDULE_RECURRENCE_END_TYPES = {"never", "date", "occurrences", "weeks"}
 SCHEDULE_DAY_ORDER = [
@@ -368,7 +369,9 @@ def _schedule_title_from_reminder(reminder: dict[str, Any]) -> str:
 
 def _schedule_reminder_actions(lifecycle: Any) -> list[str]:
     if lifecycle == "active":
-        return ["done", "roll"]
+        return ["done", "pause", "extend", "roll"]
+    if lifecycle == "paused":
+        return ["resume", "roll", "done"]
     if lifecycle == "done":
         return []
     return ["start_checkin", "roll"]
@@ -1115,6 +1118,41 @@ def complete_schedule_block_for_mobile(record_id: int) -> dict[str, Any] | None:
     return record
 
 
+def extend_schedule_block_for_mobile(
+    record_id: int,
+    minutes: int = 15,
+) -> dict[str, Any]:
+    block = get_record("schedule_blocks", record_id)
+    if block is None:
+        raise ValueError(f"Schedule block {record_id} not found.")
+    if str(block.get("block_type") or "") != "fixed":
+        raise ValueError("Only placed schedule blocks can be extended.")
+
+    extension = max(1, min(int(minutes or 15), 120))
+    start_minute = _schedule_time_to_minutes(block.get("start_time")) or 0
+    end_minute = _schedule_time_to_minutes(block.get("end_time")) or start_minute
+    new_end = end_minute + extension
+    duration = max(1, new_end - start_minute)
+    if new_end > 21 * 60:
+        raise ValueError("Extending this pushes the block past 9 PM. Roll it to tomorrow?")
+
+    updated = update_schedule_block(
+        record_id,
+        ScheduleBlockUpdate(
+            end_time=_schedule_minutes_to_time(new_end),
+            duration_minutes=duration,
+        ),
+    )
+    target_date = _parse_date(str(block.get("specific_date") or ""))
+    if target_date is not None:
+        _shift_same_day_blocks_after(
+            block_id=record_id,
+            target_date=target_date,
+            cursor_minute=new_end + 10,
+        )
+    return updated or _with_schedule_block_lifecycle(block)
+
+
 def start_schedule_block_for_mobile(record_id: int) -> dict[str, Any]:
     block = get_record("schedule_blocks", record_id)
     if block is None:
@@ -1130,9 +1168,110 @@ def start_schedule_block_for_mobile(record_id: int) -> dict[str, Any]:
         ScheduleBlockUpdate(
             status="active",
             started_at=datetime.now(ORBIT_LOCAL_TIMEZONE),
+            paused_at=None,
             active=True,
         ),
     ) or _with_schedule_block_lifecycle(block)
+
+
+def pause_schedule_block_for_mobile(record_id: int) -> dict[str, Any]:
+    block = get_record("schedule_blocks", record_id)
+    if block is None:
+        raise ValueError(f"Schedule block {record_id} not found.")
+    lifecycle = _with_schedule_block_lifecycle(block).get("lifecycle_status")
+    if lifecycle == "done":
+        raise ValueError("That schedule block is already done.")
+    if lifecycle == "paused":
+        return _with_schedule_block_lifecycle(block)
+    if lifecycle != "active":
+        raise ValueError("Start the block before pausing it.")
+
+    return update_schedule_block(
+        record_id,
+        ScheduleBlockUpdate(
+            status="paused",
+            paused_at=datetime.now(ORBIT_LOCAL_TIMEZONE),
+            active=True,
+        ),
+    ) or _with_schedule_block_lifecycle(block)
+
+
+def resume_schedule_block_for_mobile(record_id: int) -> dict[str, Any]:
+    block = get_record("schedule_blocks", record_id)
+    if block is None:
+        raise ValueError(f"Schedule block {record_id} not found.")
+    lifecycle = _with_schedule_block_lifecycle(block).get("lifecycle_status")
+    if lifecycle == "done":
+        raise ValueError("That schedule block is already done.")
+    if lifecycle == "active":
+        return _with_schedule_block_lifecycle(block)
+    if lifecycle != "paused":
+        raise ValueError("Pause the block before resuming it.")
+
+    now = datetime.now(ORBIT_LOCAL_TIMEZONE)
+    target_date = _parse_date(str(block.get("specific_date") or "")) or now.date()
+    current_start = _schedule_time_to_minutes(block.get("start_time")) or 0
+    current_end = _schedule_time_to_minutes(block.get("end_time")) or current_start
+    now_minute = now.hour * 60 + now.minute if target_date == now.date() else current_start
+    remaining = max(15, current_end - min(max(now_minute, current_start), current_end))
+    new_start = _round_schedule_minute(max(now_minute, current_start), 5)
+    new_end = new_start + remaining
+    if new_end > 21 * 60:
+        raise ValueError("Resuming this pushes the block past 9 PM. Roll it to tomorrow?")
+
+    updated = update_schedule_block(
+        record_id,
+        ScheduleBlockUpdate(
+            status="active",
+            start_time=_schedule_minutes_to_time(new_start),
+            end_time=_schedule_minutes_to_time(new_end),
+            duration_minutes=remaining,
+            paused_at=None,
+            active=True,
+        ),
+    )
+    _shift_same_day_blocks_after(
+        block_id=record_id,
+        target_date=target_date,
+        cursor_minute=new_end + 10,
+    )
+    return updated or _with_schedule_block_lifecycle(block)
+
+
+def swap_schedule_blocks_for_mobile(
+    record_id: int,
+    with_block_id: int,
+) -> dict[str, Any]:
+    if record_id == with_block_id:
+        raise ValueError("Choose a different block to swap with.")
+    first = get_record("schedule_blocks", record_id)
+    second = get_record("schedule_blocks", with_block_id)
+    if first is None or second is None:
+        raise ValueError("Schedule block not found.")
+    target_date = _parse_date(str(first.get("specific_date") or ""))
+    other_date = _parse_date(str(second.get("specific_date") or ""))
+    if target_date is None or target_date != other_date:
+        raise ValueError("Only same-day placed blocks can be swapped.")
+    if str(first.get("block_type") or "") != "fixed" or str(second.get("block_type") or "") != "fixed":
+        raise ValueError("Only placed schedule blocks can be swapped.")
+
+    day_blocks = _same_day_fixed_blocks(target_date)
+    first_index = next((index for index, block in enumerate(day_blocks) if int(block.get("id") or 0) == record_id), -1)
+    second_index = next((index for index, block in enumerate(day_blocks) if int(block.get("id") or 0) == with_block_id), -1)
+    if first_index < 0 or second_index < 0:
+        raise ValueError("Could not find both blocks in today's schedule.")
+
+    start_index = min(first_index, second_index)
+    cursor = min(
+        _schedule_time_to_minutes(first.get("start_time")) or 0,
+        _schedule_time_to_minutes(second.get("start_time")) or 0,
+    )
+    day_blocks[first_index], day_blocks[second_index] = day_blocks[second_index], day_blocks[first_index]
+    updated_blocks = _reflow_schedule_blocks(day_blocks[start_index:], target_date, cursor)
+    return {
+        "message": f"Swapped {_schedule_block_title(first)} with {_schedule_block_title(second)}.",
+        "updated_blocks": updated_blocks,
+    }
 
 
 def roll_schedule_block_later_for_mobile(record_id: int) -> dict[str, Any]:
@@ -1205,6 +1344,112 @@ def roll_schedule_block_tomorrow_for_mobile(record_id: int) -> dict[str, Any]:
             active=True,
         ),
     ) or block
+
+
+def _same_day_fixed_blocks(target_date: date) -> list[dict[str, Any]]:
+    return sorted(
+        [
+            block
+            for block in list_schedule_blocks()
+            if _truthy(block.get("active"))
+            and str(block.get("block_type") or "") == "fixed"
+            and str(block.get("specific_date") or "") == target_date.isoformat()
+        ],
+        key=lambda block: (
+            _schedule_time_to_minutes(block.get("start_time")) or 24 * 60,
+            int(block.get("id") or 0),
+        ),
+    )
+
+
+def _shift_same_day_blocks_after(
+    *,
+    block_id: int,
+    target_date: date,
+    cursor_minute: int,
+) -> list[dict[str, Any]]:
+    ordered: list[dict[str, Any]] = []
+    for block in _same_day_fixed_blocks(target_date):
+        if int(block.get("id") or 0) == block_id:
+            continue
+        start = _schedule_time_to_minutes(block.get("start_time")) or 0
+        end = _schedule_time_to_minutes(block.get("end_time")) or start
+        if start < cursor_minute and end > cursor_minute - 10:
+            ordered.append(block)
+        elif start >= cursor_minute - 10:
+            ordered.append(block)
+    return _reflow_schedule_blocks(ordered, target_date, cursor_minute)
+
+
+def _reflow_schedule_blocks(
+    blocks: list[dict[str, Any]],
+    target_date: date,
+    cursor_minute: int,
+) -> list[dict[str, Any]]:
+    updated: list[dict[str, Any]] = []
+    cursor = cursor_minute
+    for block in blocks:
+        record_id = int(block.get("id") or 0)
+        duration = int(block.get("duration_minutes") or 0)
+        if duration <= 0:
+            start = _schedule_time_to_minutes(block.get("start_time")) or 0
+            end = _schedule_time_to_minutes(block.get("end_time")) or start
+            duration = max(1, end - start)
+
+        end_minute = cursor + duration
+        if end_minute > 21 * 60:
+            updated.append(_roll_schedule_block_to_tomorrow(record_id, block))
+            continue
+
+        updated_block = update_schedule_block(
+            record_id,
+            ScheduleBlockUpdate(
+                specific_date=target_date,
+                start_time=_schedule_minutes_to_time(cursor),
+                end_time=_schedule_minutes_to_time(end_minute),
+                duration_minutes=duration,
+                status="active" if block.get("status") == "active" else "upcoming",
+                active=True,
+            ),
+        )
+        if updated_block is not None:
+            updated.append(updated_block)
+        cursor = end_minute + 10
+    return updated
+
+
+def _roll_schedule_block_to_tomorrow(
+    record_id: int,
+    block: dict[str, Any],
+) -> dict[str, Any]:
+    tomorrow = datetime.now(ORBIT_LOCAL_TIMEZONE).date() + timedelta(days=1)
+    duration = int(block.get("duration_minutes") or 0)
+    if duration <= 0:
+        start = _schedule_time_to_minutes(block.get("start_time")) or 0
+        end = _schedule_time_to_minutes(block.get("end_time")) or start
+        duration = max(1, end - start)
+    _complete_schedule_block_reminders(record_id)
+    return update_schedule_block(
+        record_id,
+        ScheduleBlockUpdate(
+            block_type="flexible",
+            specific_date=tomorrow,
+            day_of_week=None,
+            start_time=None,
+            end_time=None,
+            duration_minutes=duration,
+            recurrence="once",
+            time_preference="anytime",
+            flexible_placement_mode="preferred_day",
+            status="rolled",
+            rolled_at=datetime.now(ORBIT_LOCAL_TIMEZONE),
+            active=True,
+        ),
+    ) or _with_schedule_block_lifecycle(block)
+
+
+def _round_schedule_minute(value: int, interval: int) -> int:
+    return ((value + interval - 1) // interval) * interval
 
 
 def apply_schedule_block_to_days(
@@ -1383,7 +1628,7 @@ def _with_schedule_block_lifecycle(record: dict[str, Any] | None) -> dict[str, A
 
     block = dict(record)
     status = str(block.get("status") or "upcoming")
-    if status in {"active", "done", "rolled", "missed"}:
+    if status in {"active", "paused", "done", "rolled", "missed"}:
         block["lifecycle_status"] = status
         return block
 

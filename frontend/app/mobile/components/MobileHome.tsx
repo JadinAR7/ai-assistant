@@ -64,6 +64,9 @@ export default function MobileHome({
   onCompleteReminder,
   onDismissReminder,
   onStartScheduleBlock,
+  onPauseScheduleBlock,
+  onResumeScheduleBlock,
+  onExtendScheduleBlock,
   onRollScheduleBlock,
   onAckNotification,
   onCompleteNotification,
@@ -86,6 +89,9 @@ export default function MobileHome({
   onCompleteReminder: (id: number) => void;
   onDismissReminder: (id: number) => void;
   onStartScheduleBlock: (id: number) => void;
+  onPauseScheduleBlock: (id: number) => void;
+  onResumeScheduleBlock: (id: number) => void;
+  onExtendScheduleBlock: (id: number) => void;
   onRollScheduleBlock: (id: number) => void;
   onAckNotification: (id: number) => void;
   onCompleteNotification: (id: number) => void;
@@ -456,6 +462,9 @@ export default function MobileHome({
         onCompleteReminder={onCompleteReminder}
         onDismissReminder={onDismissReminder}
         onStartScheduleBlock={onStartScheduleBlock}
+        onPauseScheduleBlock={onPauseScheduleBlock}
+        onResumeScheduleBlock={onResumeScheduleBlock}
+        onExtendScheduleBlock={onExtendScheduleBlock}
         onRollScheduleBlock={onRollScheduleBlock}
         onAckNotification={onAckNotification}
         onCompleteNotification={onCompleteNotification}

@@ -179,8 +179,12 @@ export async function runMobileScanner(symbol: string) {
   });
 }
 
-async function postMobileAction<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, { method: "POST" });
+async function postMobileAction<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
   if (!response.ok) {
     try {
       const data = (await response.json()) as { detail?: string; error?: string };
@@ -225,6 +229,28 @@ export function completeMobileScheduleBlock(id: number) {
 
 export function startMobileScheduleBlock(id: number) {
   return postMobileAction<ScheduleBlock>(`/mobile/schedule-blocks/${id}/start`);
+}
+
+export function pauseMobileScheduleBlock(id: number) {
+  return postMobileAction<ScheduleBlock>(`/mobile/schedule-blocks/${id}/pause`);
+}
+
+export function resumeMobileScheduleBlock(id: number) {
+  return postMobileAction<ScheduleBlock>(`/mobile/schedule-blocks/${id}/resume`);
+}
+
+export function extendMobileScheduleBlock(id: number, minutes = 15) {
+  return postMobileAction<{ block: ScheduleBlock; schedule_blocks: ScheduleBlock[] }>(
+    `/mobile/schedule-blocks/${id}/extend`,
+    { minutes },
+  );
+}
+
+export function swapMobileScheduleBlock(id: number, withBlockId: number) {
+  return postMobileAction<{ message?: string; schedule_blocks: ScheduleBlock[] }>(
+    `/mobile/schedule-blocks/${id}/swap`,
+    { with_block_id: withBlockId },
+  );
 }
 
 export function rollMobileScheduleBlockLater(id: number) {

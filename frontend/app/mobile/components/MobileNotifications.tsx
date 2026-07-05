@@ -63,6 +63,9 @@ export default function MobileNotifications({
   onCompleteReminder,
   onDismissReminder,
   onStartScheduleBlock,
+  onPauseScheduleBlock,
+  onResumeScheduleBlock,
+  onExtendScheduleBlock,
   onRollScheduleBlock,
   onAckNotification,
   onCompleteNotification,
@@ -74,6 +77,9 @@ export default function MobileNotifications({
   onCompleteReminder: (id: number) => void;
   onDismissReminder: (id: number) => void;
   onStartScheduleBlock: (id: number) => void;
+  onPauseScheduleBlock: (id: number) => void;
+  onResumeScheduleBlock: (id: number) => void;
+  onExtendScheduleBlock: (id: number) => void;
   onRollScheduleBlock: (id: number) => void;
   onAckNotification: (id: number) => void;
   onCompleteNotification: (id: number) => void;
@@ -163,6 +169,9 @@ export default function MobileNotifications({
                 onComplete={onCompleteReminder}
                 onDismiss={onDismissReminder}
                 onStartScheduleBlock={onStartScheduleBlock}
+                onPauseScheduleBlock={onPauseScheduleBlock}
+                onResumeScheduleBlock={onResumeScheduleBlock}
+                onExtendScheduleBlock={onExtendScheduleBlock}
                 onRollScheduleBlock={onRollScheduleBlock}
               />
             ) : (
@@ -197,6 +206,9 @@ function ReminderRow({
   onComplete,
   onDismiss,
   onStartScheduleBlock,
+  onPauseScheduleBlock,
+  onResumeScheduleBlock,
+  onExtendScheduleBlock,
   onRollScheduleBlock,
 }: Readonly<{
   reminder: MobileReminder;
@@ -204,6 +216,9 @@ function ReminderRow({
   onComplete: (id: number) => void;
   onDismiss: (id: number) => void;
   onStartScheduleBlock: (id: number) => void;
+  onPauseScheduleBlock: (id: number) => void;
+  onResumeScheduleBlock: (id: number) => void;
+  onExtendScheduleBlock: (id: number) => void;
   onRollScheduleBlock: (id: number) => void;
 }>) {
   const completeKey = `reminder-complete-${reminder.id}`;
@@ -211,6 +226,7 @@ function ReminderRow({
   const targetId = Number(reminder.target?.id || reminder.target?.value || 0);
   const isScheduleReminder = reminder.source === "schedule" && targetId > 0;
   const isActiveSchedule = reminder.schedule_status === "active";
+  const isPausedSchedule = reminder.schedule_status === "paused";
 
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
@@ -235,6 +251,13 @@ function ReminderRow({
             >
               {actionLoading === completeKey ? "Saving..." : "Done"}
             </MobilePrimaryButton>
+          ) : isPausedSchedule ? (
+            <MobilePrimaryButton
+              onClick={() => onResumeScheduleBlock(targetId)}
+              disabled={Boolean(actionLoading)}
+            >
+              {actionLoading === `schedule-resume-${targetId}` ? "Resuming..." : "Resume"}
+            </MobilePrimaryButton>
           ) : (
             <MobilePrimaryButton
               onClick={() => onStartScheduleBlock(targetId)}
@@ -246,11 +269,39 @@ function ReminderRow({
             </MobilePrimaryButton>
           )}
           <MobileSecondaryButton
-            onClick={() => onRollScheduleBlock(targetId)}
+            onClick={() =>
+              isActiveSchedule
+                ? onPauseScheduleBlock(targetId)
+                : onRollScheduleBlock(targetId)
+            }
             disabled={Boolean(actionLoading)}
           >
-            {actionLoading === `schedule-roll-later-${targetId}` ? "Rolling..." : "Roll"}
+            {isActiveSchedule
+              ? actionLoading === `schedule-pause-${targetId}`
+                ? "Pausing..."
+                : "Pause"
+              : actionLoading === `schedule-roll-later-${targetId}`
+                ? "Rolling..."
+                : "Roll"}
           </MobileSecondaryButton>
+          {isActiveSchedule ? (
+            <>
+              <MobileSecondaryButton
+                onClick={() => onExtendScheduleBlock(targetId)}
+                disabled={Boolean(actionLoading)}
+              >
+                {actionLoading === `schedule-extend-${targetId}`
+                  ? "Extending..."
+                  : "Extend +15"}
+              </MobileSecondaryButton>
+              <MobileSecondaryButton
+                onClick={() => onRollScheduleBlock(targetId)}
+                disabled={Boolean(actionLoading)}
+              >
+                {actionLoading === `schedule-roll-later-${targetId}` ? "Rolling..." : "Roll"}
+              </MobileSecondaryButton>
+            </>
+          ) : null}
         </div>
       ) : (
         <div className="mt-3 grid grid-cols-2 gap-2">
