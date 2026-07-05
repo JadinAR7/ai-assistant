@@ -304,8 +304,12 @@ def init_orbit_db() -> None:
             time_preference TEXT DEFAULT 'anytime',
             flexible_placement_mode TEXT DEFAULT 'preferred_day',
             priority TEXT NOT NULL DEFAULT 'medium',
+            status TEXT NOT NULL DEFAULT 'upcoming',
             notes TEXT,
             active INTEGER NOT NULL DEFAULT 1,
+            started_at TEXT,
+            completed_at TEXT,
+            rolled_at TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             CHECK (block_type IN ('fixed', 'flexible')),
@@ -376,6 +380,14 @@ def init_orbit_db() -> None:
         cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN recurrence_weeks INTEGER")
     if "preferred_days" not in schedule_block_columns:
         cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN preferred_days TEXT")
+    if "status" not in schedule_block_columns:
+        cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN status TEXT NOT NULL DEFAULT 'upcoming'")
+    if "started_at" not in schedule_block_columns:
+        cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN started_at TEXT")
+    if "completed_at" not in schedule_block_columns:
+        cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN completed_at TEXT")
+    if "rolled_at" not in schedule_block_columns:
+        cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN rolled_at TEXT")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS mobile_reminders (

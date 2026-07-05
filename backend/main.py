@@ -890,6 +890,14 @@ def complete_mobile_schedule_block(schedule_block_id: int):
     return block
 
 
+@app.post("/mobile/schedule-blocks/{schedule_block_id}/start", response_model=ScheduleBlock)
+def start_mobile_schedule_block(schedule_block_id: int):
+    try:
+        return orbit_service.start_schedule_block_for_mobile(schedule_block_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/mobile/schedule-blocks/{schedule_block_id}/roll-later", response_model=ScheduleBlock)
 def roll_mobile_schedule_block_later(schedule_block_id: int):
     try:

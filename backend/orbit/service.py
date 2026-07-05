@@ -139,8 +139,12 @@ TABLE_COLUMNS = {
         "time_preference",
         "flexible_placement_mode",
         "priority",
+        "status",
         "notes",
         "active",
+        "started_at",
+        "completed_at",
+        "rolled_at",
     ],
     "mobile_reminders": [
         "title",
@@ -181,6 +185,7 @@ SCHEDULE_TIME_PREFERENCES = {
     "anytime",
     *SCHEDULE_TIME_PREFERENCE_WINDOWS.keys(),
 }
+SCHEDULE_BLOCK_STATUSES = {"upcoming", "due_now", "active", "done", "rolled", "missed"}
 SCHEDULE_FLEXIBLE_PLACEMENT_MODES = {"whenever_free", "preferred_day"}
 SCHEDULE_RECURRENCE_END_TYPES = {"never", "date", "occurrences", "weeks"}
 SCHEDULE_DAY_ORDER = [
@@ -319,8 +324,58 @@ def _mobile_notification_to_dict(record: dict[str, Any] | None) -> dict[str, Any
     return record
 
 
+def _mobile_reminder_to_dict(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+
+    reminder = dict(record)
+    if reminder.get("source") != "schedule":
+        reminder.setdefault("actions", [])
+        reminder.setdefault("target", None)
+        reminder.setdefault("scheduled_for", reminder.get("due_at"))
+        return reminder
+
+    block_id = _schedule_block_id_from_reminder(reminder)
+    block = _with_schedule_block_lifecycle(get_record("schedule_blocks", block_id)) if block_id else None
+    lifecycle = block.get("lifecycle_status") if block else None
+    title = _schedule_block_title(block) if block else _schedule_title_from_reminder(reminder)
+    reminder["title"] = (
+        f"Active: {title}"
+        if lifecycle == "active"
+        else f"Time to start task: {title}"
+    )
+    reminder["body"] = _schedule_reminder_body(block) if block else reminder.get("body")
+    reminder["scheduled_for"] = reminder.get("due_at")
+    reminder["target"] = (
+        {"kind": "schedule_block", "id": block_id, "value": str(block_id)}
+        if block_id
+        else None
+    )
+    reminder["schedule_status"] = lifecycle
+    reminder["actions"] = _schedule_reminder_actions(lifecycle)
+    return reminder
+
+
+def _schedule_block_id_from_reminder(reminder: dict[str, Any]) -> int | None:
+    match = re.search(r"schedule_block:(?P<id>\d+)", str(reminder.get("body") or ""))
+    return int(match.group("id")) if match else None
+
+
+def _schedule_title_from_reminder(reminder: dict[str, Any]) -> str:
+    title = str(reminder.get("title") or "").strip()
+    return title.removeprefix("Start ").removeprefix("Time to start task: ") or "Scheduled task"
+
+
+def _schedule_reminder_actions(lifecycle: Any) -> list[str]:
+    if lifecycle == "active":
+        return ["done", "roll"]
+    if lifecycle == "done":
+        return []
+    return ["start_checkin", "roll"]
+
+
 def create_mobile_reminder(payload: MobileReminderCreate) -> dict[str, Any]:
-    return _create_record("mobile_reminders", _model_data(payload))
+    return _mobile_reminder_to_dict(_create_record("mobile_reminders", _model_data(payload))) or {}
 
 
 def list_mobile_reminders(status: str | None = "pending") -> list[dict[str, Any]]:
@@ -342,11 +397,11 @@ def list_mobile_reminders(status: str | None = "pending") -> list[dict[str, Any]
     rows = cursor.fetchall()
     conn.close()
 
-    return [_row_to_dict(row) or {} for row in rows]
+    return [_mobile_reminder_to_dict(_row_to_dict(row) or {}) or {} for row in rows]
 
 
 def get_mobile_reminder(reminder_id: int) -> dict[str, Any] | None:
-    return get_record("mobile_reminders", reminder_id)
+    return _mobile_reminder_to_dict(get_record("mobile_reminders", reminder_id))
 
 
 def complete_mobile_reminder(reminder_id: int) -> dict[str, Any] | None:
@@ -529,6 +584,7 @@ def _validate_schedule_block_data(data: dict[str, Any]) -> None:
     specific_date = data.get("specific_date")
     time_preference = data.get("time_preference")
     flexible_placement_mode = data.get("flexible_placement_mode")
+    status = data.get("status") or "upcoming"
     recurrence_end_type = data.get("recurrence_end_type") or "never"
     recurrence_end_date = data.get("recurrence_end_date")
     recurrence_count = data.get("recurrence_count")
@@ -545,6 +601,9 @@ def _validate_schedule_block_data(data: dict[str, Any]) -> None:
 
     if flexible_placement_mode not in (None, "") and str(flexible_placement_mode) not in SCHEDULE_FLEXIBLE_PLACEMENT_MODES:
         raise ValueError("flexible_placement_mode must be whenever_free or preferred_day.")
+
+    if str(status) not in SCHEDULE_BLOCK_STATUSES:
+        raise ValueError("status must be upcoming, due_now, active, done, rolled, or missed.")
 
     if str(recurrence_end_type) not in SCHEDULE_RECURRENCE_END_TYPES:
         raise ValueError("recurrence_end_type must be never, date, occurrences, or weeks.")
@@ -584,6 +643,7 @@ def _normalize_schedule_block_data(data: dict[str, Any]) -> dict[str, Any]:
     block_type = str(normalized.get("block_type") or "").casefold()
     recurrence = str(normalized.get("recurrence") or "once").casefold()
     normalized["recurrence"] = recurrence
+    normalized["status"] = str(normalized.get("status") or "upcoming").casefold()
 
     if recurrence == "once":
         normalized["recurrence_end_type"] = "never"
@@ -955,7 +1015,7 @@ def update_task(record_id: int, payload: TaskUpdate) -> dict[str, Any] | None:
 
 
 def list_schedule_blocks() -> list[dict[str, Any]]:
-    return _list_records_ordered(
+    records = _list_records_ordered(
         "schedule_blocks",
         """
         active DESC,
@@ -974,6 +1034,7 @@ def list_schedule_blocks() -> list[dict[str, Any]]:
         id
         """,
     )
+    return [_with_schedule_block_lifecycle(record) for record in records]
 
 
 def create_schedule_block(payload: ScheduleBlockCreate) -> dict[str, Any]:
@@ -982,9 +1043,11 @@ def create_schedule_block(payload: ScheduleBlockCreate) -> dict[str, Any]:
     existing = _find_duplicate_schedule_block(data)
     if existing is not None:
         record = _update_record("schedule_blocks", int(existing["id"]), data) or existing
+        record = _with_schedule_block_lifecycle(record)
         ensure_schedule_block_reminder(record)
         return record
     record = _create_record("schedule_blocks", data)
+    record = _with_schedule_block_lifecycle(record)
     ensure_schedule_block_reminder(record)
     return record
 
@@ -1000,7 +1063,7 @@ def update_schedule_block(
     data = _normalize_schedule_block_data(_model_data(payload, exclude_unset=True))
     merged = {**existing, **data}
     _validate_schedule_block_data(merged)
-    record = _update_record("schedule_blocks", record_id, data)
+    record = _with_schedule_block_lifecycle(_update_record("schedule_blocks", record_id, data))
     ensure_schedule_block_reminder(record)
     return record
 
@@ -1014,12 +1077,8 @@ def ensure_schedule_block_reminder(block: dict[str, Any] | None) -> dict[str, An
     if block_id <= 0 or due_at is None:
         return None
 
-    body = (
-        f"{_schedule_block_title(block)} is scheduled for "
-        f"{_schedule_display_time(block.get('start_time'))}-"
-        f"{_schedule_display_time(block.get('end_time'))}."
-    )
-    title = f"Start {_schedule_block_title(block)}"
+    body = _schedule_reminder_body(block)
+    title = f"Time to start task: {_schedule_block_title(block)}"
     existing = _find_schedule_block_reminder(block_id, due_at)
     if existing is not None:
         return existing
@@ -1033,10 +1092,47 @@ def ensure_schedule_block_reminder(block: dict[str, Any] | None) -> dict[str, An
     )
 
 
+def _schedule_reminder_body(block: dict[str, Any] | None) -> str:
+    if not block:
+        return "Scheduled task."
+    return (
+        f"Scheduled {_schedule_display_time(block.get('start_time'))}-"
+        f"{_schedule_display_time(block.get('end_time'))}."
+    )
+
+
 def complete_schedule_block_for_mobile(record_id: int) -> dict[str, Any] | None:
-    record = update_schedule_block(record_id, ScheduleBlockUpdate(active=False))
+    completed_at = datetime.now(ORBIT_LOCAL_TIMEZONE)
+    record = update_schedule_block(
+        record_id,
+        ScheduleBlockUpdate(
+            status="done",
+            active=False,
+            completed_at=completed_at,
+        ),
+    )
     _complete_schedule_block_reminders(record_id)
     return record
+
+
+def start_schedule_block_for_mobile(record_id: int) -> dict[str, Any]:
+    block = get_record("schedule_blocks", record_id)
+    if block is None:
+        raise ValueError(f"Schedule block {record_id} not found.")
+    lifecycle = _with_schedule_block_lifecycle(block).get("lifecycle_status")
+    if lifecycle == "done":
+        raise ValueError("That schedule block is already done.")
+    if lifecycle == "active":
+        return _with_schedule_block_lifecycle(block)
+
+    return update_schedule_block(
+        record_id,
+        ScheduleBlockUpdate(
+            status="active",
+            started_at=datetime.now(ORBIT_LOCAL_TIMEZONE),
+            active=True,
+        ),
+    ) or _with_schedule_block_lifecycle(block)
 
 
 def roll_schedule_block_later_for_mobile(record_id: int) -> dict[str, Any]:
@@ -1073,6 +1169,8 @@ def roll_schedule_block_later_for_mobile(record_id: int) -> dict[str, Any]:
             start_time=_schedule_minutes_to_time(next_start),
             end_time=_schedule_minutes_to_time(next_start + duration),
             duration_minutes=duration,
+            status="upcoming",
+            rolled_at=datetime.now(ORBIT_LOCAL_TIMEZONE),
         ),
     ) or block
 
@@ -1102,6 +1200,8 @@ def roll_schedule_block_tomorrow_for_mobile(record_id: int) -> dict[str, Any]:
             recurrence="once",
             time_preference="anytime",
             flexible_placement_mode="preferred_day",
+            status="rolled",
+            rolled_at=datetime.now(ORBIT_LOCAL_TIMEZONE),
             active=True,
         ),
     ) or block
@@ -1277,6 +1377,33 @@ def _schedule_block_should_have_mobile_reminder(block: dict[str, Any] | None) ->
     return starts_at.date() == datetime.now(ORBIT_LOCAL_TIMEZONE).date()
 
 
+def _with_schedule_block_lifecycle(record: dict[str, Any] | None) -> dict[str, Any]:
+    if record is None:
+        return {}
+
+    block = dict(record)
+    status = str(block.get("status") or "upcoming")
+    if status in {"active", "done", "rolled", "missed"}:
+        block["lifecycle_status"] = status
+        return block
+
+    if not _truthy(block.get("active")):
+        block["lifecycle_status"] = "done" if status == "done" else status
+        return block
+
+    starts_at = _schedule_block_start_datetime(block)
+    if starts_at is None:
+        block["lifecycle_status"] = status
+        return block
+
+    now = datetime.now(ORBIT_LOCAL_TIMEZONE)
+    if starts_at > now:
+        block["lifecycle_status"] = "upcoming"
+    else:
+        block["lifecycle_status"] = "due_now"
+    return block
+
+
 def _schedule_block_start_datetime(block: dict[str, Any]) -> datetime | None:
     target_date = _parse_date(str(block.get("specific_date") or ""))
     if target_date is None:
@@ -1295,14 +1422,27 @@ def _find_schedule_block_reminder(
     block_id: int,
     due_at: datetime,
 ) -> dict[str, Any] | None:
+    init_orbit_db()
+
     marker = f"schedule_block:{block_id}"
-    for reminder in list_mobile_reminders(status="pending"):
-        if reminder.get("source") != "schedule":
-            continue
-        if marker not in str(reminder.get("body") or ""):
-            continue
-        if str(reminder.get("due_at") or "") == due_at.isoformat():
-            return reminder
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT * FROM mobile_reminders
+        WHERE status = 'pending'
+          AND source = 'schedule'
+          AND body LIKE ?
+        ORDER BY due_at, id
+        LIMIT 1
+        """,
+        (f"%{marker}%",),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return _mobile_reminder_to_dict(_row_to_dict(row) or {})
     return None
 
 

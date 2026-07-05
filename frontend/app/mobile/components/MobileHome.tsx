@@ -63,6 +63,8 @@ export default function MobileHome({
   onQuickCommand,
   onCompleteReminder,
   onDismissReminder,
+  onStartScheduleBlock,
+  onRollScheduleBlock,
   onAckNotification,
   onCompleteNotification,
   onStartPrompt,
@@ -83,6 +85,8 @@ export default function MobileHome({
   onQuickCommand: QuickCommand;
   onCompleteReminder: (id: number) => void;
   onDismissReminder: (id: number) => void;
+  onStartScheduleBlock: (id: number) => void;
+  onRollScheduleBlock: (id: number) => void;
   onAckNotification: (id: number) => void;
   onCompleteNotification: (id: number) => void;
   onStartPrompt: (prompt: string) => void;
@@ -451,6 +455,8 @@ export default function MobileHome({
         actionLoading={mobileQueueLoading}
         onCompleteReminder={onCompleteReminder}
         onDismissReminder={onDismissReminder}
+        onStartScheduleBlock={onStartScheduleBlock}
+        onRollScheduleBlock={onRollScheduleBlock}
         onAckNotification={onAckNotification}
         onCompleteNotification={onCompleteNotification}
         loadFailed={data.loadErrors.notifications}

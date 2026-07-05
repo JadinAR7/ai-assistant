@@ -19,6 +19,7 @@ import {
   completeMobileScheduleBlock,
   rollMobileScheduleBlockLater,
   rollMobileScheduleBlockTomorrow,
+  startMobileScheduleBlock,
   runMobileScanner,
   sendMobileChat,
 } from "./lib/mobileApi";
@@ -298,6 +299,42 @@ export default function MobileHelixPage() {
     }
   }
 
+  function startScheduleBlock(id: number) {
+    runScheduleAction(
+      `schedule-start-${id}`,
+      "Schedule",
+      "Checked in. This block is active now.",
+      () => startMobileScheduleBlock(id),
+    );
+  }
+
+  function completeScheduleBlock(id: number) {
+    runScheduleAction(
+      `schedule-done-${id}`,
+      "Schedule",
+      "Marked that block done.",
+      () => completeMobileScheduleBlock(id),
+    );
+  }
+
+  function rollScheduleBlockLater(id: number) {
+    runScheduleAction(
+      `schedule-roll-later-${id}`,
+      "Schedule",
+      "Rolled that block later today.",
+      () => rollMobileScheduleBlockLater(id),
+    );
+  }
+
+  function rollScheduleBlockTomorrow(id: number) {
+    runScheduleAction(
+      `schedule-roll-tomorrow-${id}`,
+      "Schedule",
+      "Rolled that block to tomorrow.",
+      () => rollMobileScheduleBlockTomorrow(id),
+    );
+  }
+
   return (
     <MobileShell
       activeTab={activeTab}
@@ -317,7 +354,7 @@ export default function MobileHelixPage() {
           scanLoading={scanLoading}
           quickCommandLoading={quickCommandLoading}
           actionResult={actionResult}
-          mobileQueueLoading={mobileQueueLoading}
+          mobileQueueLoading={mobileQueueLoading || scheduleActionLoading}
           onRefresh={loadMobileData}
           onRunScanner={runScanner}
           onQuickCommand={sendMobileChatCommand}
@@ -331,6 +368,8 @@ export default function MobileHelixPage() {
               dismissMobileReminder(id),
             )
           }
+          onStartScheduleBlock={startScheduleBlock}
+          onRollScheduleBlock={rollScheduleBlockLater}
           onAckNotification={(id) =>
             runMobileQueueAction(`notification-ack-${id}`, "Notification dismissed", () =>
               dismissMobileNotification(id),
@@ -365,30 +404,10 @@ export default function MobileHelixPage() {
           blocks={todayBlocks}
           actionLoading={scheduleActionLoading}
           actionResult={actionResult}
-          onDone={(id) =>
-            runScheduleAction(
-              `schedule-done-${id}`,
-              "Schedule",
-              "Marked that block done.",
-              () => completeMobileScheduleBlock(id),
-            )
-          }
-          onRollLater={(id) =>
-            runScheduleAction(
-              `schedule-roll-later-${id}`,
-              "Schedule",
-              "Rolled that block later today.",
-              () => rollMobileScheduleBlockLater(id),
-            )
-          }
-          onRollTomorrow={(id) =>
-            runScheduleAction(
-              `schedule-roll-tomorrow-${id}`,
-              "Schedule",
-              "Rolled that block to tomorrow.",
-              () => rollMobileScheduleBlockTomorrow(id),
-            )
-          }
+          onStart={startScheduleBlock}
+          onDone={completeScheduleBlock}
+          onRollLater={rollScheduleBlockLater}
+          onRollTomorrow={rollScheduleBlockTomorrow}
           onStartPrompt={startPrompt}
         />
       ) : null}

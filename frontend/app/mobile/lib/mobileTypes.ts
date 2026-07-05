@@ -51,6 +51,11 @@ export type ScheduleBlock = {
   duration_minutes?: number | null;
   active?: boolean;
   priority?: string;
+  status?: "upcoming" | "due_now" | "active" | "done" | "rolled" | "missed";
+  lifecycle_status?: "upcoming" | "due_now" | "active" | "done" | "rolled" | "missed";
+  started_at?: string | null;
+  completed_at?: string | null;
+  rolled_at?: string | null;
 };
 
 export type ScanStatus = {
@@ -122,6 +127,14 @@ export type MobileReminder = {
   created_at: string;
   completed_at?: string | null;
   dismissed_at?: string | null;
+  scheduled_for?: string | null;
+  target?: {
+    kind?: string | null;
+    id?: number | null;
+    value?: string | null;
+  } | null;
+  actions?: string[];
+  schedule_status?: ScheduleBlock["lifecycle_status"] | null;
 };
 
 export type MobileNotification = {
@@ -133,6 +146,7 @@ export type MobileNotification = {
   priority: "low" | "normal" | "high";
   target?: {
     kind?: string | null;
+    id?: number | null;
     value?: string | null;
   } | null;
   created_at: string;

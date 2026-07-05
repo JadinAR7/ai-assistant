@@ -62,6 +62,8 @@ export default function MobileNotifications({
   actionLoading,
   onCompleteReminder,
   onDismissReminder,
+  onStartScheduleBlock,
+  onRollScheduleBlock,
   onAckNotification,
   onCompleteNotification,
   onRetry,
@@ -71,6 +73,8 @@ export default function MobileNotifications({
   actionLoading: string | null;
   onCompleteReminder: (id: number) => void;
   onDismissReminder: (id: number) => void;
+  onStartScheduleBlock: (id: number) => void;
+  onRollScheduleBlock: (id: number) => void;
   onAckNotification: (id: number) => void;
   onCompleteNotification: (id: number) => void;
   onRetry: () => void;
@@ -158,6 +162,8 @@ export default function MobileNotifications({
                 actionLoading={actionLoading}
                 onComplete={onCompleteReminder}
                 onDismiss={onDismissReminder}
+                onStartScheduleBlock={onStartScheduleBlock}
+                onRollScheduleBlock={onRollScheduleBlock}
               />
             ) : (
               <NotificationRow
@@ -190,14 +196,21 @@ function ReminderRow({
   actionLoading,
   onComplete,
   onDismiss,
+  onStartScheduleBlock,
+  onRollScheduleBlock,
 }: Readonly<{
   reminder: MobileReminder;
   actionLoading: string | null;
   onComplete: (id: number) => void;
   onDismiss: (id: number) => void;
+  onStartScheduleBlock: (id: number) => void;
+  onRollScheduleBlock: (id: number) => void;
 }>) {
   const completeKey = `reminder-complete-${reminder.id}`;
   const dismissKey = `reminder-dismiss-${reminder.id}`;
+  const targetId = Number(reminder.target?.id || reminder.target?.value || 0);
+  const isScheduleReminder = reminder.source === "schedule" && targetId > 0;
+  const isActiveSchedule = reminder.schedule_status === "active";
 
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
@@ -213,20 +226,48 @@ function ReminderRow({
       {reminder.body ? (
         <p className="mt-2 text-xs leading-5 text-neutral-400">{reminder.body}</p>
       ) : null}
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        <MobilePrimaryButton
-          onClick={() => onComplete(reminder.id)}
-          disabled={Boolean(actionLoading)}
-        >
-          {actionLoading === completeKey ? "Saving..." : "Done"}
-        </MobilePrimaryButton>
-        <MobileSecondaryButton
-          onClick={() => onDismiss(reminder.id)}
-          disabled={Boolean(actionLoading)}
-        >
-          {actionLoading === dismissKey ? "Dismissing..." : "Dismiss"}
-        </MobileSecondaryButton>
-      </div>
+      {isScheduleReminder ? (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {isActiveSchedule ? (
+            <MobilePrimaryButton
+              onClick={() => onComplete(reminder.id)}
+              disabled={Boolean(actionLoading)}
+            >
+              {actionLoading === completeKey ? "Saving..." : "Done"}
+            </MobilePrimaryButton>
+          ) : (
+            <MobilePrimaryButton
+              onClick={() => onStartScheduleBlock(targetId)}
+              disabled={Boolean(actionLoading)}
+            >
+              {actionLoading === `schedule-start-${targetId}`
+                ? "Checking in..."
+                : "Start / Check-in"}
+            </MobilePrimaryButton>
+          )}
+          <MobileSecondaryButton
+            onClick={() => onRollScheduleBlock(targetId)}
+            disabled={Boolean(actionLoading)}
+          >
+            {actionLoading === `schedule-roll-later-${targetId}` ? "Rolling..." : "Roll"}
+          </MobileSecondaryButton>
+        </div>
+      ) : (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <MobilePrimaryButton
+            onClick={() => onComplete(reminder.id)}
+            disabled={Boolean(actionLoading)}
+          >
+            {actionLoading === completeKey ? "Saving..." : "Done"}
+          </MobilePrimaryButton>
+          <MobileSecondaryButton
+            onClick={() => onDismiss(reminder.id)}
+            disabled={Boolean(actionLoading)}
+          >
+            {actionLoading === dismissKey ? "Dismissing..." : "Dismiss"}
+          </MobileSecondaryButton>
+        </div>
+      )}
     </div>
   );
 }

@@ -26,6 +26,7 @@ DayOfWeek = Literal[
     "sunday",
 ]
 ScheduleBlockPriority = Literal["low", "medium", "high"]
+ScheduleBlockStatus = Literal["upcoming", "due_now", "active", "done", "rolled", "missed"]
 ScheduleTimePreference = Literal["anytime", "morning", "afternoon", "evening", "night"]
 FlexiblePlacementMode = Literal["whenever_free", "preferred_day"]
 ScheduleRecurrenceEndType = Literal["never", "date", "occurrences", "weeks"]
@@ -36,11 +37,17 @@ TradeSessionName = Literal["Asia", "London", "New York", "After Hours"]
 TradeHtfBias = Literal["Bullish", "Bearish", "Neutral"]
 TradeStrategyMode = Literal["Scalp", "Day Trade", "Hybrid / Review"]
 TradeJournalEntryType = Literal["journal", "calendar_only"]
-MobileReminderStatus = Literal["pending", "done", "dismissed"]
+MobileReminderStatus = Literal["pending", "active", "done", "dismissed", "rolled"]
 MobileReminderSource = Literal["chat", "manual", "schedule", "scanner", "system"]
 MobileNotificationType = Literal["trading", "schedule", "task", "system"]
 MobileNotificationStatus = Literal["unread", "read", "dismissed", "completed"]
 MobileNotificationPriority = Literal["low", "normal", "high"]
+
+
+class MobileNotificationTarget(BaseModel):
+    kind: Optional[str] = None
+    id: Optional[int] = None
+    value: Optional[str] = None
 
 
 class MobileReminderCreate(BaseModel):
@@ -56,11 +63,10 @@ class MobileReminder(MobileReminderCreate):
     created_at: datetime
     completed_at: Optional[datetime] = None
     dismissed_at: Optional[datetime] = None
-
-
-class MobileNotificationTarget(BaseModel):
-    kind: Optional[str] = None
-    value: Optional[str] = None
+    scheduled_for: Optional[datetime] = None
+    target: MobileNotificationTarget | None = None
+    actions: list[str] = Field(default_factory=list)
+    schedule_status: Optional[ScheduleBlockStatus] = None
 
 
 class MobileNotificationCreate(BaseModel):
@@ -112,6 +118,7 @@ class ScheduleBlockBase(BaseModel):
     time_preference: Optional[ScheduleTimePreference] = "anytime"
     flexible_placement_mode: Optional[FlexiblePlacementMode] = "preferred_day"
     priority: ScheduleBlockPriority = "medium"
+    status: ScheduleBlockStatus = "upcoming"
     notes: Optional[str] = None
     active: bool = True
 
@@ -153,8 +160,12 @@ class ScheduleBlockUpdate(BaseModel):
     time_preference: Optional[ScheduleTimePreference] = None
     flexible_placement_mode: Optional[FlexiblePlacementMode] = None
     priority: Optional[ScheduleBlockPriority] = None
+    status: Optional[ScheduleBlockStatus] = None
     notes: Optional[str] = None
     active: Optional[bool] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    rolled_at: Optional[datetime] = None
 
 
 class ScheduleDayTime(BaseModel):
@@ -170,6 +181,10 @@ class ScheduleBlockApplyDays(ScheduleBlockUpdate):
 
 class ScheduleBlock(ScheduleBlockBase):
     id: int
+    lifecycle_status: Optional[ScheduleBlockStatus] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    rolled_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

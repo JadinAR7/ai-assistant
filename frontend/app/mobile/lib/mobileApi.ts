@@ -223,6 +223,10 @@ export function completeMobileScheduleBlock(id: number) {
   return postMobileAction<ScheduleBlock>(`/mobile/schedule-blocks/${id}/done`);
 }
 
+export function startMobileScheduleBlock(id: number) {
+  return postMobileAction<ScheduleBlock>(`/mobile/schedule-blocks/${id}/start`);
+}
+
 export function rollMobileScheduleBlockLater(id: number) {
   return postMobileAction<ScheduleBlock>(
     `/mobile/schedule-blocks/${id}/roll-later`,

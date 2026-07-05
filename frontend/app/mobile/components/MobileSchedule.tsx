@@ -14,6 +14,7 @@ export default function MobileSchedule({
   blocks,
   actionLoading,
   actionResult,
+  onStart,
   onDone,
   onRollLater,
   onRollTomorrow,
@@ -22,6 +23,7 @@ export default function MobileSchedule({
   blocks: ScheduleBlock[];
   actionLoading: string | null;
   actionResult: MobileActionResult | null;
+  onStart: (id: number) => void;
   onDone: (id: number) => void;
   onRollLater: (id: number) => void;
   onRollTomorrow: (id: number) => void;
@@ -45,6 +47,7 @@ export default function MobileSchedule({
                 block={block}
                 showActions={actionableBlock?.id === block.id}
                 actionLoading={actionLoading}
+                onStart={onStart}
                 onDone={onDone}
                 onRollLater={onRollLater}
                 onRollTomorrow={onRollTomorrow}
@@ -123,6 +126,7 @@ function ScheduleBlockRow({
   block,
   showActions,
   actionLoading,
+  onStart,
   onDone,
   onRollLater,
   onRollTomorrow,
@@ -130,41 +134,73 @@ function ScheduleBlockRow({
   block: ScheduleBlock;
   showActions: boolean;
   actionLoading: string | null;
+  onStart: (id: number) => void;
   onDone: (id: number) => void;
   onRollLater: (id: number) => void;
   onRollTomorrow: (id: number) => void;
 }>) {
   const doneKey = `schedule-done-${block.id}`;
+  const startKey = `schedule-start-${block.id}`;
   const laterKey = `schedule-roll-later-${block.id}`;
   const tomorrowKey = `schedule-roll-tomorrow-${block.id}`;
+  const lifecycle = block.lifecycle_status || block.status || "upcoming";
+  const isActive = lifecycle === "active";
+  const isDone = lifecycle === "done";
+  const isDue = lifecycle === "due_now";
 
   return (
     <div className="rounded-xl border border-white/10 bg-black/25 p-3">
-      <p className="text-sm font-semibold text-neutral-100">
-        {getBlockTitle(block)}
-      </p>
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-sm font-semibold text-neutral-100">
+          {getBlockTitle(block)}
+        </p>
+        <span className="shrink-0 rounded-full border border-white/10 bg-white/[0.04] px-2 py-1 text-[11px] font-semibold text-neutral-400">
+          {lifecycle.replaceAll("_", " ")}
+        </span>
+      </div>
       <p className="mt-1 text-xs text-neutral-500">{getBlockTime(block)}</p>
-      {showActions ? (
-        <div className="mt-3 grid grid-cols-3 gap-2">
-          <MobilePrimaryButton
-            onClick={() => onDone(block.id)}
-            disabled={Boolean(actionLoading)}
-          >
-            {actionLoading === doneKey ? "Saving..." : "Done"}
-          </MobilePrimaryButton>
+      {showActions && !isDone ? (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {isActive ? (
+            <MobilePrimaryButton
+              onClick={() => onDone(block.id)}
+              disabled={Boolean(actionLoading)}
+            >
+              {actionLoading === doneKey ? "Saving..." : "Done"}
+            </MobilePrimaryButton>
+          ) : (
+            <MobilePrimaryButton
+              onClick={() => onStart(block.id)}
+              disabled={Boolean(actionLoading)}
+            >
+              {actionLoading === startKey
+                ? "Checking in..."
+                : isDue
+                  ? "Start / Check-in"
+                  : "Start early"}
+            </MobilePrimaryButton>
+          )}
           <MobileSecondaryButton
             onClick={() => onRollLater(block.id)}
             disabled={Boolean(actionLoading)}
           >
-            {actionLoading === laterKey ? "Rolling..." : "Roll later"}
+            {actionLoading === laterKey || actionLoading === tomorrowKey
+              ? "Rolling..."
+              : "Roll"}
           </MobileSecondaryButton>
-          <MobileSecondaryButton
-            onClick={() => onRollTomorrow(block.id)}
-            disabled={Boolean(actionLoading)}
-          >
-            {actionLoading === tomorrowKey ? "Moving..." : "Tomorrow"}
-          </MobileSecondaryButton>
+          <div className="col-span-2">
+            <MobileSecondaryButton
+              onClick={() => onRollTomorrow(block.id)}
+              disabled={Boolean(actionLoading)}
+            >
+              {actionLoading === tomorrowKey ? "Moving..." : "Tomorrow"}
+            </MobileSecondaryButton>
+          </div>
         </div>
+      ) : showActions && isDone ? (
+        <p className="mt-3 rounded-xl border border-emerald-300/20 bg-emerald-300/10 px-3 py-2 text-xs font-semibold text-emerald-100">
+          Completed
+        </p>
       ) : null}
     </div>
   );
