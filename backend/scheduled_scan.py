@@ -4339,6 +4339,44 @@ def write_scanner_runtime_status(
     )
 
 
+def _csv_automation_status(scanner_enabled: bool) -> dict:
+    try:
+        from csv_refresh import get_csv_refresh_status
+
+        csv_status = get_csv_refresh_status()
+    except Exception as e:
+        return {
+            "csv_automation_paused": not scanner_enabled,
+            "csv_automation_status": "unknown",
+            "csv_automation_message": f"CSV refresh status unavailable: {e}",
+            "csv_refresh": None,
+        }
+
+    paused = bool(csv_status.get("automation_paused")) or not scanner_enabled
+    if paused:
+        status_label = "paused"
+        message = (
+            "CSV refresh paused because scanner is off."
+            if not scanner_enabled
+            else str(csv_status.get("status_message") or "CSV refresh automation is paused.")
+        )
+    else:
+        status_label = "enabled"
+        message = str(csv_status.get("status_message") or "CSV refresh automation is enabled.")
+
+    return {
+        "csv_automation_paused": paused,
+        "csv_automation_status": status_label,
+        "csv_automation_message": message,
+        "csv_refresh_last_attempt_result": csv_status.get("last_attempt_result"),
+        "csv_refresh_last_attempt_reason": csv_status.get("last_attempt_reason"),
+        "csv_refresh_last_success": csv_status.get("last_success"),
+        "csv_refresh_last_success_timeframes": csv_status.get("last_success_timeframes") or [],
+        "csv_refresh_last_success_files": csv_status.get("last_success_files") or [],
+        "csv_refresh": csv_status,
+    }
+
+
 def get_scanner_runtime_status() -> dict:
     now = datetime.now(TIMEZONE)
     sessions = get_active_sessions(now)
@@ -4360,6 +4398,7 @@ def get_scanner_runtime_status() -> dict:
     latest_scan_timestamp = latest_scan.get("timestamp") if latest_scan else None
     latest_scan_success = latest_scan.get("success") if latest_scan else None
     session_window_open = should_scan_now(now)
+    csv_automation = _csv_automation_status(scanner_enabled)
 
     return {
         "success": True,
@@ -4385,7 +4424,7 @@ def get_scanner_runtime_status() -> dict:
         "running_scan": runtime_status.get("running_scan", False) if process_running else False,
         "last_scan_timestamp": latest_scan_timestamp,
         "latest_scan_success": latest_scan_success,
-    }
+    } | csv_automation
 
 
 # -------------------------

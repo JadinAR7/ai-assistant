@@ -150,6 +150,14 @@ type ScanStatus = {
   should_scan_now?: boolean;
   scheduled_scan_allowed?: boolean;
   automatic_scans_paused?: boolean;
+  csv_automation_paused?: boolean;
+  csv_automation_status?: string;
+  csv_automation_message?: string;
+  csv_refresh_last_attempt_result?: string | null;
+  csv_refresh_last_attempt_reason?: string | null;
+  csv_refresh_last_success?: string | null;
+  csv_refresh_last_success_timeframes?: string[];
+  csv_refresh_last_success_files?: string[];
   htf_source?: string;
   live_vision_timeframes?: string[];
   conditional_execution_timeframes?: string[];
@@ -875,6 +883,11 @@ ${record.message || "No scan message returned."}`;
             ...current,
             scanner_enabled: scannerEnabled,
             automatic_scans_paused: !scannerEnabled,
+            csv_automation_paused: !scannerEnabled,
+            csv_automation_status: scannerEnabled ? "enabled" : "paused",
+            csv_automation_message: scannerEnabled
+              ? "CSV refresh automation is enabled."
+              : "CSV refresh paused because scanner is off.",
             scheduled_scan_allowed:
               scannerEnabled && Boolean(current.should_scan_now),
           }
@@ -1261,7 +1274,7 @@ ${record.message || "No scan message returned."}`;
   const scannerSubtitle = scanStatus?.running_scan
     ? "Scanning now..."
     : !scannerEnabled
-    ? "Automatic scans paused"
+    ? "Scanner and CSV automation paused"
     : scanStatus?.process_running && scanStatus?.should_scan_now
     ? "Watching scan window"
     : scanStatus?.process_running
@@ -1272,6 +1285,23 @@ ${record.message || "No scan message returned."}`;
   const scannerSupportedSymbols = scannerSettings?.supported_symbols?.length
     ? scannerSettings.supported_symbols
     : ["MES", "MNQ", "ES", "NQ"];
+  const csvAutomationPaused =
+    scanStatus?.csv_automation_paused ?? !scannerEnabled;
+  const csvAutomationText = csvAutomationPaused
+    ? "Paused"
+    : scanStatus?.csv_automation_status
+    ? formatLabel(scanStatus.csv_automation_status)
+    : "Enabled";
+  const csvAutomationMessage =
+    scanStatus?.csv_automation_message ||
+    (csvAutomationPaused
+      ? "CSV refresh paused because scanner is off."
+      : "CSV refresh automation is enabled.");
+  const nextIntervalText = !scannerEnabled
+    ? "Paused/off"
+    : scanStatus?.scan_interval_seconds
+    ? `${Math.round(scanStatus.scan_interval_seconds / 60)}m`
+    : "Unknown";
 
   const htfBias = latestScan?.state?.htf_bias || "unknown";
   const executionBias = latestScan?.state?.execution_bias || "unknown";
@@ -1633,17 +1663,32 @@ ${record.message || "No scan message returned."}`;
             ) : (
               <div className="mb-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
                 <div className="rounded-xl bg-neutral-950/70 p-3">
-                  <p className="text-neutral-500">Process</p>
+                  <p className="text-neutral-500">Service</p>
                   <p className="mt-1 font-semibold text-neutral-100">
                     {scanStatus?.process_running ? "Running" : "Not running"}
                   </p>
                 </div>
 
                 <div className="rounded-xl bg-neutral-950/70 p-3">
+                  <p className="text-neutral-500">Automation</p>
+                  <p className="mt-1 font-semibold text-neutral-100">
+                    {scannerEnabled ? "Enabled" : "Paused"}
+                  </p>
+                </div>
+
+                <div className="rounded-xl bg-neutral-950/70 p-3">
                   <p className="text-neutral-500">Running scan</p>
                   <p className="mt-1 font-semibold text-neutral-100">
-                    {scanStatus?.running_scan ? "Yes" : "No"}
+                    {scannerEnabled && scanStatus?.running_scan ? "Yes" : "No"}
                   </p>
+                </div>
+
+                <div className="rounded-xl bg-neutral-950/70 p-3">
+                  <p className="text-neutral-500">CSV automation</p>
+                  <p className="mt-1 font-semibold text-neutral-100">
+                    {csvAutomationText}
+                  </p>
+                  <p className="mt-1 text-neutral-500">{csvAutomationMessage}</p>
                 </div>
 
                 <div className="rounded-xl bg-neutral-950/70 p-3">
@@ -1675,9 +1720,7 @@ ${record.message || "No scan message returned."}`;
                 <div className="rounded-xl bg-neutral-950/70 p-3">
                   <p className="text-neutral-500">Next interval</p>
                   <p className="mt-1 font-semibold text-neutral-100">
-                    {scanStatus?.scan_interval_seconds
-                      ? `${Math.round(scanStatus.scan_interval_seconds / 60)}m`
-                      : "Unknown"}
+                    {nextIntervalText}
                   </p>
                 </div>
 

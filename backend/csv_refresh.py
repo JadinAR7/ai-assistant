@@ -6,7 +6,11 @@ from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from scanner_settings import get_default_scanner_symbol, normalize_scanner_symbol
+from scanner_settings import (
+    get_default_scanner_symbol,
+    get_scanner_settings,
+    normalize_scanner_symbol,
+)
 
 
 # -------------------------
@@ -130,8 +134,18 @@ def _next_expected_window(now: datetime | None = None) -> dict:
 # Status storage
 # -------------------------
 def _default_status(now: datetime | None = None) -> dict:
+    scanner_enabled = bool(get_scanner_settings().get("scanner_enabled", True))
     return {
         "enabled": True,
+        "scanner_enabled": scanner_enabled,
+        "automation_enabled": scanner_enabled,
+        "automation_paused": not scanner_enabled,
+        "pause_reason": "scanner_disabled" if not scanner_enabled else None,
+        "status_message": (
+            "CSV refresh paused because scanner is off."
+            if not scanner_enabled
+            else "CSV refresh automation is enabled."
+        ),
         "symbol": _resolve_symbol(),
         "last_attempt": None,
         "last_attempt_reason": None,
@@ -163,6 +177,25 @@ def _read_status() -> dict:
     status.update(stored if isinstance(stored, dict) else {})
     status["symbol"] = status.get("symbol") or _resolve_symbol()
     status["next_expected_window"] = _next_expected_window()
+    scanner_enabled = bool(get_scanner_settings().get("scanner_enabled", True))
+    csv_refresh_enabled = bool(status.get("enabled", True))
+    status["scanner_enabled"] = scanner_enabled
+    status["automation_enabled"] = csv_refresh_enabled and scanner_enabled
+    status["automation_paused"] = (not scanner_enabled) or (not csv_refresh_enabled)
+    status["pause_reason"] = (
+        "scanner_disabled"
+        if not scanner_enabled
+        else "csv_refresh_disabled"
+        if not csv_refresh_enabled
+        else None
+    )
+    status["status_message"] = (
+        "CSV refresh paused because scanner is off."
+        if not scanner_enabled
+        else "CSV refresh is disabled."
+        if not csv_refresh_enabled
+        else "CSV refresh automation is enabled."
+    )
 
     if status.get("last_success"):
         if not status.get("last_success_timeframes") and status.get("timeframes_refreshed"):
@@ -347,9 +380,44 @@ def run_csv_refresh(force: bool = False, symbol: str | None = None, exporter=Non
     status = _read_status()
     logs = []
 
+    scanner_enabled = bool(get_scanner_settings().get("scanner_enabled", True))
+    if not force and not scanner_enabled:
+        logs = ["CSV refresh skipped because scanner automation is disabled."]
+        status.update({
+            "symbol": refresh_symbol,
+            "scanner_enabled": False,
+            "automation_enabled": False,
+            "automation_paused": True,
+            "pause_reason": "scanner_disabled",
+            "status_message": "CSV refresh paused because scanner is off.",
+            "last_attempt": now.isoformat(),
+            "last_attempt_reason": "scanner_disabled",
+            "last_attempt_result": "skipped",
+            "last_error": None,
+            "last_refresh_reason": "scanner_disabled",
+            "next_expected_window": _next_expected_window(now),
+            "logs": logs,
+        })
+        _write_status(status)
+
+        return {
+            "success": True,
+            "skipped": True,
+            "symbol": refresh_symbol,
+            "refresh_reason": "scanner_disabled",
+            "status": status,
+            "logs": logs,
+            "message": "CSV refresh skipped because scanner automation is disabled.",
+        }
+
     if not status.get("enabled", True):
         status.update({
             "symbol": refresh_symbol,
+            "scanner_enabled": scanner_enabled,
+            "automation_enabled": False,
+            "automation_paused": True,
+            "pause_reason": "csv_refresh_disabled",
+            "status_message": "CSV refresh is disabled.",
             "last_attempt": now.isoformat(),
             "last_attempt_reason": "disabled",
             "last_attempt_result": "skipped",
