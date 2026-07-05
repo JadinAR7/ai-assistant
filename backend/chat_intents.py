@@ -4,14 +4,26 @@ import re
 from datetime import date, datetime
 from typing import Any, Callable
 
-import agent_service
-import morning_checkin
-import pattern_discovery
-import presence
-import trading_coach
-import trading_correlation
-import trading_strategy
-from orbit import service as orbit_service
+try:
+    import agent_service
+    import morning_checkin
+    import pattern_discovery
+    import presence
+    import trading_coach
+    import trading_correlation
+    import trading_strategy
+    from orbit.models import ScheduleBlockCreate
+    from orbit import service as orbit_service
+except ImportError:
+    from . import agent_service
+    from . import morning_checkin
+    from . import pattern_discovery
+    from . import presence
+    from . import trading_coach
+    from . import trading_correlation
+    from . import trading_strategy
+    from .orbit.models import ScheduleBlockCreate
+    from .orbit import service as orbit_service
 
 
 IntentHandler = Callable[[str], dict[str, Any]]
@@ -28,6 +40,10 @@ def route_chat_intent(message: str) -> dict[str, Any] | None:
 
     if _is_morning_briefing_intent(normalized):
         return _morning_briefing_response()
+
+    schedule_action = _parse_schedule_action(normalized)
+    if schedule_action is not None:
+        return _schedule_action_response(schedule_action)
 
     if _is_schedule_intent(normalized):
         return _schedule_response()
@@ -67,7 +83,8 @@ def route_chat_intent(message: str) -> dict[str, Any] | None:
 
 
 def _normalize(message: str) -> str:
-    return re.sub(r"\s+", " ", message.casefold()).strip()
+    normalized = message.casefold().replace("’", "'").replace("‘", "'")
+    return re.sub(r"\s+", " ", normalized).strip()
 
 
 def _contains_any(message: str, phrases: list[str]) -> bool:
@@ -115,6 +132,133 @@ def _is_schedule_intent(message: str) -> bool:
             "schedule next",
         ],
     )
+
+
+_SCHEDULE_ACTION_VERBS = {"add", "schedule", "block", "put", "create"}
+_SCHEDULE_CONTEXT_WORDS = {"schedule", "calendar", "time", "block", "free"}
+_SCHEDULE_STOP_WORDS = {
+    "my",
+    "the",
+    "a",
+    "an",
+    "to",
+    "on",
+    "in",
+    "for",
+    "of",
+    "please",
+    "can",
+    "could",
+    "you",
+    "would",
+    "this",
+}
+_SCHEDULE_DAYS = {
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+}
+_SCHEDULE_TIME_PREFERENCES = {
+    "morning": "morning",
+    "afternoon": "afternoon",
+    "evening": "evening",
+    "night": "night",
+}
+_DURATION_PATTERN = re.compile(
+    r"\b(?P<amount>\d+(?:\.\d+)?)\s*(?P<unit>minutes?|mins?|min|m|hours?|hrs?|hr|h)\b"
+)
+
+
+def _parse_schedule_action(message: str) -> dict[str, Any] | None:
+    words = set(re.findall(r"[a-z0-9']+", message))
+    has_action_verb = bool(words & _SCHEDULE_ACTION_VERBS)
+    duration_match = _DURATION_PATTERN.search(message)
+    has_schedule_context = bool(words & _SCHEDULE_CONTEXT_WORDS)
+    has_day_or_time_hint = bool(words & _SCHEDULE_DAYS) or bool(words & set(_SCHEDULE_TIME_PREFERENCES))
+
+    if not has_action_verb:
+        return None
+
+    looks_schedulable = has_schedule_context or duration_match is not None or has_day_or_time_hint
+    if not looks_schedulable:
+        return None
+
+    duration_minutes = _parse_schedule_duration(duration_match)
+    activity = _extract_schedule_activity(message, duration_match)
+    preferred_days = [day for day in _SCHEDULE_DAYS if day in words]
+    time_preference = next(
+        (
+            preference
+            for word, preference in _SCHEDULE_TIME_PREFERENCES.items()
+            if word in words
+        ),
+        "anytime",
+    )
+
+    return {
+        "duration_minutes": duration_minutes,
+        "activity": activity,
+        "preferred_days": sorted(
+            preferred_days,
+            key=[
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday",
+            ].index,
+        ),
+        "time_preference": time_preference,
+    }
+
+
+def _parse_schedule_duration(match: re.Match[str] | None) -> int | None:
+    if match is None:
+        return None
+    amount = float(match.group("amount"))
+    unit = match.group("unit")
+    minutes = amount * 60 if unit.startswith(("h", "hour")) else amount
+    return int(minutes) if minutes.is_integer() else round(minutes)
+
+
+def _extract_schedule_activity(message: str, duration_match: re.Match[str] | None) -> str | None:
+    activity_text = ""
+    if duration_match is not None:
+        activity_text = message[duration_match.end() :].strip()
+        activity_text = re.sub(r"^(?:of|for|to)\s+", "", activity_text)
+    else:
+        activity_text = re.sub(
+            r"^(?:can|could|would)?\s*(?:you\s+)?(?:please\s+)?(?:add|schedule|block|put|create)\s+",
+            "",
+            message,
+        )
+
+    activity_text = re.split(
+        r"\b(?:to|on|in)\s+my\s+(?:schedule|calendar)\b|"
+        r"\b(?:whenever|when)\s+i(?:'| a)?m\s+free\b|"
+        r"\b(?:tomorrow|today|tonight|morning|afternoon|evening|night|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        activity_text,
+        maxsplit=1,
+    )[0]
+    activity_text = re.sub(r"^(?:of|for|to)\s+", "", activity_text)
+    activity_text = re.sub(r"\b(?:schedule|calendar|time|block)\b", "", activity_text)
+    activity_text = re.sub(r"[^a-z0-9' ]+", " ", activity_text)
+    activity_text = re.sub(r"\s+", " ", activity_text).strip()
+
+    words = [word for word in activity_text.split() if word not in _SCHEDULE_STOP_WORDS]
+    if not words:
+        return None
+
+    activity = " ".join(words)
+    if activity == "read":
+        activity = "reading"
+    return activity
 
 
 def _is_agent_priority_intent(message: str) -> bool:
@@ -273,6 +417,81 @@ def _schedule_response() -> dict[str, Any]:
     intelligence = orbit_service.get_schedule_intelligence()
     message = _format_schedule_intelligence_summary(intelligence)
     return _success_response("schedule", message, {"schedule_intelligence": intelligence})
+
+
+def _schedule_action_response(action: dict[str, Any]) -> dict[str, Any]:
+    duration_minutes = action.get("duration_minutes")
+    activity = action.get("activity")
+
+    if duration_minutes is None:
+        return _success_response(
+            "schedule_clarify",
+            "How long should I schedule for that?",
+            {"missing": "duration", "schedule_action": action},
+        )
+
+    if not activity:
+        return _success_response(
+            "schedule_clarify",
+            "What should I add to your schedule?",
+            {"missing": "activity", "schedule_action": action},
+        )
+
+    title = _titleize_schedule_activity(str(activity))
+    preferred_days = action.get("preferred_days") or []
+    placement_mode = "preferred_day" if preferred_days else "whenever_free"
+
+    payload = ScheduleBlockCreate(
+        title=title,
+        block_type="flexible",
+        category="personal",
+        duration_minutes=int(duration_minutes),
+        recurrence="once",
+        preferred_days=preferred_days,
+        time_preference=action.get("time_preference") or "anytime",
+        flexible_placement_mode=placement_mode,
+        priority="medium",
+        active=True,
+    )
+
+    try:
+        before_ids = {
+            int(block.get("id"))
+            for block in orbit_service.list_schedule_blocks()
+            if block.get("id") is not None
+        }
+        block = orbit_service.create_schedule_block(payload)
+    except Exception as exc:
+        return _success_response(
+            "schedule_error",
+            f"Couldn't add the {str(activity).strip()} block because {exc}.",
+            {"error": str(exc), "schedule_action": action},
+        )
+
+    created = int(block.get("id") or 0) not in before_ids
+    duration_text = _format_schedule_action_duration(duration_minutes)
+
+    if not created:
+        message = (
+            f"{title} is already on your schedule as a "
+            f"{_format_schedule_action_duration(duration_minutes, adjectival=True)} flexible block."
+        )
+    else:
+        placement_text = (
+            _format_preferred_days(preferred_days)
+            if preferred_days
+            else "whenever you're free"
+        )
+        message = (
+            f"Added {duration_text} of {title} as a flexible schedule block "
+            f"{placement_text}."
+        )
+
+    return _success_response(
+        "schedule_create_block",
+        message,
+        {"schedule_block": block, "created": created},
+    )
 
 
 def _agent_priority_response() -> dict[str, Any]:
@@ -518,6 +737,37 @@ def _format_schedule_day_summary(day: dict[str, Any]) -> str:
         f"({_format_duration(day.get('remaining_available_minutes'))} open, "
         f"{day.get('status')})"
     )
+
+
+def _titleize_schedule_activity(activity: str) -> str:
+    return " ".join(word.capitalize() for word in activity.split())
+
+
+def _format_preferred_days(days: list[str]) -> str:
+    labels = [_day_label(day) for day in days]
+    if not labels:
+        return "whenever you're free"
+    if len(labels) == 1:
+        return f"on {labels[0]}"
+    return "on " + ", ".join(labels[:-1]) + f" and {labels[-1]}"
+
+
+def _format_schedule_action_duration(duration: Any, adjectival: bool = False) -> str:
+    try:
+        minutes = int(duration)
+    except (TypeError, ValueError):
+        return "scheduled" if adjectival else "some time"
+
+    if adjectival:
+        return f"{minutes}-minute" if minutes < 60 else f"{minutes // 60}-hour"
+
+    hours = minutes // 60
+    remainder = minutes % 60
+    if hours and remainder:
+        return f"{hours} hour{'s' if hours != 1 else ''} {remainder} minute{'s' if remainder != 1 else ''}"
+    if hours:
+        return f"{hours} hour{'s' if hours != 1 else ''}"
+    return f"{minutes} minute{'s' if minutes != 1 else ''}"
 
 
 def _blocks_for_today(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
