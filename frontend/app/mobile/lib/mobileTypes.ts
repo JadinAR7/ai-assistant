@@ -112,6 +112,43 @@ export type JournalEntry = {
   strategy_mode?: string | null;
 };
 
+export type MobileReminder = {
+  id: number;
+  title: string;
+  body?: string | null;
+  due_at: string;
+  status: "pending" | "done" | "dismissed";
+  source: "chat" | "manual" | "schedule" | "scanner" | "system";
+  created_at: string;
+  completed_at?: string | null;
+  dismissed_at?: string | null;
+};
+
+export type MobileNotification = {
+  id: number;
+  title: string;
+  body?: string | null;
+  type: "trading" | "schedule" | "task" | "system";
+  status: "unread" | "read" | "dismissed" | "completed";
+  priority: "low" | "normal" | "high";
+  target?: {
+    kind?: string | null;
+    value?: string | null;
+  } | null;
+  created_at: string;
+  acknowledged_at?: string | null;
+  completed_at?: string | null;
+  dismissed_at?: string | null;
+};
+
+export type MobileNotificationCenter = {
+  reminders: MobileReminder[];
+  notifications: MobileNotification[];
+  next_reminder?: MobileReminder | null;
+  unread_count: number;
+  pending_count: number;
+};
+
 export type MobileData = {
   briefing: MorningBriefing | null;
   presence: PresenceMode | null;
@@ -120,6 +157,7 @@ export type MobileData = {
   latestScan: ScanRecord | null;
   performanceCalendar: PerformanceCalendar | null;
   journalEntries: JournalEntry[];
+  notificationCenter: MobileNotificationCenter | null;
   backendReachable: boolean;
 };
 

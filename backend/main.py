@@ -26,6 +26,14 @@ from response_quality import (
     is_incomplete_response,
 )
 from orbit.database import init_orbit_db
+from orbit import service as orbit_service
+from orbit.models import (
+    MobileNotification,
+    MobileNotificationCenter,
+    MobileNotificationCreate,
+    MobileReminder,
+    MobileReminderCreate,
+)
 from orbit.routes import router as orbit_router
 
 
@@ -808,6 +816,69 @@ def update_presence(request: PresenceRequest):
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# -------------------------
+# Mobile reminder / notification facade
+# -------------------------
+@app.get("/mobile/notifications", response_model=MobileNotificationCenter)
+def get_mobile_notifications():
+    return orbit_service.get_mobile_notification_center()
+
+
+@app.post("/mobile/notifications", response_model=MobileNotification, status_code=201)
+def create_mobile_notification(payload: MobileNotificationCreate):
+    return orbit_service.create_mobile_notification(payload)
+
+
+@app.post("/mobile/notifications/{notification_id}/ack", response_model=MobileNotification)
+def ack_mobile_notification(notification_id: int):
+    notification = orbit_service.acknowledge_mobile_notification(notification_id)
+    if notification is None:
+        raise HTTPException(status_code=404, detail=f"Notification {notification_id} not found.")
+    return notification
+
+
+@app.post("/mobile/notifications/{notification_id}/complete", response_model=MobileNotification)
+def complete_mobile_notification(notification_id: int):
+    notification = orbit_service.complete_mobile_notification(notification_id)
+    if notification is None:
+        raise HTTPException(status_code=404, detail=f"Notification {notification_id} not found.")
+    return notification
+
+
+@app.post("/mobile/notifications/{notification_id}/dismiss", response_model=MobileNotification)
+def dismiss_mobile_notification(notification_id: int):
+    notification = orbit_service.dismiss_mobile_notification(notification_id)
+    if notification is None:
+        raise HTTPException(status_code=404, detail=f"Notification {notification_id} not found.")
+    return notification
+
+
+@app.get("/mobile/reminders", response_model=list[MobileReminder])
+def list_mobile_reminders(status: str | None = "pending"):
+    return orbit_service.list_mobile_reminders(status=status)
+
+
+@app.post("/mobile/reminders", response_model=MobileReminder, status_code=201)
+def create_mobile_reminder(payload: MobileReminderCreate):
+    return orbit_service.create_mobile_reminder(payload)
+
+
+@app.post("/mobile/reminders/{reminder_id}/complete", response_model=MobileReminder)
+def complete_mobile_reminder(reminder_id: int):
+    reminder = orbit_service.complete_mobile_reminder(reminder_id)
+    if reminder is None:
+        raise HTTPException(status_code=404, detail=f"Reminder {reminder_id} not found.")
+    return reminder
+
+
+@app.post("/mobile/reminders/{reminder_id}/dismiss", response_model=MobileReminder)
+def dismiss_mobile_reminder(reminder_id: int):
+    reminder = orbit_service.dismiss_mobile_reminder(reminder_id)
+    if reminder is None:
+        raise HTTPException(status_code=404, detail=f"Reminder {reminder_id} not found.")
+    return reminder
 
 
 # -------------------------

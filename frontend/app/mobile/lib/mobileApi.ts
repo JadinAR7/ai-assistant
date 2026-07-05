@@ -1,6 +1,9 @@
 import {
   type JournalEntry,
   type MobileData,
+  type MobileNotification,
+  type MobileNotificationCenter,
+  type MobileReminder,
   type MorningBriefing,
   type PerformanceCalendar,
   type PresenceMode,
@@ -20,6 +23,7 @@ export const emptyMobileData: MobileData = {
   latestScan: null,
   performanceCalendar: null,
   journalEntries: [],
+  notificationCenter: null,
   backendReachable: false,
 };
 
@@ -47,6 +51,7 @@ export async function fetchMobileData(): Promise<MobileData> {
     latestScanResponse,
     performanceCalendar,
     journalEntries,
+    notificationCenter,
   ] = await Promise.all([
     fetchJson<{ status?: string }>("/"),
     fetchJson<MorningBriefing>("/orbit/morning-briefing"),
@@ -61,6 +66,7 @@ export async function fetchMobileData(): Promise<MobileData> {
       `/orbit/trade-journal/performance-calendar?month=${monthKey()}&source=all`,
     ),
     fetchJson<JournalEntry[]>("/orbit/trade-journal"),
+    fetchJson<MobileNotificationCenter>("/mobile/notifications"),
   ]);
 
   return {
@@ -74,6 +80,7 @@ export async function fetchMobileData(): Promise<MobileData> {
       null,
     performanceCalendar,
     journalEntries: Array.isArray(journalEntries) ? journalEntries.slice(0, 5) : [],
+    notificationCenter,
     backendReachable: Boolean(health),
   };
 }
@@ -98,4 +105,36 @@ export async function runMobileScanner(symbol: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ symbol }),
   });
+}
+
+async function postMobileAction<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, { method: "POST" });
+  if (!response.ok) {
+    throw new Error(`Mobile action failed with ${response.status}`);
+  }
+  return (await response.json()) as T;
+}
+
+export function completeMobileReminder(id: number) {
+  return postMobileAction<MobileReminder>(`/mobile/reminders/${id}/complete`);
+}
+
+export function dismissMobileReminder(id: number) {
+  return postMobileAction<MobileReminder>(`/mobile/reminders/${id}/dismiss`);
+}
+
+export function ackMobileNotification(id: number) {
+  return postMobileAction<MobileNotification>(`/mobile/notifications/${id}/ack`);
+}
+
+export function dismissMobileNotification(id: number) {
+  return postMobileAction<MobileNotification>(
+    `/mobile/notifications/${id}/dismiss`,
+  );
+}
+
+export function completeMobileNotification(id: number) {
+  return postMobileAction<MobileNotification>(
+    `/mobile/notifications/${id}/complete`,
+  );
 }

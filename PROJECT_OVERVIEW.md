@@ -128,6 +128,8 @@ Potential endpoints:
 * `GET /mobile/notifications`
 * `POST /mobile/notifications/{id}/ack`
 
+Mobile reminders and notifications use an in-app queue on the shared backend platform. The first implementation should stay local/backend-driven: no APNs, web push, service worker badges, or external notification delivery until the mobile assistant workflows prove useful.
+
 Do not expose Helix beyond trusted local access without authentication.
 
 ### Connectivity And Security Notes

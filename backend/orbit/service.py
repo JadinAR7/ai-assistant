@@ -13,6 +13,8 @@ from .models import (
     MajorEventUpdate,
     MilestoneCreate,
     MilestoneUpdate,
+    MobileNotificationCreate,
+    MobileReminderCreate,
     ReadinessCategoryCreate,
     ReadinessCategoryUpdate,
     RecommendationTaskDraft,
@@ -139,6 +141,22 @@ TABLE_COLUMNS = {
         "priority",
         "notes",
         "active",
+    ],
+    "mobile_reminders": [
+        "title",
+        "body",
+        "due_at",
+        "status",
+        "source",
+    ],
+    "mobile_notifications": [
+        "title",
+        "body",
+        "type",
+        "status",
+        "priority",
+        "target_kind",
+        "target_value",
     ],
 }
 
@@ -285,6 +303,211 @@ def get_record(table: str, record_id: int) -> dict[str, Any] | None:
     conn.close()
 
     return _row_to_dict(row)
+
+
+def _mobile_notification_to_dict(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+
+    target_kind = record.pop("target_kind", None)
+    target_value = record.pop("target_value", None)
+    record["target"] = (
+        {"kind": target_kind, "value": target_value}
+        if target_kind or target_value
+        else None
+    )
+    return record
+
+
+def create_mobile_reminder(payload: MobileReminderCreate) -> dict[str, Any]:
+    return _create_record("mobile_reminders", _model_data(payload))
+
+
+def list_mobile_reminders(status: str | None = "pending") -> list[dict[str, Any]]:
+    init_orbit_db()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    if status:
+        cursor.execute(
+            """
+            SELECT * FROM mobile_reminders
+            WHERE status = ?
+            ORDER BY due_at, id
+            """,
+            (status,),
+        )
+    else:
+        cursor.execute("SELECT * FROM mobile_reminders ORDER BY due_at, id")
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [_row_to_dict(row) or {} for row in rows]
+
+
+def get_mobile_reminder(reminder_id: int) -> dict[str, Any] | None:
+    return get_record("mobile_reminders", reminder_id)
+
+
+def complete_mobile_reminder(reminder_id: int) -> dict[str, Any] | None:
+    init_orbit_db()
+
+    completed_at = datetime.now(ORBIT_LOCAL_TIMEZONE).isoformat()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE mobile_reminders
+        SET status = 'done', completed_at = ?
+        WHERE id = ?
+        """,
+        (completed_at, reminder_id),
+    )
+    conn.commit()
+    updated = cursor.rowcount > 0
+    conn.close()
+    return get_mobile_reminder(reminder_id) if updated else None
+
+
+def dismiss_mobile_reminder(reminder_id: int) -> dict[str, Any] | None:
+    init_orbit_db()
+
+    dismissed_at = datetime.now(ORBIT_LOCAL_TIMEZONE).isoformat()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE mobile_reminders
+        SET status = 'dismissed', dismissed_at = ?
+        WHERE id = ?
+        """,
+        (dismissed_at, reminder_id),
+    )
+    conn.commit()
+    updated = cursor.rowcount > 0
+    conn.close()
+    return get_mobile_reminder(reminder_id) if updated else None
+
+
+def create_mobile_notification(payload: MobileNotificationCreate) -> dict[str, Any]:
+    data = _model_data(payload)
+    target = data.pop("target", None) or {}
+    data["target_kind"] = target.get("kind")
+    data["target_value"] = target.get("value")
+    return _mobile_notification_to_dict(_create_record("mobile_notifications", data)) or {}
+
+
+def list_mobile_notifications(status: str | None = None) -> list[dict[str, Any]]:
+    init_orbit_db()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    if status:
+        cursor.execute(
+            """
+            SELECT * FROM mobile_notifications
+            WHERE status = ?
+            ORDER BY
+                CASE priority WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+                created_at DESC,
+                id DESC
+            """,
+            (status,),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT * FROM mobile_notifications
+            ORDER BY
+                CASE status WHEN 'unread' THEN 1 WHEN 'read' THEN 2 ELSE 3 END,
+                CASE priority WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+                created_at DESC,
+                id DESC
+            """
+        )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        _mobile_notification_to_dict(_row_to_dict(row) or {}) or {}
+        for row in rows
+    ]
+
+
+def get_mobile_notification(notification_id: int) -> dict[str, Any] | None:
+    return _mobile_notification_to_dict(get_record("mobile_notifications", notification_id))
+
+
+def acknowledge_mobile_notification(notification_id: int) -> dict[str, Any] | None:
+    init_orbit_db()
+
+    acknowledged_at = datetime.now(ORBIT_LOCAL_TIMEZONE).isoformat()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE mobile_notifications
+        SET status = 'read', acknowledged_at = ?
+        WHERE id = ?
+        """,
+        (acknowledged_at, notification_id),
+    )
+    conn.commit()
+    updated = cursor.rowcount > 0
+    conn.close()
+    return get_mobile_notification(notification_id) if updated else None
+
+
+def complete_mobile_notification(notification_id: int) -> dict[str, Any] | None:
+    init_orbit_db()
+
+    completed_at = datetime.now(ORBIT_LOCAL_TIMEZONE).isoformat()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE mobile_notifications
+        SET status = 'completed', completed_at = ?
+        WHERE id = ?
+        """,
+        (completed_at, notification_id),
+    )
+    conn.commit()
+    updated = cursor.rowcount > 0
+    conn.close()
+    return get_mobile_notification(notification_id) if updated else None
+
+
+def dismiss_mobile_notification(notification_id: int) -> dict[str, Any] | None:
+    init_orbit_db()
+
+    dismissed_at = datetime.now(ORBIT_LOCAL_TIMEZONE).isoformat()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE mobile_notifications
+        SET status = 'dismissed', dismissed_at = ?
+        WHERE id = ?
+        """,
+        (dismissed_at, notification_id),
+    )
+    conn.commit()
+    updated = cursor.rowcount > 0
+    conn.close()
+    return get_mobile_notification(notification_id) if updated else None
+
+
+def get_mobile_notification_center() -> dict[str, Any]:
+    reminders = list_mobile_reminders(status="pending")
+    notifications = list_mobile_notifications(status="unread")
+    return {
+        "reminders": reminders,
+        "notifications": notifications,
+        "next_reminder": reminders[0] if reminders else None,
+        "unread_count": len(notifications),
+        "pending_count": len(reminders),
+    }
 
 
 def delete_record(table: str, record_id: int) -> bool:

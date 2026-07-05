@@ -4,6 +4,7 @@ import {
   MobilePrimaryButton,
   MobileSecondaryButton,
 } from "./MobileCard";
+import MobileNotifications from "./MobileNotifications";
 import {
   type MobileActionResult,
   type MobileData,
@@ -31,10 +32,15 @@ export default function MobileHome({
   loading,
   scanLoading,
   quickCommandLoading,
+  mobileQueueLoading,
   actionResult,
   onRefresh,
   onRunScanner,
   onQuickCommand,
+  onCompleteReminder,
+  onDismissReminder,
+  onAckNotification,
+  onCompleteNotification,
   onStartPrompt,
   onTabChange,
 }: Readonly<{
@@ -46,10 +52,15 @@ export default function MobileHome({
   loading: boolean;
   scanLoading: boolean;
   quickCommandLoading: string | null;
+  mobileQueueLoading: string | null;
   actionResult: MobileActionResult | null;
   onRefresh: () => void;
   onRunScanner: () => void;
   onQuickCommand: QuickCommand;
+  onCompleteReminder: (id: number) => void;
+  onDismissReminder: (id: number) => void;
+  onAckNotification: (id: number) => void;
+  onCompleteNotification: (id: number) => void;
   onStartPrompt: (prompt: string) => void;
   onTabChange: (tab: MobileTabId) => void;
 }>) {
@@ -317,6 +328,31 @@ export default function MobileHome({
           <MobileSecondaryButton
             onClick={() =>
               onQuickCommand(
+                "Remind me tonight to review my top priority.",
+                "Remind me tonight",
+              )
+            }
+            disabled={Boolean(quickCommandLoading)}
+          >
+            Remind Tonight
+          </MobileSecondaryButton>
+          <MobileSecondaryButton
+            onClick={() =>
+              onQuickCommand(
+                "Remind me to review my trades tonight.",
+                "Review trades reminder",
+              )
+            }
+            disabled={Boolean(quickCommandLoading)}
+          >
+            Review Trades
+          </MobileSecondaryButton>
+          <MobileSecondaryButton onClick={() => onStartPrompt("Remind me to ")}>
+            Set Reminder
+          </MobileSecondaryButton>
+          <MobileSecondaryButton
+            onClick={() =>
+              onQuickCommand(
                 "Plan my day from my Orbit schedule and top priorities.",
                 "Plan my day",
               )
@@ -351,17 +387,14 @@ export default function MobileHome({
         </MobileCard>
       ) : null}
 
-      <MobileCard>
-        <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-          Reminders & Notifications
-        </p>
-        <h2 className="mt-1 text-lg font-semibold text-neutral-100">
-          Coming next
-        </h2>
-        <p className="mt-2 text-sm leading-6 text-neutral-400">
-          Mobile reminder queue and phone notifications.
-        </p>
-      </MobileCard>
+      <MobileNotifications
+        center={data.notificationCenter}
+        actionLoading={mobileQueueLoading}
+        onCompleteReminder={onCompleteReminder}
+        onDismissReminder={onDismissReminder}
+        onAckNotification={onAckNotification}
+        onCompleteNotification={onCompleteNotification}
+      />
     </>
   );
 }

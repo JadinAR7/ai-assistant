@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
 try:
@@ -12,7 +12,7 @@ try:
     import trading_coach
     import trading_correlation
     import trading_strategy
-    from orbit.models import ScheduleBlockCreate
+    from orbit.models import MobileReminderCreate, ScheduleBlockCreate
     from orbit import service as orbit_service
 except ImportError:
     from . import agent_service
@@ -22,7 +22,7 @@ except ImportError:
     from . import trading_coach
     from . import trading_correlation
     from . import trading_strategy
-    from .orbit.models import ScheduleBlockCreate
+    from .orbit.models import MobileReminderCreate, ScheduleBlockCreate
     from .orbit import service as orbit_service
 
 
@@ -40,6 +40,10 @@ def route_chat_intent(message: str) -> dict[str, Any] | None:
 
     if _is_morning_briefing_intent(normalized):
         return _morning_briefing_response()
+
+    reminder_action = _parse_reminder_action(normalized)
+    if reminder_action is not None:
+        return _reminder_action_response(reminder_action)
 
     schedule_action = _parse_schedule_action(normalized)
     if schedule_action is not None:
@@ -171,6 +175,105 @@ _SCHEDULE_TIME_PREFERENCES = {
 _DURATION_PATTERN = re.compile(
     r"\b(?P<amount>\d+(?:\.\d+)?)\s*(?P<unit>minutes?|mins?|min|m|hours?|hrs?|hr|h)\b"
 )
+_REMINDER_PREFIX_PATTERN = re.compile(
+    r"^(?:please\s+)?(?:can|could|would)?\s*(?:you\s+)?"
+    r"(?:(?:set|create|add)\s+(?:a\s+)?reminder\s+(?:for\s+me\s+)?(?:to\s+)?|"
+    r"remind\s+me\s+(?:to\s+)?)"
+)
+_REMINDER_RELATIVE_PATTERN = re.compile(
+    r"\bin\s+(?P<amount>\d+)\s*(?P<unit>minutes?|mins?|min|hours?|hrs?|hr)\b"
+)
+_REMINDER_EXACT_TIME_PATTERN = re.compile(
+    r"\bat\s+(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<period>a\.?m\.?|p\.?m\.?|am|pm)?\b"
+)
+_REMINDER_DAYPART_HOURS = {
+    "morning": 8,
+    "afternoon": 15,
+    "evening": 19,
+    "tonight": 19,
+}
+
+
+def _parse_reminder_action(message: str) -> dict[str, Any] | None:
+    if not _REMINDER_PREFIX_PATTERN.search(message):
+        return None
+
+    due_at = _parse_reminder_due_at(message)
+    title = _extract_reminder_title(message)
+
+    return {
+        "title": title,
+        "due_at": due_at,
+        "message": message,
+    }
+
+
+def _parse_reminder_due_at(message: str) -> datetime | None:
+    now = datetime.now(orbit_service.ORBIT_LOCAL_TIMEZONE)
+
+    relative_match = _REMINDER_RELATIVE_PATTERN.search(message)
+    if relative_match:
+        amount = int(relative_match.group("amount"))
+        unit = relative_match.group("unit")
+        return now + (
+            timedelta(hours=amount)
+            if unit.startswith(("h", "hr", "hour"))
+            else timedelta(minutes=amount)
+        )
+
+    for daypart, hour in _REMINDER_DAYPART_HOURS.items():
+        if re.search(rf"\b{daypart}\b", message):
+            base = now + timedelta(days=1) if "tomorrow" in message else now
+            due = base.replace(hour=hour, minute=0, second=0, microsecond=0)
+            if due <= now:
+                due += timedelta(days=1)
+            return due
+
+    exact_match = _REMINDER_EXACT_TIME_PATTERN.search(message)
+    if exact_match:
+        hour = int(exact_match.group("hour"))
+        minute = int(exact_match.group("minute") or "0")
+        period = (exact_match.group("period") or "").replace(".", "")
+        if period == "pm" and hour < 12:
+            hour += 12
+        elif period == "am" and hour == 12:
+            hour = 0
+        elif not period and 1 <= hour <= 11:
+            morning_due = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            evening_due = now.replace(
+                hour=hour + 12,
+                minute=minute,
+                second=0,
+                microsecond=0,
+            )
+            if morning_due > now:
+                return morning_due
+            if evening_due > now:
+                return evening_due
+            return morning_due + timedelta(days=1)
+
+        if hour > 23 or minute > 59:
+            return None
+
+        due = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if "tomorrow" in message or due <= now:
+            due += timedelta(days=1)
+        return due
+
+    return None
+
+
+def _extract_reminder_title(message: str) -> str:
+    title = _REMINDER_PREFIX_PATTERN.sub("", message).strip()
+    title = _REMINDER_RELATIVE_PATTERN.sub("", title)
+    title = _REMINDER_EXACT_TIME_PATTERN.sub("", title)
+    title = re.sub(
+        r"\b(?:tomorrow|today|tonight|this\s+)?(?:morning|afternoon|evening)\b",
+        "",
+        title,
+    )
+    title = re.sub(r"\s+", " ", title).strip(" .,:;-")
+    return title or "Reminder"
 
 
 def _parse_schedule_action(message: str) -> dict[str, Any] | None:
@@ -419,6 +522,40 @@ def _schedule_response() -> dict[str, Any]:
     return _success_response("schedule", message, {"schedule_intelligence": intelligence})
 
 
+def _reminder_action_response(action: dict[str, Any]) -> dict[str, Any]:
+    due_at = action.get("due_at")
+    if due_at is None:
+        return _success_response(
+            "reminder_clarify",
+            "What time should I remind you?",
+            {"missing": "time", "reminder_action": action},
+        )
+
+    title = str(action.get("title") or "Reminder").strip()
+    payload = MobileReminderCreate(
+        title=title,
+        body=None,
+        due_at=due_at,
+        source="chat",
+    )
+
+    try:
+        reminder = orbit_service.create_mobile_reminder(payload)
+    except Exception as exc:
+        return _success_response(
+            "reminder_error",
+            f"Couldn't create that reminder because {exc}.",
+            {"error": str(exc), "reminder_action": action},
+        )
+
+    message = f"Reminder set for {_format_reminder_due_at(due_at)}: {title}."
+    return _success_response(
+        "reminder_create",
+        message,
+        {"reminder": reminder},
+    )
+
+
 def _schedule_action_response(action: dict[str, Any]) -> dict[str, Any]:
     duration_minutes = action.get("duration_minutes")
     activity = action.get("activity")
@@ -492,6 +629,18 @@ def _schedule_action_response(action: dict[str, Any]) -> dict[str, Any]:
         message,
         {"schedule_block": block, "created": created},
     )
+
+
+def _format_reminder_due_at(due_at: datetime) -> str:
+    now = datetime.now(orbit_service.ORBIT_LOCAL_TIMEZONE)
+    date_prefix = ""
+    if due_at.date() == now.date():
+        date_prefix = "today "
+    elif due_at.date() == (now + timedelta(days=1)).date():
+        date_prefix = "tomorrow "
+    else:
+        date_prefix = due_at.strftime("%b %-d ")
+    return f"{date_prefix}{due_at.strftime('%-I:%M %p')}".strip()
 
 
 def _agent_priority_response() -> dict[str, Any]:

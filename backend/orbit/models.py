@@ -36,6 +36,62 @@ TradeSessionName = Literal["Asia", "London", "New York", "After Hours"]
 TradeHtfBias = Literal["Bullish", "Bearish", "Neutral"]
 TradeStrategyMode = Literal["Scalp", "Day Trade", "Hybrid / Review"]
 TradeJournalEntryType = Literal["journal", "calendar_only"]
+MobileReminderStatus = Literal["pending", "done", "dismissed"]
+MobileReminderSource = Literal["chat", "manual", "schedule", "scanner", "system"]
+MobileNotificationType = Literal["trading", "schedule", "task", "system"]
+MobileNotificationStatus = Literal["unread", "read", "dismissed", "completed"]
+MobileNotificationPriority = Literal["low", "normal", "high"]
+
+
+class MobileReminderCreate(BaseModel):
+    title: str = Field(min_length=1)
+    body: Optional[str] = None
+    due_at: datetime
+    status: MobileReminderStatus = "pending"
+    source: MobileReminderSource = "manual"
+
+
+class MobileReminder(MobileReminderCreate):
+    id: int
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    dismissed_at: Optional[datetime] = None
+
+
+class MobileNotificationTarget(BaseModel):
+    kind: Optional[str] = None
+    value: Optional[str] = None
+
+
+class MobileNotificationCreate(BaseModel):
+    title: str = Field(min_length=1)
+    body: Optional[str] = None
+    type: MobileNotificationType = "system"
+    status: MobileNotificationStatus = "unread"
+    priority: MobileNotificationPriority = "normal"
+    target: MobileNotificationTarget | None = None
+
+
+class MobileNotification(BaseModel):
+    id: int
+    title: str
+    body: Optional[str] = None
+    type: MobileNotificationType
+    status: MobileNotificationStatus
+    priority: MobileNotificationPriority
+    target: MobileNotificationTarget | None = None
+    created_at: datetime
+    acknowledged_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    dismissed_at: Optional[datetime] = None
+
+
+class MobileNotificationCenter(BaseModel):
+    reminders: list[MobileReminder] = Field(default_factory=list)
+    notifications: list[MobileNotification] = Field(default_factory=list)
+    next_reminder: Optional[MobileReminder] = None
+    unread_count: int = 0
+    pending_count: int = 0
 
 
 class ScheduleBlockBase(BaseModel):

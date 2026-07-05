@@ -9,6 +9,10 @@ import MobileSchedule from "./components/MobileSchedule";
 import MobileShell from "./components/MobileShell";
 import MobileTrading from "./components/MobileTrading";
 import {
+  completeMobileNotification,
+  completeMobileReminder,
+  dismissMobileNotification,
+  dismissMobileReminder,
   emptyMobileData,
   fetchMobileData,
   runMobileScanner,
@@ -34,6 +38,7 @@ export default function MobileHelixPage() {
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [quickCommandLoading, setQuickCommandLoading] = useState<string | null>(null);
+  const [mobileQueueLoading, setMobileQueueLoading] = useState<string | null>(null);
   const [actionResult, setActionResult] = useState<MobileActionResult | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
@@ -152,6 +157,30 @@ export default function MobileHelixPage() {
     }
   }
 
+  async function runMobileQueueAction(
+    key: string,
+    title: string,
+    action: () => Promise<unknown>,
+  ) {
+    if (mobileQueueLoading) return;
+
+    setMobileQueueLoading(key);
+    setActionResult(null);
+    try {
+      await action();
+      await loadMobileData();
+      setActionResult({ title, message: "Updated your mobile queue." });
+    } catch {
+      setActionResult({
+        title,
+        message: "I could not update the mobile queue.",
+        error: true,
+      });
+    } finally {
+      setMobileQueueLoading(null);
+    }
+  }
+
   return (
     <MobileShell
       activeTab={activeTab}
@@ -171,9 +200,32 @@ export default function MobileHelixPage() {
           scanLoading={scanLoading}
           quickCommandLoading={quickCommandLoading}
           actionResult={actionResult}
+          mobileQueueLoading={mobileQueueLoading}
           onRefresh={loadMobileData}
           onRunScanner={runScanner}
           onQuickCommand={sendQuickCommand}
+          onCompleteReminder={(id) =>
+            runMobileQueueAction(`reminder-complete-${id}`, "Reminder done", () =>
+              completeMobileReminder(id),
+            )
+          }
+          onDismissReminder={(id) =>
+            runMobileQueueAction(`reminder-dismiss-${id}`, "Reminder dismissed", () =>
+              dismissMobileReminder(id),
+            )
+          }
+          onAckNotification={(id) =>
+            runMobileQueueAction(`notification-ack-${id}`, "Notification dismissed", () =>
+              dismissMobileNotification(id),
+            )
+          }
+          onCompleteNotification={(id) =>
+            runMobileQueueAction(
+              `notification-complete-${id}`,
+              "Notification completed",
+              () => completeMobileNotification(id),
+            )
+          }
           onStartPrompt={startPrompt}
           onTabChange={setActiveTab}
         />

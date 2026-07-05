@@ -378,6 +378,42 @@ def init_orbit_db() -> None:
         cursor.execute("ALTER TABLE schedule_blocks ADD COLUMN preferred_days TEXT")
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS mobile_reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            body TEXT,
+            due_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            source TEXT NOT NULL DEFAULT 'manual',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT,
+            dismissed_at TEXT,
+            CHECK (status IN ('pending', 'done', 'dismissed')),
+            CHECK (source IN ('chat', 'manual', 'schedule', 'scanner', 'system'))
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS mobile_notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            body TEXT,
+            type TEXT NOT NULL DEFAULT 'system',
+            status TEXT NOT NULL DEFAULT 'unread',
+            priority TEXT NOT NULL DEFAULT 'normal',
+            target_kind TEXT,
+            target_value TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            acknowledged_at TEXT,
+            completed_at TEXT,
+            dismissed_at TEXT,
+            CHECK (type IN ('trading', 'schedule', 'task', 'system')),
+            CHECK (status IN ('unread', 'read', 'dismissed', 'completed')),
+            CHECK (priority IN ('low', 'normal', 'high'))
+        )
+    """)
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS agent_definitions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
