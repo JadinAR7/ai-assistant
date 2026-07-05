@@ -8,6 +8,137 @@ Helix is Jadin's local-first assistant and operating layer. It combines a FastAP
 
 Helix remains the single assistant. Orbit stores durable planning data. Scanner and trading subsystems provide market context without owning life-planning state.
 
+## Current Product Direction: Mobile-First Helix
+
+Helix is shifting from a desktop-first command center into a mobile-first daily assistant. The existing web/desktop routes remain the admin portal for deep work, debugging, scanner review, Trade Journal analysis, and Orbit management. The mobile layer should focus on quick daily use: briefing, chat, schedule, reminders, trading snapshot, journal quick capture, and notifications.
+
+Mac mini remains the local backend and automation host. iPhone becomes the primary daily interface.
+
+Strategy Teaching Overhaul is paused for now. The current product priority is validating a phone-first assistant experience through the existing Next.js/FastAPI stack before deciding whether a private native iOS app is worth building.
+
+### Desktop vs Mobile Responsibilities
+
+Desktop/admin portal:
+
+* Command Center full scanner controls.
+* Full Orbit board.
+* Full Schedule editor.
+* Full Trade Journal import, review, and coaching workflows.
+* Scanner diagnostics.
+* CSV, vision, and debug panels.
+* System and admin settings.
+
+Mobile daily assistant:
+
+* Morning Briefing.
+* Ask Helix.
+* Quick actions.
+* Today's schedule.
+* Reminders.
+* Add task.
+* Add schedule block.
+* Trading snapshot.
+* Profit Calendar summary.
+* Latest scanner review/status.
+* Quick journal/trade note.
+* Notification center.
+
+### Mobile MVP Plan
+
+Mobile bottom navigation:
+
+* Home.
+* Chat.
+* Schedule.
+* Trading.
+* Journal.
+
+Home should include:
+
+* Morning Briefing card.
+* Top priority task.
+* Next schedule block.
+* Today reminders.
+* Trading performance snapshot.
+* Scanner status.
+* Quick actions.
+
+Chat should include:
+
+* Simple assistant thread.
+* Natural command confirmations.
+* Image upload later.
+* Voice later.
+
+Schedule should include:
+
+* Today list.
+* This week compact list.
+* Add flexible block.
+* Suggested slots.
+* Complete/edit reminders.
+
+Trading should include:
+
+* PnL snapshot.
+* Latest scanner review.
+* Scanner On/Off.
+* Manual scan.
+* Capital checkpoint snapshot later.
+
+Journal should include:
+
+* Quick log.
+* Recent entries.
+* Profit Calendar summary.
+* Full import/review stays desktop for now.
+
+### PWA Foundation Audit
+
+Current frontend readiness:
+
+* `frontend/app/layout.tsx` still has default Create Next App metadata.
+* `frontend/next.config.ts` only configures `allowedDevOrigins`.
+* Global CSS includes useful mobile safety basics: `overflow-x: hidden`, `box-sizing: border-box`, `min-width: 0`, and `touch-action: manipulation`.
+* There is no dedicated mobile shell route yet.
+
+Missing for iPhone Home Screen/PWA readiness:
+
+* Web app manifest.
+* App icons and Apple touch icon.
+* Apple mobile web app metadata.
+* Theme color and viewport/safe-area polish.
+* Service worker/offline strategy.
+* Web push foundation.
+* Authentication/security model for mobile access.
+
+### Backend Mobile API Plan
+
+The current backend exposes the needed raw material through existing chat, Orbit, scanner, schedule, and Trade Journal endpoints. A phone interface should add a narrow mobile composition layer so the mobile UI can ask for daily assistant state directly instead of loading desktop-sized bundles.
+
+Potential endpoints:
+
+* `GET /mobile/home`
+* `GET /mobile/schedule/today`
+* `GET /mobile/trading/summary`
+* `GET /mobile/scanner/status`
+* `POST /mobile/quick-action`
+* `GET /mobile/notifications`
+* `POST /mobile/notifications/{id}/ack`
+
+Do not expose Helix beyond trusted local access without authentication.
+
+### Connectivity And Security Notes
+
+Open decisions:
+
+* iPhone connection method: LAN, VPN, or secure tunnel to the Mac mini.
+* Authentication is required before exposing Helix beyond the local LAN.
+* PWA/mobile web should be the first validation layer.
+* Native iOS/TestFlight/private install can come later after mobile workflows are proven.
+* Push notifications, reminders, badges, and notification acknowledgement need a dedicated design.
+* Avoid exposing the local assistant publicly without auth, rate limits, and transport security.
+
 ## Current Status
 
 ### Complete / Usable
@@ -41,13 +172,14 @@ Helix remains the single assistant. Orbit stores durable planning data. Scanner 
 
 * `/ascend` exists as a future-facing surface.
 * Voice Trigger and Wake Listener are manual prototypes, not always-on installed services.
-* Strategy teaching overhaul is intentionally not implemented yet.
+* Strategy Teaching Overhaul is paused and intentionally not implemented yet.
 
 ### Not Started
 
 * Dedicated strategy ontology, screenshot annotation dataset, golden setup library, bad-example library, session playbooks, and formal user-correction feedback loop.
 * Account-equity/capital-cushion dashboard with prop-firm account-specific checkpoints.
 * Full strategy-learning pipeline that trains/evaluates Helix against labeled screenshots and journaled trades.
+* Mobile-first Helix shell and narrow mobile API facade.
 
 ### Deprecated / Remove Later
 
@@ -418,9 +550,10 @@ Status: Complete / usable for journal and raw performance tracking. Capital/acco
 
 ## Known Limitations
 
-### Trading Strategy Teaching Overhaul
+### Trading Strategy Teaching Overhaul Paused
 
 * Helix does not yet have a redesigned system for learning Jadin's real trading strategy.
+* This work is paused while the product direction shifts to Mobile-First Helix.
 * Need a strategy ontology for liquidity draws, reaction zones, confirmations, entry models, invalidations, and no-trade conditions.
 * Need annotated screenshots.
 * Need golden setup examples and bad examples.
@@ -476,17 +609,20 @@ Status: Complete / usable for journal and raw performance tracking. Capital/acco
 
 Recommended next priorities:
 
-1. Strategy Teaching Overhaul design: define ontology, labeling schema, screenshot annotation flow, and journal integration before making scanner more assertive.
-2. Scanner validation pass: run repeated real-session checks for Qwen3-VL/qwen2.5vl extraction, reaction-zone behavior, stale CSV guardrails, and narrative correctness.
-3. Financial readiness/account dashboard: add account equity, cushion, drawdown, payout, and prop-firm checkpoint tracking that feeds readiness.
-4. Schedule real-week QA: test recurrence, preferred days, flexible placement, and conflict cases against actual planning weeks.
-5. Repo/service hygiene: audit ignored runtime files, `.env` handling, logs, generated screenshots, stale tests, and LaunchAgent docs.
+1. Build mobile shell / mobile home route.
+2. Create mobile home briefing endpoint or compose from existing APIs.
+3. Add mobile bottom navigation.
+4. Build mobile Chat command surface.
+5. Build mobile Schedule/today view.
+6. Build mobile Trading snapshot.
+7. Build notification/reminder architecture.
+8. Decide PWA vs private native iOS after mobile workflow validation.
 
-## Upcoming Design: Trading Strategy Teaching Overhaul
+## Paused Design: Trading Strategy Teaching Overhaul
 
-This is intentionally not implemented yet.
+This is intentionally not implemented yet and is not the current priority.
 
-The user may overhaul how Helix learns the strategy before continuing scanner work. The future system should separate:
+The user may later overhaul how Helix learns the strategy before continuing major scanner expansion. The future system should separate:
 
 * Raw trading performance tracking.
 * Strategy-compliant trades.
@@ -498,7 +634,7 @@ The user may overhaul how Helix learns the strategy before continuing scanner wo
 * Bad/no-trade examples.
 * Session playbooks.
 
-The strategy system should eventually train/evaluate Helix against labeled screenshots and journaled trades. It should make scanner review more grounded without turning Helix into an autonomous signal generator.
+The strategy system should eventually train/evaluate Helix against labeled screenshots and journaled trades. It should make scanner review more grounded without turning Helix into an autonomous signal generator. For now, it remains behind the Mobile-First Helix work.
 
 ## Validation / Common Commands
 
@@ -524,7 +660,7 @@ Diff hygiene:
 
 ```bash
 git diff --check
-grep -n "Qwen3-VL\|Profit Calendar\|calendar-only\|scanner_enabled\|current_attempt_valid_market_state\|Trading Strategy Teaching Overhaul" PROJECT_OVERVIEW.md
+grep -n "Mobile-First Helix\|Strategy Teaching Overhaul\|admin portal\|Qwen3-VL\|Profit Calendar\|calendar-only\|scanner_enabled\|current_attempt_valid_market_state" PROJECT_OVERVIEW.md
 ```
 
 Service status:
@@ -566,7 +702,8 @@ curl -s http://127.0.0.1:8000/orbit/morning-briefing
 | iMessage / TTS | Partially complete / locally gated | Works through local permissions/configuration. |
 | Data/storage | Complete / usable | SQLite plus JSON/status/runtime files. |
 | Services/local runtime | Complete / usable | LaunchAgent scripts and docs exist. |
-| Strategy teaching overhaul | Not started | Should be designed before major scanner expansion. |
+| Mobile-first Helix | Not started | Current product direction; mobile shell and narrow mobile API facade are next. |
+| Strategy teaching overhaul | Paused | Revisit after mobile workflows are validated. |
 
 ## Source-of-Truth Files
 
